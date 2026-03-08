@@ -1,6 +1,6 @@
 # nomothetic
 
-Comms & telemetry for the `nomon` fleet.
+Comms for the `nomon` fleet.
 
 This Python package provides peripheral control, HTTPS REST API, and MQTT telemetry for a fleet of Raspberry Pi devices.
 
