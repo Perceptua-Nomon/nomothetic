@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint format type-check clean
+.PHONY: install install-dev sync-pi test lint format type-check clean
 
 install:
 	pip install -e .
@@ -6,6 +6,10 @@ install:
 install-dev:
 	pip install -e ".[dev]"
 	pip install -r requirements-dev.txt
+
+sync-pi:
+	uv venv --system-site-packages
+	uv sync --all-extras
 
 test:
 	pytest tests/ -v --cov=src/nomothetic --cov-report=html
@@ -31,6 +35,7 @@ help:
 	@echo "Available targets:"
 	@echo "  install      - Install the package"
 	@echo "  install-dev  - Install package and development dependencies"
+	@echo "  sync-pi      - Create venv with system-site-packages and sync (Pi only)"
 	@echo "  test         - Run tests with coverage"
 	@echo "  lint         - Check code style"
 	@echo "  format       - Format code with black and ruff"
