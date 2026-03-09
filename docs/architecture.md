@@ -292,7 +292,7 @@ nomothetic.streaming
   └── flask
 
 nomothetic.camera
-  ├── picamera2  (Linux only — conditional import)
+  ├── picamera2  (Pi only — install [pi] extra; conditional import)
   └── (no other runtime deps)
 
 nomothetic.telemetry
@@ -313,7 +313,7 @@ domain socket at `/run/nomopractic/nomopractic.sock`. Python was evaluated and r
 HAT drivers due to GIL-induced latency in timing-critical GPIO/I2C operations.
 
 **Hardware confirmed:** SunFounder Robot HAT V4 on I2C bus 1 at address `0x14`.
-See [docs/microcontroller_setup.md](microcontroller_setup.md) for discovery details.
+See [docs/pi_hardware.md](pi_hardware.md) for discovery details.
 
 **IPC:** `nomothetic.hat.HatClient` (Python) connects to the socket and exchanges
 NDJSON messages with the Rust daemon. The full schema is defined in
@@ -323,8 +323,7 @@ NDJSON messages with the Rust daemon. The full schema is defined in
 If the daemon is not running, HAT endpoints return `503 Service Unavailable`.
 
 **First milestone deliverables:** battery voltage reading + servo angle control.
-See [docs/nomopractic_crate.md](nomopractic_crate.md) for Rust crate structure and
-[docs/hat_python_client.md](hat_python_client.md) for the Python client design.
+See [docs/hat_python_client.md](hat_python_client.md) for the Python client design.
 
 ---
 

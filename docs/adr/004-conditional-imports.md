@@ -36,7 +36,7 @@ class Camera:
 - `import nomothetic` and `import nomothetic.camera` succeed on all platforms — test files can import the module without hardware
 - Tests mock the symbols at the point where the module imported them: `@patch("nomothetic.camera.Picamera2")`
 - The error is raised at the right time (instantiation) with a clear message
-- `pyproject.toml` marks `picamera2` and `spidev` as `sys_platform == 'linux'` conditional dependencies — they are never installed on Windows
+- `pyproject.toml` puts `picamera2` and `spidev` in the `[pi]` optional dependency group (`pip install "nomothetic[pi]"`) — they are never installed unless explicitly requested
 
 ## Trade-offs
 

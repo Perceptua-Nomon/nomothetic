@@ -9,7 +9,7 @@
 | 2 | HTTPS REST API | ✅ Complete |
 | 2.5 | Auth & Rate Limiting | 🔲 Optional / Deferred |
 | 3 | MQTT Telemetry | ✅ Complete |
-| 5 | HAT Module Driver (Rust) | 🔲 Planned |
+| 5 | HAT Module Driver (Rust) | 🔄 In Progress |
 
 ---
 
@@ -100,7 +100,7 @@ Adds security layers on top of the existing API. Can be deferred since Tailscale
 ### Phase 5 — HAT Module Driver (Rust, Separate Repo)
 
 **Hardware confirmed:** SunFounder Robot HAT V4 on I2C bus 1, address `0x14`.
-See [docs/microcontroller_setup.md](microcontroller_setup.md) for discovery details.
+See [docs/pi_hardware.md](pi_hardware.md) for discovery details.
 
 **Language & repo:** Rust, in a new `nomopractic` repository (see ADR-006).
 Rust is chosen for deterministic latency in GPIO/I2C timing-critical
@@ -110,16 +110,15 @@ and gain nothing from a Rust conversion.
 **IPC:** Unix domain socket at `/run/nomopractic/nomopractic.sock` with NDJSON framing.
 Full schema: [docs/hat_ipc_schema.md](hat_ipc_schema.md).
 Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](hat_python_client.md).
-Rust crate plan: [docs/nomopractic_crate.md](nomopractic_crate.md).
 
 **Milestone 5.1 — IPC Schema & Scaffold:**
 - [x] `docs/hat_ipc_schema.md` — full IPC protocol spec
-- [x] `docs/nomopractic_crate.md` — Rust crate layout
 - [x] `docs/hat_python_client.md` — Python client design
-- [ ] `nomopractic` repository scaffolded; health IPC working on Pi
+- [x] `nomopractic` repository scaffolded; health IPC working on Pi
 
 **Milestone 5.2 — Battery + Servo (P0 deliverables):**
-- [ ] `nomopractic`: I2C, ADC, battery voltage, PWM, servo angle + TTL watchdog
+- [x] `nomopractic`: I2C, ADC, battery voltage (`get_battery_voltage` IPC method, 36 tests)
+- [ ] `nomopractic`: PWM, servo angle + TTL watchdog
 - [ ] `nomothetic.hat.HatClient` with `get_battery_voltage`, `set_servo_angle`
 - [ ] `nomothetic.api` endpoints: `GET /api/hat/battery`, `POST /api/hat/servo`
 - [ ] Mock-socket tests in `tests/test_hat.py`

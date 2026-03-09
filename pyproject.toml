@@ -32,8 +32,6 @@ dependencies = [
     "pigpio>=1.78",
     "smbus2>=0.4.1",
     "pyserial>=3.5",
-    "spidev>=3.5; sys_platform == 'linux'",
-    "picamera2>=0.3.0; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
@@ -45,10 +43,15 @@ dev = [
     "mypy>=1.0",
     "types-pyserial>=3.5.0.11",
     "paho-mqtt>=2.0",
+    "httpx>=0.25",
 ]
 docs = [
     "sphinx>=5.0",
     "sphinx-rtd-theme>=1.0",
+]
+pi = [
+    "picamera2>=0.3.0; sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "spidev>=3.5; sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
 web = [
     "flask>=2.0",

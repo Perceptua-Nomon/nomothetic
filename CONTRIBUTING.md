@@ -11,7 +11,7 @@
 ### Setup
 
 ```bash
-git clone https://github.com/Perceptua/nomothetic.git
+git clone https://github.com/Perceptua-Nomon/nomothetic.git
 cd nomothetic
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate

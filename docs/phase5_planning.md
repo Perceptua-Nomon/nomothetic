@@ -116,7 +116,6 @@ kernel-enforced process isolation.
 
 **Deliverables:**
 - [x] `docs/hat_ipc_schema.md` — full IPC protocol spec
-- [x] `docs/nomopractic_crate.md` — Rust crate layout and dependency choices
 - [x] `docs/hat_python_client.md` — Python `HatClient` module design
 - [ ] `nomopractic` repository created with `Cargo.toml`, `src/main.rs`, systemd unit
 - [ ] `config.rs` + `ipc/` modules scaffolded (accepts connections, echoes health response)
