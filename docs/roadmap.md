@@ -117,14 +117,15 @@ Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](ha
 - [x] `nomopractic` repository scaffolded; health IPC working on Pi
 
 **Milestone 5.2 — Battery + Servo (P0 deliverables):**
-- [x] `nomopractic`: I2C, ADC, battery voltage (`get_battery_voltage` IPC method, 36 tests)
-- [ ] `nomopractic`: PWM, servo angle + TTL watchdog
-- [ ] `nomothetic.hat.HatClient` with `get_battery_voltage`, `set_servo_angle`
-- [ ] `nomothetic.api` endpoints: `GET /api/hat/battery`, `POST /api/hat/servo`
-- [ ] Mock-socket tests in `tests/test_hat.py`
+- [x] `nomopractic`: I2C, ADC, battery voltage (`get_battery_voltage` IPC method, 31 tests)
+- [ ] `nomopractic`: PWM, servo angle + TTL watchdog (stubs only — blocks servo endpoint)
+- [x] `nomothetic.hat.HatClient` with `get_battery_voltage`, `set_servo_angle`, `reset_mcu`, `health` (20 tests)
+- [x] `nomothetic.api` endpoints: `GET /api/hat/battery`, `POST /api/hat/servo`, `POST /api/hat/reset`
+- [x] Mock-socket tests in `tests/test_hat.py`
 
 **Milestone 5.3 — MCU Reset + GPIO (P1):**
-- [ ] GPIO named pins, `reset_mcu` IPC method, `POST /api/hat/reset` endpoint
+- [ ] GPIO named pins, `reset_mcu` IPC method (stubs only — blocks reset endpoint end-to-end)
+- [x] `POST /api/hat/reset` endpoint (Python side done; blocked on nomopractic gpio.rs)
 - [ ] OTA binary deploy script
 
 **Design constraints:**

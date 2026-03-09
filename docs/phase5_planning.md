@@ -112,42 +112,43 @@ kernel-enforced process isolation.
 
 ## 4 — Phase 5 Milestones
 
-### Milestone 5.1 — IPC Schema & nomopractic Scaffold
+### Milestone 5.1 — IPC Schema & nomopractic Scaffold ✅
 
 **Deliverables:**
 - [x] `docs/hat_ipc_schema.md` — full IPC protocol spec
 - [x] `docs/hat_python_client.md` — Python `HatClient` module design
-- [ ] `nomopractic` repository created with `Cargo.toml`, `src/main.rs`, systemd unit
-- [ ] `config.rs` + `ipc/` modules scaffolded (accepts connections, echoes health response)
+- [x] `nomopractic` repository created with `Cargo.toml`, `src/main.rs`, systemd unit
+- [x] `config.rs` + `ipc/` modules scaffolded (accepts connections, echoes health response)
 - [ ] CI workflow: cross-compile `aarch64-unknown-linux-gnu` binary
 
-**Exit criteria:** `socat` health check returns `{"ok":true}` on real Pi hardware.
+**Exit criteria:** `socat` health check returns `{"ok":true}` on real Pi hardware. ✅ Verified.
 
 ### Milestone 5.2 — Battery + Servo Control (P0)
 
 **Deliverables (nomopractic Rust):**
-- [ ] `hat/i2c.rs` — low-level I2C read/write helpers
-- [ ] `hat/adc.rs` — ADC channel read command scheme
-- [ ] `hat/battery.rs` — `get_battery_voltage` using ADC A4, scaling × 3
-- [ ] `hat/pwm.rs` — PWM register writes (REG_CHN, REG_PSC, REG_ARR)
-- [ ] `hat/servo.rs` — `set_servo_pulse_us` + `set_servo_angle` with TTL lease watchdog
-- [ ] IPC methods: `get_battery_voltage`, `set_servo_pulse_us`, `set_servo_angle`
+- [x] `hat/i2c.rs` — low-level I2C read/write helpers (I2cBus trait, RppalI2c, Hat)
+- [x] `hat/adc.rs` — ADC channel read command scheme (A0–A7, 10 ms async delay)
+- [x] `hat/battery.rs` — `get_battery_voltage` using ADC A4, scaling × 3
+- [ ] `hat/pwm.rs` — PWM register writes (REG_CHN, REG_PSC, REG_ARR) — stub only
+- [ ] `hat/servo.rs` — `set_servo_pulse_us` + `set_servo_angle` with TTL lease watchdog — stub only
+- [x] IPC method: `get_battery_voltage` (31 tests passing in nomopractic)
+- [ ] IPC methods: `set_servo_pulse_us`, `set_servo_angle` — blocked on `hat/pwm.rs` / `hat/servo.rs`
 
 **Deliverables (nomothetic Python):**
-- [ ] `src/nomothetic/hat.py` — `HatClient` with `get_battery_voltage`, `set_servo_angle`
-- [ ] `tests/test_hat.py` — mock socket tests (no hardware required)
-- [ ] `nomothetic.api` endpoints: `GET /api/hat/battery`, `POST /api/hat/servo`
+- [x] `src/nomothetic/hat.py` — `HatClient` with all IPC methods incl. servo & reset
+- [x] `tests/test_hat.py` — mock socket tests (no hardware required)
+- [x] `nomothetic.api` endpoints: `GET /api/hat/battery`, `POST /api/hat/servo`
 
 **Exit criteria:** Mobile app can read battery voltage and command servo angle
-on real Pi hardware.
+on real Pi hardware. ⏳ Battery blocked on Pi deploy; servo blocked on nomopractic pwm/servo implementation.
 
 ### Milestone 5.3 — MCU Reset + GPIO (P1)
 
 **Deliverables:**
-- [ ] `hat/gpio.rs` — named GPIO pin map (D4, D5, MCURST, SW, LED)
+- [ ] `hat/gpio.rs` — named GPIO pin map (D4, D5, MCURST, SW, LED) — stub only
 - [ ] `reset.rs` — MCU reset procedure (BCM5 assert/deassert)
 - [ ] IPC method: `reset_mcu`
-- [ ] `nomothetic.api` endpoint: `POST /api/hat/reset`
+- [x] `nomothetic.api` endpoint: `POST /api/hat/reset` — Python side done
 - [ ] OTA binary deploy script (`scripts/deploy.sh`)
 
 ### Milestone 5.4 — Fleet OTA for nomopractic
