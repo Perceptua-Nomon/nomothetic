@@ -14,7 +14,7 @@ Raspberry Pi and communicating with it from the `nomothetic` Python modules.
 
 - **Python ≥ 3.9**
 - **Rust toolchain** — install with `rustup` (see [Installing Rust on the Pi](#installing-rust-on-the-pi) below)
-- **Both repos cloned**: `perceptua-nomon/nomothetic` and `perceptua-nomon/nomopractic`
+- **Both repos cloned**: `Perceptua-Nomon/nomothetic` and `Perceptua-Nomon/nomopractic`
 
 ### Software — on your dev machine (optional, for cross-compilation)
 
@@ -237,6 +237,8 @@ If `nomothetic.hat` is not yet installed or you want to test the protocol
 directly from Python:
 
 ```python
+from __future__ import annotations
+
 import json
 import socket
 
@@ -342,7 +344,7 @@ cargo test
 | `Permission denied` on socket | User not in `nomon` group | `sudo usermod -aG nomon $USER` then re-login |
 | `No such file or directory` on socket | Socket path doesn't exist or daemon crashed | Check `journalctl -u nomopractic` |
 | `HARDWARE_ERROR` on servo/battery | I2C bus not available | Verify HAT connection: `sudo i2cdetect -y 1` should show `0x14` |
-| `UNKNOWN_METHOD` response | Method not yet implemented in current phase | Check [roadmap](../../nomopractic/docs/roadmap.md) for method availability |
+| `UNKNOWN_METHOD` response | Method not yet implemented in current phase | Check [roadmap](https://github.com/Perceptua-Nomon/nomopractic/blob/main/docs/roadmap.md) for method availability |
 | Servo stops moving after ~500 ms | TTL lease expired (by design) | Increase `ttl_ms` or send commands in a loop |
 
 ---
