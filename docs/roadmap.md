@@ -9,7 +9,7 @@
 | 2 | HTTPS REST API | ✅ Complete |
 | 2.5 | Auth & Rate Limiting | 🔲 Optional / Deferred |
 | 3 | MQTT Telemetry | ✅ Complete |
-| 5 | HAT Module Driver (Rust) | � In Progress |
+| 5 | HAT Module Driver (Rust) | 🔄 In Progress |
 
 ---
 
@@ -110,6 +110,7 @@ and gain nothing from a Rust conversion.
 **IPC:** Unix domain socket at `/run/nomopractic/nomopractic.sock` with NDJSON framing.
 Full schema: [docs/hat_ipc_schema.md](hat_ipc_schema.md).
 Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](hat_python_client.md).
+
 **Milestone 5.1 — IPC Schema & Scaffold:**
 - [x] `docs/hat_ipc_schema.md` — full IPC protocol spec
 - [x] `docs/hat_python_client.md` — Python client design
