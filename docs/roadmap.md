@@ -9,7 +9,7 @@
 | 2 | HTTPS REST API | ✅ Complete |
 | 2.5 | Auth & Rate Limiting | 🔲 Optional / Deferred |
 | 3 | MQTT Telemetry | ✅ Complete |
-| 5 | HAT Module Driver (Rust) | 🔲 Planned |
+| 5 | HAT Module Driver (Rust) | � In Progress |
 
 ---
 
@@ -113,10 +113,11 @@ Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](ha
 **Milestone 5.1 — IPC Schema & Scaffold:**
 - [x] `docs/hat_ipc_schema.md` — full IPC protocol spec
 - [x] `docs/hat_python_client.md` — Python client design
-- [ ] `nomopractic` repository scaffolded; health IPC working on Pi
+- [x] `nomopractic` repository scaffolded; health IPC working on Pi
 
 **Milestone 5.2 — Battery + Servo (P0 deliverables):**
-- [ ] `nomopractic`: I2C, ADC, battery voltage, PWM, servo angle + TTL watchdog
+- [x] `nomopractic`: I2C, ADC, battery voltage (`get_battery_voltage` IPC method, 36 tests)
+- [ ] `nomopractic`: PWM, servo angle + TTL watchdog
 - [ ] `nomothetic.hat.HatClient` with `get_battery_voltage`, `set_servo_angle`
 - [ ] `nomothetic.api` endpoints: `GET /api/hat/battery`, `POST /api/hat/servo`
 - [ ] Mock-socket tests in `tests/test_hat.py`
