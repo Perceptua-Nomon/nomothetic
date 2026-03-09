@@ -25,6 +25,9 @@ See [docs/architecture.md](docs/architecture.md) for a full system diagram and m
 `nomothetic` uses optional dependency groups — install only what you need:
 
 ```bash
+# Camera & SPI hardware (Raspberry Pi OS only)
+pip install "nomothetic[pi]"
+
 # HTTPS REST API (most common)
 pip install "nomothetic[api]"
 
@@ -35,10 +38,10 @@ pip install "nomothetic[web]"
 pip install "nomothetic[telemetry]"
 
 # All runtime extras
-pip install "nomothetic[api,web,telemetry]"
+pip install "nomothetic[pi,api,web,telemetry]"
 ```
 
-> **Note:** Some hardware dependencies (e.g., `picamera2`, `spidev`) are Linux-only, and camera/SPI functionality is only supported on Raspberry Pi OS. The package remains importable on Windows/macOS for development and testing.
+> **Note:** `picamera2` and `spidev` are only installable on Raspberry Pi OS. Install the `[pi]` extra (`pip install "nomothetic[pi]"`) on the Pi. The package remains importable without them on other platforms for development and testing.
 
 ---
 

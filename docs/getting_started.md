@@ -13,11 +13,20 @@ Raspberry Pi and communicating with it from the `nomothetic` Python modules.
 ### Software — on the Pi
 
 - **Python ≥ 3.9**
+- **uv** — fast Python package manager (replaces pip/venv):
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
 - **Rust toolchain** — install with `rustup` (see [Installing Rust on the Pi](#installing-rust-on-the-pi) below)
 - **Both repos cloned**: `Perceptua-Nomon/nomothetic` and `Perceptua-Nomon/nomopractic`
 
 ### Software — on your dev machine (optional, for cross-compilation)
 
+- **uv** — fast Python package manager:
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  # or: brew install uv / pip install uv / winget install astral-sh.uv
+  ```
 - Rust toolchain with the aarch64 target: `rustup target add aarch64-unknown-linux-gnu`
 - [`cross`](https://github.com/cross-rs/cross) for Docker-based cross-compilation: `cargo install cross`
 
@@ -171,9 +180,24 @@ Expected response:
 
 ## 3 — Install nomothetic on the Pi
 
+`picamera2` transitively depends on `python-prctl`, which requires the
+`libcap` development headers to build from source. Install them first:
+
+```bash
+sudo apt install -y libcap-dev
+```
+
+Then install the package:
+
 ```bash
 cd nomothetic/
-pip install -e .
+uv sync --extra pi
+```
+
+To install additional extras (e.g. REST API and telemetry):
+
+```bash
+uv sync --extra pi --extra api --extra telemetry
 ```
 
 ---

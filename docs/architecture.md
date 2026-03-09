@@ -292,7 +292,7 @@ nomothetic.streaming
   └── flask
 
 nomothetic.camera
-  ├── picamera2  (Linux only — conditional import)
+  ├── picamera2  (Pi only — install [pi] extra; conditional import)
   └── (no other runtime deps)
 
 nomothetic.telemetry
