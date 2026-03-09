@@ -113,6 +113,9 @@ warn_unused_configs = true
 ignore_missing_imports = true
 plugins = []
 
+[tool.uv]
+system-site-packages = true
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra -q --strict-markers"
