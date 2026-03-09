@@ -100,7 +100,7 @@ Adds security layers on top of the existing API. Can be deferred since Tailscale
 ### Phase 5 — HAT Module Driver (Rust, Separate Repo)
 
 **Hardware confirmed:** SunFounder Robot HAT V4 on I2C bus 1, address `0x14`.
-See [docs/microcontroller_setup.md](microcontroller_setup.md) for discovery details.
+See [docs/pi_hardware.md](pi_hardware.md) for discovery details.
 
 **Language & repo:** Rust, in a new `nomopractic` repository (see ADR-006).
 Rust is chosen for deterministic latency in GPIO/I2C timing-critical
@@ -110,11 +110,8 @@ and gain nothing from a Rust conversion.
 **IPC:** Unix domain socket at `/run/nomopractic/nomopractic.sock` with NDJSON framing.
 Full schema: [docs/hat_ipc_schema.md](hat_ipc_schema.md).
 Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](hat_python_client.md).
-Rust crate plan: [docs/nomopractic_crate.md](nomopractic_crate.md).
-
 **Milestone 5.1 — IPC Schema & Scaffold:**
 - [x] `docs/hat_ipc_schema.md` — full IPC protocol spec
-- [x] `docs/nomopractic_crate.md` — Rust crate layout
 - [x] `docs/hat_python_client.md` — Python client design
 - [ ] `nomopractic` repository scaffolded; health IPC working on Pi
 

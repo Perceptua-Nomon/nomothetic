@@ -37,7 +37,7 @@ overhead, and OS-enforced process isolation is sufficient.
 
 The full IPC schema is specified in [docs/hat_ipc_schema.md](../hat_ipc_schema.md).
 The Python client module design is in [docs/hat_python_client.md](../hat_python_client.md).
-The Rust crate layout is in [docs/nomopractic_crate.md](../nomopractic_crate.md).
+The Rust crate layout is documented in the nomopractic repository.
 
 ## Rationale
 

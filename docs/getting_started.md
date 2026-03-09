@@ -1,0 +1,355 @@
+# Getting Started — HAT IPC on the Raspberry Pi
+
+End-to-end guide for starting the `nomopractic` Rust daemon on the
+Raspberry Pi and communicating with it from the `nomothetic` Python modules.
+
+## Prerequisites
+
+### Hardware
+
+- **Raspberry Pi Zero 2W** running Debian (bookworm/trixie)
+- **SunFounder Robot HAT V4** attached (I2C bus 1, address `0x14`)
+
+### Software — on the Pi
+
+- **Python ≥ 3.9**
+- **Rust toolchain** — install with `rustup` (see [Installing Rust on the Pi](#installing-rust-on-the-pi) below)
+- **Both repos cloned**: `perceptua-nomon/nomothetic` and `perceptua-nomon/nomopractic`
+
+### Software — on your dev machine (optional, for cross-compilation)
+
+- Rust toolchain with the aarch64 target: `rustup target add aarch64-unknown-linux-gnu`
+- [`cross`](https://github.com/cross-rs/cross) for Docker-based cross-compilation: `cargo install cross`
+
+---
+
+## Installing Rust on the Pi
+
+The Pi Zero 2W has only 512 MB of RAM. The Rust compiler regularly exceeds
+this during linking, so you must configure swap space before installing.
+
+### Set up swap with rpi-swap
+
+Raspberry Pi OS ships with
+[rpi-swap](https://github.com/raspberrypi/rpi-swap), which manages swap
+configuration through drop-in files at `/etc/rpi/swap.conf.d/`. Create a
+drop-in that allocates a fixed 2 GB swapfile:
+
+```bash
+sudo mkdir -p /etc/rpi/swap.conf.d/
+
+sudo tee /etc/rpi/swap.conf.d/80-rust-build.conf > /dev/null <<EOF
+[Main]
+Mechanism=swapfile
+
+[File]
+FixedSizeMiB=2048
+EOF
+
+sudo reboot
+```
+
+After rebooting, verify swap is active:
+
+```bash
+free -h
+#               total        used        free      shared  buff/cache   available
+# Mem:          432Mi       ...
+# Swap:         2.0Gi       ...
+```
+
+### Install Rust via rustup
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+rustc --version
+```
+
+Accept the default installation (option 1) when prompted.
+
+### Clean up swap (optional)
+
+Once Rust is installed and you no longer need the extra swap for compilation,
+remove the drop-in and reboot to restore the default swap configuration:
+
+```bash
+sudo rm /etc/rpi/swap.conf.d/80-rust-build.conf
+sudo reboot
+```
+
+If you plan to compile Rust code directly on the Pi regularly (rather than
+cross-compiling), keep the swap drop-in in place.
+
+---
+
+## 1 — Build & Deploy nomopractic
+
+### Cross-compile from your dev machine
+
+```bash
+cd nomopractic/
+
+# Install cross (one-time)
+cargo install cross
+
+# Build the release binary for aarch64
+make release          # runs: cross build --target aarch64-unknown-linux-gnu --release
+```
+
+The binary lands at
+`target/aarch64-unknown-linux-gnu/release/nomopractic`.
+
+### Copy to the Pi
+
+```bash
+PI=nomon@<pi-hostname>
+
+scp target/aarch64-unknown-linux-gnu/release/nomopractic  $PI:/tmp/nomopractic
+scp config.toml.example                                    $PI:/tmp/nomopractic.config.toml
+scp systemd/nomopractic.service                            $PI:/tmp/nomopractic.service
+
+ssh $PI 'sudo mv /tmp/nomopractic /usr/local/bin/ && \
+         sudo mkdir -p /etc/nomopractic && \
+         sudo mv /tmp/nomopractic.config.toml /etc/nomopractic/config.toml && \
+         sudo mv /tmp/nomopractic.service /etc/systemd/system/'
+```
+
+### Create the runtime group and socket directory
+
+```bash
+# On the Pi
+sudo groupadd -f nomon
+sudo usermod -aG nomon $USER          # allow your user to connect
+sudo mkdir -p /run/nomopractic
+sudo chown root:nomon /run/nomopractic
+```
+
+### Start the daemon
+
+**Option A — systemd (recommended for production):**
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now nomopractic
+sudo systemctl status nomopractic
+```
+
+**Option B — foreground (useful for debugging):**
+
+```bash
+sudo nomopractic --config /etc/nomopractic/config.toml
+```
+
+You should see:
+
+```
+INFO nomopractic::ipc: IPC listener started path="/run/nomopractic/nomopractic.sock"
+```
+
+---
+
+## 2 — Verify with socat
+
+Before writing Python code, confirm the socket is alive:
+
+```bash
+# Install socat if not already present
+sudo apt install -y socat
+
+echo '{"id":"1","method":"health","params":{}}' \
+  | socat - UNIX-CONNECT:/run/nomopractic/nomopractic.sock
+```
+
+Expected response:
+
+```json
+{"id":"1","ok":true,"result":{"schema_version":"1.0.0","status":"ok","version":"0.1.0","hat_address":"0x14","i2c_bus":1,"uptime_s":5}}
+```
+
+---
+
+## 3 — Install nomothetic on the Pi
+
+```bash
+cd nomothetic/
+pip install -e .
+```
+
+---
+
+## 4 — Talk to the daemon from Python
+
+### Health check
+
+```python
+from nomothetic.hat import HatClient
+
+with HatClient() as hat:
+    result = hat.health()
+    print(f"Daemon v{result.version}, up {result.uptime_s}s")
+```
+
+The client defaults to `/run/nomopractic/nomopractic.sock`. Override with:
+
+```python
+hat = HatClient(socket_path="/tmp/nomopractic.sock", timeout_s=5.0)
+```
+
+Or set the `NOMON_HAT_SOCKET_PATH` environment variable.
+
+### Read battery voltage
+
+```python
+with HatClient() as hat:
+    voltage = hat.get_battery_voltage()
+    print(f"Battery: {voltage:.2f} V")
+```
+
+### Move a servo
+
+```python
+with HatClient() as hat:
+    # Set servo on PWM channel 0 to 90°
+    hat.set_servo_angle(channel=0, angle_deg=90.0, ttl_ms=1000)
+
+    # Or set a raw pulse width
+    hat.set_servo_pulse_us(channel=0, pulse_us=1500, ttl_ms=1000)
+```
+
+The `ttl_ms` parameter is a safety lease — if the Python process crashes or
+stops sending commands, the daemon automatically idles the servo after the TTL
+expires. For continuous motion, refresh the command in a loop faster than the
+TTL interval.
+
+### Reset the HAT microcontroller
+
+```python
+with HatClient() as hat:
+    hat.reset_mcu()
+```
+
+---
+
+## 5 — Raw socket (without HatClient)
+
+If `nomothetic.hat` is not yet installed or you want to test the protocol
+directly from Python:
+
+```python
+import json
+import socket
+
+SOCK_PATH = "/run/nomopractic/nomopractic.sock"
+
+def send_request(method: str, params: dict | None = None, req_id: str = "1") -> dict:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(2.0)
+        s.connect(SOCK_PATH)
+        request = json.dumps({"id": req_id, "method": method, "params": params or {}})
+        s.sendall((request + "\n").encode())
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return json.loads(data)
+
+# Health check
+resp = send_request("health")
+print(resp)
+# {"id": "1", "ok": true, "result": {"schema_version": "1.0.0", ...}}
+
+# Battery voltage (Phase 2+)
+resp = send_request("get_battery_voltage", req_id="2")
+print(f"Battery: {resp['result']['voltage_v']:.2f} V")
+
+# Servo angle (Phase 3+)
+resp = send_request("set_servo_angle", {"channel": 0, "angle_deg": 45.0, "ttl_ms": 500}, req_id="3")
+print(resp)
+```
+
+---
+
+## 6 — Configuration reference
+
+### nomopractic config (`/etc/nomopractic/config.toml`)
+
+```toml
+i2c_bus = 1
+hat_address = 0x14
+socket_path = "/run/nomopractic/nomopractic.sock"
+socket_mode = 432        # 0o660 in decimal
+log_level = "info"
+servo_default_ttl_ms = 500
+watchdog_poll_ms = 100
+```
+
+Every field can be overridden with an environment variable:
+
+| Variable | Example |
+|----------|---------|
+| `NOMON_HAT_I2C_BUS` | `1` |
+| `NOMON_HAT_ADDRESS` | `0x14` |
+| `NOMON_HAT_SOCKET_PATH` | `/tmp/nomopractic.sock` |
+| `NOMON_HAT_SOCKET_MODE` | `0660` |
+| `NOMON_HAT_LOG_LEVEL` | `debug` |
+| `NOMON_HAT_SERVO_DEFAULT_TTL_MS` | `1000` |
+| `NOMON_HAT_WATCHDOG_POLL_MS` | `50` |
+
+### Verbose logging
+
+```bash
+RUST_LOG=debug nomopractic --config /etc/nomopractic/config.toml
+```
+
+---
+
+## 7 — Development without hardware
+
+For local development and testing without a Raspberry Pi or HAT, use a
+temporary socket path:
+
+```bash
+# Terminal 1 — start the daemon (I2C calls will fail, but health works)
+NOMON_HAT_SOCKET_PATH=/tmp/nomopractic.sock cargo run -- --config config.toml.example
+
+# Terminal 2 — send a health check
+echo '{"id":"1","method":"health","params":{}}' \
+  | socat - UNIX-CONNECT:/tmp/nomopractic.sock
+```
+
+On a machine without I2C hardware, the daemon will start and respond to
+`health` requests. Methods that access I2C (`get_battery_voltage`,
+`set_servo_*`, `reset_mcu`) will return `HARDWARE_ERROR` responses — this is
+expected and useful for testing the IPC layer in isolation.
+
+Run the integration test suite (no hardware needed):
+
+```bash
+cd nomopractic/
+cargo test
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Connection refused` | Daemon not running | `sudo systemctl start nomopractic` |
+| `Permission denied` on socket | User not in `nomon` group | `sudo usermod -aG nomon $USER` then re-login |
+| `No such file or directory` on socket | Socket path doesn't exist or daemon crashed | Check `journalctl -u nomopractic` |
+| `HARDWARE_ERROR` on servo/battery | I2C bus not available | Verify HAT connection: `sudo i2cdetect -y 1` should show `0x14` |
+| `UNKNOWN_METHOD` response | Method not yet implemented in current phase | Check [roadmap](../../nomopractic/docs/roadmap.md) for method availability |
+| Servo stops moving after ~500 ms | TTL lease expired (by design) | Increase `ttl_ms` or send commands in a loop |
+
+---
+
+## Further reading
+
+- [hat_ipc_schema.md](hat_ipc_schema.md) — Full IPC protocol specification
+- [hat_python_client.md](hat_python_client.md) — `HatClient` class interface
+- [architecture.md](architecture.md) — System architecture overview
+- [pi_hardware.md](pi_hardware.md) — Pi hardware discovery notes
