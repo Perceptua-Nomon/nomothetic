@@ -265,10 +265,11 @@ from __future__ import annotations
 
 import json
 import socket
+from typing import Any, Optional
 
 SOCK_PATH = "/run/nomopractic/nomopractic.sock"
 
-def send_request(method: str, params: dict | None = None, req_id: str = "1") -> dict:
+def send_request(method: str, params: Optional[dict[str, Any]] = None, req_id: str = "1") -> dict[str, Any]:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.settimeout(2.0)
         s.connect(SOCK_PATH)
