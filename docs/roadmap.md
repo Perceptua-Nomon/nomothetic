@@ -9,7 +9,7 @@
 | 2 | HTTPS REST API | ✅ Complete |
 | 2.5 | Auth & Rate Limiting | 🔲 Optional / Deferred |
 | 3 | MQTT Telemetry | ✅ Complete |
-| 5 | HAT Module Driver (Rust) | 🔄 In Progress |
+| 5 | HAT Module Driver (Rust) | ✅ Complete |
 
 ---
 
@@ -78,6 +78,51 @@
 
 ---
 
+### Phase 5 — HAT Module Driver (Rust, Separate Repo)
+
+**Hardware confirmed:** SunFounder Robot HAT V4 on I2C bus 1, address `0x14`.
+See [docs/pi_hardware.md](pi_hardware.md) for discovery details.
+
+**Language & repo:** Rust, in the `nomopractic` repository (see ADR-006).
+Rust is chosen for deterministic latency in GPIO/I2C timing-critical
+operations. The Python modules remain in this repo — they are I/O-bound
+and gain nothing from a Rust conversion.
+
+**IPC:** Unix domain socket at `/run/nomopractic/nomopractic.sock` with NDJSON framing.
+Full schema: [docs/hat_ipc_schema.md](hat_ipc_schema.md).
+Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](hat_python_client.md).
+
+**Milestone 5.1 — IPC Schema & Scaffold:**
+- [x] `docs/hat_ipc_schema.md` — full IPC protocol spec
+- [x] `docs/hat_python_client.md` — Python client design
+- [x] `nomopractic` repository scaffolded; health IPC working on Pi
+
+**Milestone 5.2 — Battery + Servo (P0 deliverables):**
+- [x] `nomopractic`: I2C, ADC, battery voltage (`get_battery_voltage` IPC method)
+- [x] `nomopractic`: PWM, servo angle + TTL watchdog
+- [x] `nomothetic.hat.HatClient` with `get_battery_voltage`, `set_servo_angle`, `reset_mcu`, `health` (20 tests)
+- [x] `nomothetic.api` endpoints: `GET /api/hat/battery`, `POST /api/hat/servo`, `POST /api/hat/reset`
+- [x] Mock-socket tests in `tests/test_hat.py`
+
+**Milestone 5.3 — MCU Reset + GPIO (P1):**
+- [x] GPIO named pins (D4/D5/MCURST/SW/LED), `reset_mcu` IPC method
+- [x] `POST /api/hat/reset` endpoint (Python + Rust both complete)
+- [x] OTA binary deploy script (`nomopractic/scripts/deploy.sh`)
+
+**Milestone 5.4 — CI & Release pipeline:**
+- [x] GitHub Actions CI for `nomopractic`: fmt + clippy + tests + cross-compile aarch64
+- [x] GitHub Releases on `v*` tags with SHA-256 artifact manifest
+- [x] GitHub Actions CI for `nomothetic`: lint + type-check + tests
+
+**Design constraints:**
+- Cross-compiled for `aarch64-unknown-linux-gnu` (CI uses `cross`)
+- `nomothetic.api` HAT endpoints return `503 Service Unavailable` if daemon not running
+- Python tests mock the IPC socket — testable on any developer machine without Pi hardware
+
+**nomopractic test totals:** 82 tests (9 config + 5 handler + 5 integration + 3 i2c + 4 adc + 3 battery + 14 servo + 5 pwm + 6 gpio + 1 reset + 11 handler/integration additions)
+
+---
+
 ## Upcoming Phases
 
 ### Phase 2.5 — Authentication & Rate Limiting (Optional)
@@ -96,44 +141,6 @@ Adds security layers on top of the existing API. Can be deferred since Tailscale
 - Consider `fastapi-users` or hand-rolled JWT with `python-jose`/`authlib`
 - Rate limiting via `slowapi` (wraps `limits`)
 - Log to file; Phase 3 MQTT can forward logs to management server
-
----
-
-### Phase 5 — HAT Module Driver (Rust, Separate Repo)
-
-**Hardware confirmed:** SunFounder Robot HAT V4 on I2C bus 1, address `0x14`.
-See [docs/pi_hardware.md](pi_hardware.md) for discovery details.
-
-**Language & repo:** Rust, in a new `nomopractic` repository (see ADR-006).
-Rust is chosen for deterministic latency in GPIO/I2C timing-critical
-operations. The Python modules remain in this repo — they are I/O-bound
-and gain nothing from a Rust conversion.
-
-**IPC:** Unix domain socket at `/run/nomopractic/nomopractic.sock` with NDJSON framing.
-Full schema: [docs/hat_ipc_schema.md](hat_ipc_schema.md).
-Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](hat_python_client.md).
-
-**Milestone 5.1 — IPC Schema & Scaffold:**
-- [x] `docs/hat_ipc_schema.md` — full IPC protocol spec
-- [x] `docs/hat_python_client.md` — Python client design
-- [x] `nomopractic` repository scaffolded; health IPC working on Pi
-
-**Milestone 5.2 — Battery + Servo (P0 deliverables):**
-- [x] `nomopractic`: I2C, ADC, battery voltage (`get_battery_voltage` IPC method, 36 tests)
-- [ ] `nomopractic`: PWM, servo angle + TTL watchdog (stubs only — blocks servo endpoint)
-- [x] `nomothetic.hat.HatClient` with `get_battery_voltage`, `set_servo_angle`, `reset_mcu`, `health` (20 tests)
-- [x] `nomothetic.api` endpoints: `GET /api/hat/battery`, `POST /api/hat/servo`, `POST /api/hat/reset`
-- [x] Mock-socket tests in `tests/test_hat.py`
-
-**Milestone 5.3 — MCU Reset + GPIO (P1):**
-- [ ] GPIO named pins, `reset_mcu` IPC method (stubs only — blocks reset endpoint end-to-end)
-- [x] `POST /api/hat/reset` endpoint (Python side done; blocked on nomopractic gpio.rs)
-- [ ] OTA binary deploy script
-
-**Design constraints:**
-- Cross-compiled for `aarch64-unknown-linux-gnu` (CI uses `cross`)
-- `nomothetic.api` HAT endpoints return `503 Service Unavailable` if daemon not running
-- Python tests mock the IPC socket — testable on any developer machine without Pi hardware
 
 ---
 
