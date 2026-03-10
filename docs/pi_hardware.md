@@ -76,4 +76,4 @@ write I2C registers or toggle GPIO directly. See
 ## Software Setup
 
 For instructions on installing and running the nomothetic API server and the
-nomopractic daemon, see [getting_started.md](getting_started.md).
+nomopractic daemon, see [raspberry_pi_setup.md](raspberry_pi_setup.md).

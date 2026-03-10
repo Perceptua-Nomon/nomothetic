@@ -74,6 +74,8 @@
 
 **Test totals: 86 passing (20 camera + 14 streaming + 26 API + 3 integration + 23 telemetry)**
 
+> Updated total including Phase 5: **130 passing** (23 camera + 14 streaming + 37 API + 36 telemetry + 20 HAT)
+
 ---
 
 ## Upcoming Phases
@@ -117,7 +119,7 @@ Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](ha
 - [x] `nomopractic` repository scaffolded; health IPC working on Pi
 
 **Milestone 5.2 — Battery + Servo (P0 deliverables):**
-- [x] `nomopractic`: I2C, ADC, battery voltage (`get_battery_voltage` IPC method, 31 tests)
+- [x] `nomopractic`: I2C, ADC, battery voltage (`get_battery_voltage` IPC method, 36 tests)
 - [ ] `nomopractic`: PWM, servo angle + TTL watchdog (stubs only — blocks servo endpoint)
 - [x] `nomothetic.hat.HatClient` with `get_battery_voltage`, `set_servo_angle`, `reset_mcu`, `health` (20 tests)
 - [x] `nomothetic.api` endpoints: `GET /api/hat/battery`, `POST /api/hat/servo`, `POST /api/hat/reset`
