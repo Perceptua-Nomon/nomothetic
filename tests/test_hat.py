@@ -1,0 +1,426 @@
+"""Tests for the nomothetic.hat module (HatClient).
+
+All tests use a mock Unix socket server in a background thread — no
+Raspberry Pi hardware or nomopractic daemon required.
+"""
+
+from __future__ import annotations
+
+import json
+import socket
+import threading
+import time
+from typing import Any
+
+import pytest
+
+from nomothetic.hat import (
+    HatClient,
+    HatConnectionError,
+    HatError,
+    HatHealthResult,
+)
+
+# ---------------------------------------------------------------------------
+# Mock server helpers
+# ---------------------------------------------------------------------------
+
+_DEFAULT_RESPONSES: dict[str, Any] = {
+    "health": {
+        "status": "ok",
+        "version": "0.1.0",
+        "hat_address": "0x14",
+        "i2c_bus": 1,
+        "uptime_s": 42,
+    },
+    "get_battery_voltage": {"voltage_v": 7.5},
+    "set_servo_pulse_us": {"channel": 0, "pulse_us": 1500},
+    "set_servo_angle": {"channel": 0, "angle_deg": 90.0, "pulse_us": 1611},
+    "reset_mcu": {"reset_ms": 10},
+}
+
+
+def _run_mock_server(
+    sock_path: str,
+    responses: dict[str, Any],
+    *,
+    error_method: str | None = None,
+    max_connections: int = 4,
+    ready_event: threading.Event | None = None,
+) -> None:
+    """Serve a minimal nomopractic mock on *sock_path*.
+
+    Each incoming line is parsed as JSON; the method is looked up in
+    *responses* and returned as ``{"id":…,"ok":true,"result":…}``.
+    If *error_method* matches the request method, an error response is
+    returned instead.  The server exits after *max_connections* closed
+    connections.
+    """
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(sock_path)
+    srv.listen(max_connections)
+    srv.settimeout(0.5)
+
+    if ready_event:
+        ready_event.set()
+
+    connections_handled = 0
+
+    def _handle(conn: socket.socket) -> None:
+        with conn:
+            conn.settimeout(2.0)
+            f = conn.makefile("rb")
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                try:
+                    req = json.loads(line)
+                except json.JSONDecodeError:
+                    break
+                method = req.get("method", "")
+                req_id = req.get("id", "")
+                if method == error_method:
+                    resp: dict[str, Any] = {
+                        "id": req_id,
+                        "ok": False,
+                        "error": {"code": "HARDWARE_ERROR", "message": "mock error"},
+                    }
+                elif method in responses:
+                    resp = {"id": req_id, "ok": True, "result": responses[method]}
+                else:
+                    resp = {
+                        "id": req_id,
+                        "ok": False,
+                        "error": {
+                            "code": "UNKNOWN_METHOD",
+                            "message": f"No method '{method}'",
+                        },
+                    }
+                conn.sendall((json.dumps(resp) + "\n").encode())
+
+    try:
+        while connections_handled < max_connections:
+            try:
+                conn, _ = srv.accept()
+            except socket.timeout:
+                break
+            t = threading.Thread(target=_handle, args=(conn,), daemon=True)
+            t.start()
+            connections_handled += 1
+    finally:
+        srv.close()
+
+
+@pytest.fixture
+def mock_server(tmp_path):
+    """Start a standard mock nomopractic server; yield the socket path."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    yield sock_path
+    t.join(timeout=2.0)
+
+
+@pytest.fixture
+def mock_server_with_error(tmp_path):
+    """Start a mock server that returns HARDWARE_ERROR for get_battery_voltage."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "get_battery_voltage", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    yield sock_path
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# Connection management
+# ---------------------------------------------------------------------------
+
+
+def test_connect_unavailable_socket_raises(tmp_path):
+    """`connect()` raises HatConnectionError when socket does not exist."""
+    client = HatClient(socket_path=str(tmp_path / "missing.sock"))
+    with pytest.raises(HatConnectionError) as exc_info:
+        client.connect()
+    assert exc_info.value.code == "CONNECTION_ERROR"
+
+
+def test_context_manager_opens_and_closes(mock_server):
+    """`with HatClient()` connects and disconnects cleanly."""
+    with HatClient(socket_path=mock_server) as hat:
+        assert hat._sock is not None
+    assert hat._sock is None
+
+
+def test_close_is_idempotent(mock_server):
+    """`close()` may be called multiple times without error."""
+    hat = HatClient(socket_path=mock_server)
+    hat.close()  # never connected
+    hat.close()  # still fine
+
+
+def test_lazy_connect_on_first_request(mock_server):
+    """A request auto-connects if the client is not yet connected."""
+    hat = HatClient(socket_path=mock_server)
+    assert hat._sock is None
+    voltage = hat.get_battery_voltage()
+    assert hat._sock is not None
+    assert voltage == pytest.approx(7.5)
+    hat.close()
+
+
+def test_socket_path_from_env_var(monkeypatch, mock_server):
+    """`NOMON_HAT_SOCKET_PATH` overrides the default socket path."""
+    monkeypatch.setenv("NOMON_HAT_SOCKET_PATH", mock_server)
+    hat = HatClient()
+    assert hat._socket_path == mock_server
+    assert hat.get_battery_voltage() == pytest.approx(7.5)
+    hat.close()
+
+
+# ---------------------------------------------------------------------------
+# health()
+# ---------------------------------------------------------------------------
+
+
+def test_health_returns_dataclass(mock_server):
+    """`health()` returns a populated `HatHealthResult`."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.health()
+    assert isinstance(result, HatHealthResult)
+    assert result.status == "ok"
+    assert result.version == "0.1.0"
+    assert result.hat_address == "0x14"
+    assert result.i2c_bus == 1
+    assert result.uptime_s == 42
+
+
+# ---------------------------------------------------------------------------
+# get_battery_voltage()
+# ---------------------------------------------------------------------------
+
+
+def test_get_battery_voltage_success(mock_server):
+    """`get_battery_voltage()` returns the float from the result."""
+    with HatClient(socket_path=mock_server) as hat:
+        v = hat.get_battery_voltage()
+    assert v == pytest.approx(7.5)
+
+
+def test_get_battery_voltage_hardware_error(mock_server_with_error):
+    """HARDWARE_ERROR from daemon raises `HatError`."""
+    with HatClient(socket_path=mock_server_with_error) as hat:
+        with pytest.raises(HatError) as exc_info:
+            hat.get_battery_voltage()
+    assert exc_info.value.code == "HARDWARE_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# set_servo_pulse_us()
+# ---------------------------------------------------------------------------
+
+
+def test_set_servo_pulse_us_success(mock_server):
+    """`set_servo_pulse_us()` returns without error on success."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_servo_pulse_us(channel=0, pulse_us=1500)
+
+
+def test_set_servo_pulse_us_bad_channel(mock_server):
+    """channel out of range raises `ValueError` before sending."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="channel"):
+        hat.set_servo_pulse_us(channel=12, pulse_us=1500)
+
+
+def test_set_servo_pulse_us_pulse_too_low(mock_server):
+    """`pulse_us` below 500 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="pulse_us"):
+        hat.set_servo_pulse_us(channel=0, pulse_us=499)
+
+
+def test_set_servo_pulse_us_pulse_too_high(mock_server):
+    """`pulse_us` above 2500 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="pulse_us"):
+        hat.set_servo_pulse_us(channel=0, pulse_us=2501)
+
+
+# ---------------------------------------------------------------------------
+# set_servo_angle()
+# ---------------------------------------------------------------------------
+
+
+def test_set_servo_angle_success(mock_server):
+    """`set_servo_angle()` returns without error on success."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_servo_angle(channel=0, angle_deg=90.0)
+
+
+def test_set_servo_angle_boundaries(mock_server):
+    """0.0° and 180.0° are within the valid range."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_servo_angle(channel=0, angle_deg=0.0)
+        hat.set_servo_angle(channel=0, angle_deg=180.0)
+
+
+def test_set_servo_angle_bad_channel(mock_server):
+    """Negative channel raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="channel"):
+        hat.set_servo_angle(channel=-1, angle_deg=90.0)
+
+
+def test_set_servo_angle_out_of_range(mock_server):
+    """angle_deg > 180 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="angle_deg"):
+        hat.set_servo_angle(channel=0, angle_deg=181.0)
+
+
+# ---------------------------------------------------------------------------
+# reset_mcu()
+# ---------------------------------------------------------------------------
+
+
+def test_reset_mcu_success(mock_server):
+    """`reset_mcu()` returns without error on success."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.reset_mcu()
+
+
+# ---------------------------------------------------------------------------
+# Unknown method
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_method_raises_hat_error(mock_server):
+    """Server returns UNKNOWN_METHOD → `HatError` raised."""
+    with HatClient(socket_path=mock_server) as hat:
+        with pytest.raises(HatError) as exc_info:
+            # Directly exercise the internal request path with a bogus method.
+            hat._request("nonexistent_method", {})
+    assert exc_info.value.code == "UNKNOWN_METHOD"
+
+
+# ---------------------------------------------------------------------------
+# Multiple sequential requests on same connection
+# ---------------------------------------------------------------------------
+
+
+def test_multiple_requests_on_same_connection(mock_server):
+    """Several requests reuse the same socket connection."""
+    with HatClient(socket_path=mock_server) as hat:
+        sock_before = hat._sock
+        hat.get_battery_voltage()
+        hat.health()
+        hat.get_battery_voltage()
+        sock_after = hat._sock
+    # Same socket object throughout (no reconnect triggered).
+    assert sock_before is sock_after
+
+
+# ---------------------------------------------------------------------------
+# Reconnect on broken connection
+# ---------------------------------------------------------------------------
+
+
+def _run_drop_after_one(sock_path: str, ready_event: threading.Event) -> None:
+    """Serve one request, then close the connection to simulate a drop.
+    After the drop, serves one more connection normally so the retry succeeds.
+    """
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(sock_path)
+    srv.listen(4)
+    srv.settimeout(2.0)
+    ready_event.set()
+
+    try:
+        # First connection: serve health, then shut down to force FIN.
+        conn, _ = srv.accept()
+        conn.settimeout(2.0)
+        # Receive the health request via raw recv to avoid makefile dup fd issues.
+        buf = b""
+        while b"\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        req = json.loads(buf.rstrip())
+        resp = {
+            "id": req["id"],
+            "ok": True,
+            "result": _DEFAULT_RESPONSES["health"],
+        }
+        conn.sendall((json.dumps(resp) + "\n").encode())
+        # Force TCP FIN immediately; shutdown() bypasses dup'd-fd issues.
+        conn.shutdown(socket.SHUT_RDWR)
+        conn.close()
+
+        # Second connection: serve normally.
+        conn2, _ = srv.accept()
+        conn2.settimeout(2.0)
+        f2 = conn2.makefile("rb")
+        try:
+            while True:
+                line = f2.readline()
+                if not line:
+                    break
+                req2 = json.loads(line)
+                method = req2.get("method", "")
+                resp2: dict[str, Any] = {
+                    "id": req2["id"],
+                    "ok": True,
+                    "result": _DEFAULT_RESPONSES.get(method, {}),
+                }
+                conn2.sendall((json.dumps(resp2) + "\n").encode())
+        finally:
+            f2.close()
+            conn2.shutdown(socket.SHUT_RDWR)
+            conn2.close()
+    finally:
+        srv.close()
+
+
+def test_reconnect_on_broken_connection(tmp_path):
+    """Client reconnects transparently when the daemon closes the connection."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_drop_after_one,
+        args=(sock_path, ready),
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path, timeout_s=2.0) as hat:
+        # First request succeeds.
+        result = hat.health()
+        assert result.status == "ok"
+
+        # Give the server time to close its end.
+        time.sleep(0.05)
+
+        # This request fails on the broken pipe and triggers a reconnect.
+        voltage = hat.get_battery_voltage()
+        assert voltage == pytest.approx(7.5)
+
+    t.join(timeout=3.0)

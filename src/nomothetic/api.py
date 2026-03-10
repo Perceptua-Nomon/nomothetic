@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from nomothetic.camera import Camera
+from nomothetic.hat import HatClient, HatConnectionError, HatError
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,36 @@ class ErrorResponse(BaseModel):
 
     success: bool = False
     error: str
+    timestamp: str
+
+
+class BatteryResponse(BaseModel):
+    """HAT battery voltage response."""
+
+    voltage_v: float
+    timestamp: str
+
+
+class ServoRequest(BaseModel):
+    """Servo angle control request."""
+
+    channel: int = Field(..., ge=0, le=11, description="PWM channel (0–11)")
+    angle_deg: float = Field(..., ge=0.0, le=180.0, description="Target angle (0–180°)")
+    ttl_ms: int = Field(default=500, ge=100, le=5000, description="Lease TTL in ms")
+
+
+class ServoResponse(BaseModel):
+    """Servo angle control response."""
+
+    channel: int
+    angle_deg: float
+    timestamp: str
+
+
+class ResetResponse(BaseModel):
+    """MCU reset response."""
+
+    success: bool
     timestamp: str
 
 
@@ -193,31 +224,34 @@ def create_self_signed_cert(cert_path: Path, key_path: Path) -> None:
 
 
 # ============================================================================
-# Camera Server Instance (Global)
+# Global service instances
 # ============================================================================
 
 
 _camera: Optional[Camera] = None
-
-
-logger = logging.getLogger(__name__)
+_hat_client: Optional[HatClient] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage camera initialization and cleanup."""
-    global _camera
+    """Manage camera and HAT client initialization and cleanup."""
+    global _camera, _hat_client
     # Startup: Initialize camera
     try:
         _camera = Camera()
     except RuntimeError as e:
         logger.warning("Camera initialization failed; API will run without camera: %s", e)
 
+    # Startup: Create HAT client (lazy connect — daemon may not be running yet)
+    _hat_client = HatClient()
+
     yield
 
     # Shutdown: Cleanup
     if _camera:
         _camera.close()
+    if _hat_client:
+        _hat_client.close()
 
 
 # ============================================================================
@@ -389,6 +423,105 @@ def create_app() -> FastAPI:
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Recording stop failed: {str(e)}") from e
+
+    # ========================================================================
+    # HAT Endpoints
+    # ========================================================================
+
+    @app.get("/api/hat/battery", response_model=BatteryResponse, tags=["HAT"])
+    async def get_battery():
+        """Read the Robot HAT V4 battery voltage.
+
+        Returns
+        -------
+        BatteryResponse
+            Battery voltage in volts and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware read failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            voltage = await asyncio.to_thread(_hat_client.get_battery_voltage)
+            return BatteryResponse(
+                voltage_v=voltage,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/hat/servo", response_model=ServoResponse, tags=["HAT"])
+    async def set_servo(request: ServoRequest):
+        """Set a servo channel to the requested angle.
+
+        Parameters
+        ----------
+        request : ServoRequest
+            Target channel, angle in degrees, and optional TTL.
+
+        Returns
+        -------
+        ServoResponse
+            Echoed channel, angle, and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware write failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(
+                _hat_client.set_servo_angle,
+                request.channel,
+                request.angle_deg,
+                request.ttl_ms,
+            )
+            return ServoResponse(
+                channel=request.channel,
+                angle_deg=request.angle_deg,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/hat/reset", response_model=ResetResponse, tags=["HAT"])
+    async def reset_mcu():
+        """Assert and release the Robot HAT V4 MCU reset line.
+
+        Returns
+        -------
+        ResetResponse
+            Success status and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on GPIO failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.reset_mcu)
+            return ResetResponse(
+                success=True,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     # Global exception handler
     @app.exception_handler(HTTPException)

@@ -3,7 +3,7 @@
 Tests cover endpoint functionality, error handling, and CORS behavior.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -405,3 +405,154 @@ def test_camera_status_model():
     assert status.camera_ready is True
     assert status.recording is False
 
+
+# ============================================================================
+# HAT Endpoints
+# ============================================================================
+
+
+@pytest.fixture
+def mock_hat():
+    """Create a mock HatClient for HAT endpoint tests."""
+    return MagicMock()
+
+
+def test_get_battery_no_client(client):
+    """GET /api/hat/battery returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/hat/battery")
+    assert response.status_code == 503
+    assert "not available" in response.json()["error"]
+
+
+def test_get_battery_success(client, mock_hat):
+    """GET /api/hat/battery returns voltage and timestamp on success."""
+    import nomothetic.api
+
+    mock_hat.get_battery_voltage.return_value = 7.42
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/battery")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["voltage_v"] == pytest.approx(7.42)
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_battery_connection_error(client, mock_hat):
+    """GET /api/hat/battery returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.get_battery_voltage.side_effect = HatConnectionError("socket gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/battery")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_battery_hardware_error(client, mock_hat):
+    """GET /api/hat/battery returns 500 on HatError (hardware failure)."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.get_battery_voltage.side_effect = HatError("HARDWARE_ERROR", "I2C failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/battery")
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_servo_no_client(client):
+    """POST /api/hat/servo returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/hat/servo", json={"channel": 0, "angle_deg": 90.0})
+    assert response.status_code == 503
+
+
+def test_set_servo_success(client, mock_hat):
+    """POST /api/hat/servo returns channel, angle, and timestamp on success."""
+    import nomothetic.api
+
+    mock_hat.set_servo_angle.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/servo", json={"channel": 2, "angle_deg": 45.0})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["channel"] == 2
+    assert data["angle_deg"] == pytest.approx(45.0)
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_servo_invalid_channel(client, mock_hat):
+    """POST /api/hat/servo returns 422 when channel is out of range."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.post("/api/hat/servo", json={"channel": 12, "angle_deg": 90.0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_servo_invalid_angle(client, mock_hat):
+    """POST /api/hat/servo returns 422 when angle_deg is out of range."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.post("/api/hat/servo", json={"channel": 0, "angle_deg": 200.0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_servo_connection_error(client, mock_hat):
+    """POST /api/hat/servo returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.set_servo_angle.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/servo", json={"channel": 0, "angle_deg": 90.0})
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_reset_mcu_no_client(client):
+    """POST /api/hat/reset returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/hat/reset")
+    assert response.status_code == 503
+
+
+def test_reset_mcu_success(client, mock_hat):
+    """POST /api/hat/reset returns success and timestamp."""
+    import nomothetic.api
+
+    mock_hat.reset_mcu.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/reset")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None

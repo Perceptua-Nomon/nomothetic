@@ -111,6 +111,9 @@ The primary remote control interface. Mobile app and management server talk to t
 | `POST` | `/api/camera/capture` | Still image capture |
 | `POST` | `/api/camera/record/start` | Start video recording |
 | `POST` | `/api/camera/record/stop` | Stop video recording |
+| `GET` | `/api/hat/battery` | Read HAT battery voltage |
+| `POST` | `/api/hat/servo` | Set servo channel angle |
+| `POST` | `/api/hat/reset` | Assert MCU reset |
 | `GET` | `/docs` | Interactive Swagger UI |
 | `GET` | `/redoc` | ReDoc API docs |
 
@@ -122,6 +125,7 @@ The primary remote control interface. Mobile app and management server talk to t
 | `400` | Bad request (invalid filename, bad parameters) |
 | `409` | Conflict (recording already in/not in progress) |
 | `500` | Server/hardware error |
+| `503` | HAT daemon unavailable (nomopractic not running) |
 
 ---
 
@@ -303,14 +307,12 @@ nomothetic.telemetry
 
 ---
 
-## Planned Additions
+## Phase 5 — HAT Module Driver (Rust, Separate Repo)
 
-### Phase 5 — HAT Module Driver (Rust, Separate Repo)
-
-A standalone Rust daemon in a new `nomopractic` repository (see ADR-006). Runs
-as `nomopractic.service` and communicates with `nomothetic.api` via a local Unix
-domain socket at `/run/nomopractic/nomopractic.sock`. Python was evaluated and rejected for
-HAT drivers due to GIL-induced latency in timing-critical GPIO/I2C operations.
+The `nomopractic` Rust daemon (see ADR-006) runs as `nomopractic.service` and
+communicates with `nomothetic.api` via a Unix domain socket at
+`/run/nomopractic/nomopractic.sock`. Python was evaluated and rejected for HAT
+drivers due to GIL-induced latency in timing-critical GPIO/I2C operations.
 
 **Hardware confirmed:** SunFounder Robot HAT V4 on I2C bus 1 at address `0x14`.
 See [docs/pi_hardware.md](pi_hardware.md) for discovery details.
