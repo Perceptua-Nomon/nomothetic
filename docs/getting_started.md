@@ -28,7 +28,7 @@ git clone https://github.com/Perceptua-Nomon/nomothetic.git
 
 ## Steps 2–5 — Build, deploy, and install
 
-Follow **[raspberry_pi_setup.md](raspberry_pi_setup.md)** in full:
+Follow **[pi_setup.md](pi_setup.md)** in full:
 
 1. **Install Rust on the Pi** (or cross-compile from your workstation) — Section: *Installing Rust on the Pi*
 2. **Build & deploy nomopractic** — Section: *1 — Build & Deploy nomopractic*
@@ -176,4 +176,4 @@ open http://$PI:8000    # macOS; use xdg-open on Linux
 | `HARDWARE_ERROR` from battery/servo | HAT not connected or I2C not detected — `sudo i2cdetect -y 1` should show `0x14` |
 | Certificate warning in browser | Expected for self-signed certs — click through or import `.certs/cert.pem` |
 
-For deeper troubleshooting, see [raspberry_pi_setup.md](raspberry_pi_setup.md#troubleshooting).
+For deeper troubleshooting, see [pi_setup.md](pi_setup.md#troubleshooting).
