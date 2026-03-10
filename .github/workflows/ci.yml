@@ -36,7 +36,7 @@ jobs:
           restore-keys: ${{ runner.os }}-uv-
 
       - name: Install dependencies
-        run: uv sync --all-extras --no-extra pi
+        run: uv sync --all-extras --no-extra pi --frozen
 
       - name: Lint — ruff
         run: uv run ruff check src/ tests/
