@@ -232,9 +232,6 @@ _camera: Optional[Camera] = None
 _hat_client: Optional[HatClient] = None
 
 
-logger = logging.getLogger(__name__)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage camera and HAT client initialization and cleanup."""

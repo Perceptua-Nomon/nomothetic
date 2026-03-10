@@ -118,13 +118,14 @@ class HatClient:
         HatConnectionError
             If the socket file does not exist or the connection is refused.
         """
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(self._timeout_s)
             sock.connect(self._socket_path)
             self._sock = sock
             self._rfile = sock.makefile("rb")
         except (FileNotFoundError, ConnectionRefusedError, OSError) as e:
+            sock.close()
             raise HatConnectionError(
                 f"Cannot connect to nomopractic at {self._socket_path}: {e}"
             ) from e
@@ -180,7 +181,8 @@ class HatClient:
         req = {"id": req_id, "method": method, "params": params}
         line = json.dumps(req) + "\n"
         try:
-            assert self._sock is not None and self._rfile is not None
+            if self._sock is None or self._rfile is None:
+                raise HatConnectionError("Socket is not connected")
             self._sock.sendall(line.encode())
             resp_line = self._rfile.readline()
         except socket.timeout as e:
