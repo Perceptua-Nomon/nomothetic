@@ -73,6 +73,10 @@ class TelemetryPublisher:
     >>> thread.join()
     """
 
+    _stop_event: threading.Event
+    _connected: bool
+    _client: Any
+
     def __init__(
         self,
         broker: str,
@@ -97,8 +101,8 @@ class TelemetryPublisher:
         self.interval = interval
         self.qos = qos
 
-        self._stop_event = threading.Event()
-        self._connected = False
+        self._stop_event: threading.Event = threading.Event()
+        self._connected: bool = False
         self._client: Any = self._create_client()
 
     # -------------------------------------------------------------------------

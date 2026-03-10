@@ -3,7 +3,7 @@
 Tests cover endpoint functionality, error handling, and CORS behavior.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -556,4 +556,3 @@ def test_reset_mcu_success(client, mock_hat):
     assert "timestamp" in data
 
     nomothetic.api._hat_client = None
-

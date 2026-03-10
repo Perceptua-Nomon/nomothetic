@@ -503,7 +503,7 @@ def test_on_disconnect_clears_connected(mock_mqtt_module):
 # ---------------------------------------------------------------------------
 
 
-def test_backoff_doubles_on_reconnect_failure(mock_mqtt_module):
+def test_backoff_doubles_on_reconnect_failure(mock_mqtt_module: tuple) -> None:
     """_run_loop doubles the backoff delay after each failed connect."""
     from nomothetic.telemetry import _BACKOFF_BASE, TelemetryPublisher
 
@@ -528,7 +528,7 @@ def test_backoff_doubles_on_reconnect_failure(mock_mqtt_module):
     assert wait_delays[0] == _BACKOFF_BASE
 
 
-def test_backoff_capped_at_max(mock_mqtt_module):
+def test_backoff_capped_at_max(mock_mqtt_module: tuple) -> None:
     """Backoff delay does not exceed _BACKOFF_CAP when _run_loop retries."""
     from nomothetic.telemetry import _BACKOFF_CAP, TelemetryPublisher
 
@@ -545,7 +545,7 @@ def test_backoff_capped_at_max(mock_mqtt_module):
         # Run enough iterations to push past _BACKOFF_CAP (1→2→4→8→16→32→60→60)
         if call_count >= 8:
             pub._stop_event.set()
-        return pub._stop_event.is_set()
+        return pub._stop_event.is_set()  # type: ignore[no-any-return]
 
     pub._stop_event.wait = fake_wait  # type: ignore
     mock_client.connect.side_effect = OSError("refused")
@@ -558,7 +558,7 @@ def test_backoff_capped_at_max(mock_mqtt_module):
     assert wait_delays[-1] == _BACKOFF_CAP, "Cap was never reached"
 
 
-def test_run_loop_backoff_resets_after_successful_connect(mock_mqtt_module):
+def test_run_loop_backoff_resets_after_successful_connect(mock_mqtt_module: tuple) -> None:
     """_run_loop resets backoff to _BACKOFF_BASE after a successful connect."""
     from nomothetic.telemetry import _BACKOFF_BASE, TelemetryPublisher
 
@@ -582,7 +582,7 @@ def test_run_loop_backoff_resets_after_successful_connect(mock_mqtt_module):
         wait_calls[0] += 1
         if wait_calls[0] >= 3:
             pub._stop_event.set()
-        return pub._stop_event.is_set()
+        return pub._stop_event.is_set()  # type: ignore[no-any-return]
 
     pub._stop_event.wait = fake_wait  # type: ignore
 
@@ -620,7 +620,7 @@ def test_run_loop_publish_failure_triggers_reconnect(mock_mqtt_module):
         wait_count[0] += 1
         if wait_count[0] >= 2:
             pub._stop_event.set()
-        return pub._stop_event.is_set()
+        return pub._stop_event.is_set()  # type: ignore[no-any-return]
 
     pub._stop_event.wait = fake_wait  # type: ignore
 

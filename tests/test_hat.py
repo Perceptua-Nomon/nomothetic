@@ -7,7 +7,6 @@ Raspberry Pi hardware or nomopractic daemon required.
 from __future__ import annotations
 
 import json
-import os
 import socket
 import threading
 import time
@@ -20,7 +19,6 @@ from nomothetic.hat import (
     HatConnectionError,
     HatError,
     HatHealthResult,
-    HatTimeoutError,
 )
 
 # ---------------------------------------------------------------------------

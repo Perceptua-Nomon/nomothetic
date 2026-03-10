@@ -157,7 +157,9 @@ class StreamServer:
             If port is not in valid range (1-65535)
         """
         if Flask is None:
-            raise RuntimeError("Flask not available. " "Install with: pip install 'nomothetic[web]'")
+            raise RuntimeError(
+                "Flask not available. " "Install with: pip install 'nomothetic[web]'"
+            )
 
         if not 1 <= port <= 65535:
             raise ValueError(f"Port must be between 1 and 65535, got {port}")

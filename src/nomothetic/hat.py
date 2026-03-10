@@ -26,7 +26,7 @@ import socket
 import threading
 from dataclasses import dataclass
 from pathlib import Path  # noqa: F401 – re-exported for callers
-from typing import Optional
+from typing import cast
 
 _DEFAULT_SOCKET_PATH = "/run/nomopractic/nomopractic.sock"
 
@@ -94,15 +94,15 @@ class HatClient:
 
     def __init__(
         self,
-        socket_path: Optional[str | Path] = None,
+        socket_path: str | Path | None = None,
         timeout_s: float = 2.0,
     ) -> None:
         if socket_path is None:
             socket_path = os.environ.get("NOMON_HAT_SOCKET_PATH", _DEFAULT_SOCKET_PATH)
         self._socket_path = str(socket_path)
         self._timeout_s = timeout_s
-        self._sock: Optional[socket.socket] = None
-        self._rfile: Optional[io.BufferedReader] = None
+        self._sock: socket.socket | None = None
+        self._rfile: io.BufferedReader | None = None
         self._lock = threading.Lock()
         self._req_counter = 0
 
@@ -205,7 +205,7 @@ class HatClient:
                 error.get("message", "Unknown error"),
             )
 
-        return resp.get("result", {})
+        return cast(dict, resp.get("result", {}))
 
     def _request(self, method: str, params: dict) -> dict:
         """Thread-safe request with one reconnect retry on connection loss."""
