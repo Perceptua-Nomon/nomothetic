@@ -8,9 +8,19 @@
 #   version   Git tag to deploy (e.g. "v0.2.0"). If omitted, the script finds
 #             and deploys the latest semver tag on the remote.
 #   pi-host   SSH host (user@host or plain hostname). Overrides NOMON_PI_HOST.
+#             If omitted and NOMON_PI_HOST is unset, runs locally — useful
+#             when already connected to the Pi via SSH.
+#
+# Examples:
+#   # Deploy from a dev machine to the Pi over SSH:
+#   ./scripts/deploy.sh v0.2.0 perceptua@perceptua
+#
+#   # Deploy directly on the Pi (no SSH needed):
+#   ./scripts/deploy.sh v0.2.0
 #
 # Environment (read from .env in the repo root):
-#   NOMON_PI_HOST   SSH target — "user@host" or plain hostname. Required.
+#   NOMON_PI_HOST   SSH target — "user@host" or plain hostname. Optional;
+#                   if unset the script runs locally.
 #   NOMON_SSH_KEY   Path to SSH private key (optional; if set it is passed to
 #                   ssh with -i. If unset, SSH may prompt for a password or
 #                   use the ssh-agent / default identity.)
@@ -77,25 +87,25 @@ if [[ -n "${VERSION}" && ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
-if [[ -z "${PI_HOST}" ]]; then
-    echo "Error: NOMON_PI_HOST is not set." >&2
-    echo "  Add it to ${ENV_FILE} or pass it as the second argument." >&2
-    exit 1
-fi
-
 # ── SSH helpers ────────────────────────────────────────────────────────────────
+# If PI_HOST is set we run everything remotely; otherwise we run locally.
 
-SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
-if [[ -n "${NOMON_SSH_KEY:-}" ]]; then
-    SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
+if [[ -n "${PI_HOST}" ]]; then
+    SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
+    if [[ -n "${NOMON_SSH_KEY:-}" ]]; then
+        SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
+    fi
+    echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} → ${PI_HOST}"
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" 'bash -s "$@"' --)
+else
+    echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} locally"
+    RUN_CMD=(bash -s --)
 fi
 
-echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} → ${PI_HOST}"
+# ── Deployment ─────────────────────────────────────────────────────────────────
+# All steps below run on the Pi (remote or local) via a single shell session.
 
-# ── Remote deployment ──────────────────────────────────────────────────────────
-# All steps below run on the Pi inside a single SSH session.
-
-ssh "${SSH_OPTS[@]}" "${PI_HOST}" 'bash -s "$@"' -- "${VERSION}" << 'END_REMOTE'
+"${RUN_CMD[@]}" "${VERSION}" << 'END_REMOTE'
 set -euo pipefail
 
 readonly REQUESTED_VERSION="$1"
