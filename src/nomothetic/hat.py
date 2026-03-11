@@ -79,6 +79,30 @@ class HatHealthResult:
     uptime_s: int
 
 
+@dataclass
+class ServoLeaseEntry:
+    """A single active servo TTL lease."""
+
+    channel: int
+    ttl_remaining_ms: int
+    conn_id: int
+
+
+@dataclass
+class ServoStatusResult:
+    """Result payload from the ``get_servo_status`` IPC method."""
+
+    active_leases: list[ServoLeaseEntry]
+
+
+@dataclass
+class McuStatusResult:
+    """Result payload from the ``get_mcu_status`` IPC method."""
+
+    resets_since_start: int
+    last_reset_s_ago: int | None
+
+
 class HatClient:
     """Client for the nomopractic Unix domain socket IPC daemon.
 
@@ -339,3 +363,55 @@ class HatClient:
             If the socket connection is lost.
         """
         self._request("reset_mcu", {})
+
+    def get_servo_status(self) -> ServoStatusResult:
+        """Return the daemon's active servo TTL lease table.
+
+        Each entry reflects a channel that has an unexpired lease, with the
+        time remaining on that lease and the connection that owns it.
+
+        Returns
+        -------
+        ServoStatusResult
+            Active lease list (may be empty).
+
+        Raises
+        ------
+        HatError
+            If the daemon returns ok=false.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("get_servo_status", {})
+        leases = [
+            ServoLeaseEntry(
+                channel=entry["channel"],
+                ttl_remaining_ms=entry["ttl_remaining_ms"],
+                conn_id=entry["conn_id"],
+            )
+            for entry in result.get("active_leases", [])
+        ]
+        return ServoStatusResult(active_leases=leases)
+
+    def get_mcu_status(self) -> McuStatusResult:
+        """Return MCU reset statistics tracked by the daemon.
+
+        Returns
+        -------
+        McuStatusResult
+            ``resets_since_start``: count of successful resets since daemon start.
+            ``last_reset_s_ago``: seconds since the last reset, or ``None`` if
+            no reset has occurred in this daemon session.
+
+        Raises
+        ------
+        HatError
+            If the daemon returns ok=false.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("get_mcu_status", {})
+        return McuStatusResult(
+            resets_since_start=result["resets_since_start"],
+            last_reset_s_ago=result.get("last_reset_s_ago"),
+        )

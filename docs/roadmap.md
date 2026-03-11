@@ -76,6 +76,8 @@
 
 > Updated total including Phase 5: **130 passing** (23 camera + 14 streaming + 37 API + 36 telemetry + 20 HAT)
 
+> Updated total including Phase 5 Milestone 5.5: **140 passing** (23 camera + 14 streaming + 43 API + 36 telemetry + 24 HAT)
+
 ---
 
 ### Phase 5 — HAT Module Driver (Rust, Separate Repo)
@@ -114,12 +116,20 @@ Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](ha
 - [x] GitHub Releases on `v*` tags with SHA-256 artifact manifest
 - [x] GitHub Actions CI for `nomothetic`: lint + type-check + tests
 
+**Milestone 5.5 — Daemon State Endpoints:**
+- [x] `nomopractic`: `get_servo_status` (active leases) and `get_mcu_status` (reset counter) IPC methods
+- [x] `nomothetic.hat.HatClient.get_servo_status()` / `get_mcu_status()` with typed dataclasses
+- [x] `GET /api/hat/servo/status` and `GET /api/hat/mcu/status` REST endpoints
+- [x] Mock-socket tests in `tests/test_hat.py`; API tests in `tests/test_api.py`
+
 **Design constraints:**
 - Cross-compiled for `aarch64-unknown-linux-gnu` (CI uses `cross`)
 - `nomothetic.api` HAT endpoints return `503 Service Unavailable` if daemon not running
 - Python tests mock the IPC socket — testable on any developer machine without Pi hardware
 
 **nomopractic test totals:** 82 tests (9 config + 5 handler + 5 integration + 3 i2c + 4 adc + 3 battery + 14 servo + 5 pwm + 6 gpio + 1 reset + 11 handler/integration additions)
+
+> Updated nomopractic total (Phase 5 Milestone 5.5): **89 tests** (+5 unit handler tests, +2 servo `get_active_leases` tests)
 
 ---
 

@@ -19,6 +19,9 @@ from nomothetic.hat import (
     HatConnectionError,
     HatError,
     HatHealthResult,
+    McuStatusResult,
+    ServoLeaseEntry,
+    ServoStatusResult,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,6 +40,15 @@ _DEFAULT_RESPONSES: dict[str, Any] = {
     "set_servo_pulse_us": {"channel": 0, "pulse_us": 1500},
     "set_servo_angle": {"channel": 0, "angle_deg": 90.0, "pulse_us": 1611},
     "reset_mcu": {"reset_ms": 10},
+    "get_servo_status": {
+        "active_leases": [
+            {"channel": 2, "ttl_remaining_ms": 350, "conn_id": 7},
+        ]
+    },
+    "get_mcu_status": {
+        "resets_since_start": 3,
+        "last_reset_s_ago": 120,
+    },
 }
 
 
@@ -424,3 +436,80 @@ def test_reconnect_on_broken_connection(tmp_path):
         assert voltage == pytest.approx(7.5)
 
     t.join(timeout=3.0)
+
+
+# ---------------------------------------------------------------------------
+# get_servo_status()
+# ---------------------------------------------------------------------------
+
+
+def test_get_servo_status_returns_dataclass(mock_server):
+    """`get_servo_status()` returns a `ServoStatusResult` with lease entries."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.get_servo_status()
+    assert isinstance(result, ServoStatusResult)
+    assert len(result.active_leases) == 1
+    lease = result.active_leases[0]
+    assert isinstance(lease, ServoLeaseEntry)
+    assert lease.channel == 2
+    assert lease.ttl_remaining_ms == 350
+    assert lease.conn_id == 7
+
+
+def test_get_servo_status_empty_list(tmp_path):
+    """`get_servo_status()` handles an empty active_leases list."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    responses = dict(_DEFAULT_RESPONSES)
+    responses["get_servo_status"] = {"active_leases": []}
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, responses),
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        result = hat.get_servo_status()
+    assert result.active_leases == []
+
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# get_mcu_status()
+# ---------------------------------------------------------------------------
+
+
+def test_get_mcu_status_returns_dataclass(mock_server):
+    """`get_mcu_status()` returns a populated `McuStatusResult`."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.get_mcu_status()
+    assert isinstance(result, McuStatusResult)
+    assert result.resets_since_start == 3
+    assert result.last_reset_s_ago == 120
+
+
+def test_get_mcu_status_no_previous_reset(tmp_path):
+    """`get_mcu_status()` returns ``last_reset_s_ago=None`` when never reset."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    responses = dict(_DEFAULT_RESPONSES)
+    responses["get_mcu_status"] = {"resets_since_start": 0, "last_reset_s_ago": None}
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, responses),
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        result = hat.get_mcu_status()
+    assert result.resets_since_start == 0
+    assert result.last_reset_s_ago is None
+
+    t.join(timeout=2.0)

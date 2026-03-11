@@ -126,6 +126,29 @@ class ResetResponse(BaseModel):
     timestamp: str
 
 
+class ServoLeaseItem(BaseModel):
+    """A single active servo TTL lease entry."""
+
+    channel: int
+    ttl_remaining_ms: int
+    conn_id: int
+
+
+class ServoStatusResponse(BaseModel):
+    """Active servo lease table response."""
+
+    active_leases: list[ServoLeaseItem]
+    timestamp: str
+
+
+class McuStatusResponse(BaseModel):
+    """MCU reset statistics response."""
+
+    resets_since_start: int
+    last_reset_s_ago: Optional[int]
+    timestamp: str
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -516,6 +539,70 @@ def create_app() -> FastAPI:
             await asyncio.to_thread(_hat_client.reset_mcu)
             return ResetResponse(
                 success=True,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.get("/api/hat/servo/status", response_model=ServoStatusResponse, tags=["HAT"])
+    async def get_servo_status():
+        """Return the daemon's active servo TTL lease table.
+
+        Returns
+        -------
+        ServoStatusResponse
+            List of active leases with channel, TTL remaining, and connection ID.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            status = await asyncio.to_thread(_hat_client.get_servo_status)
+            return ServoStatusResponse(
+                active_leases=[
+                    ServoLeaseItem(
+                        channel=e.channel,
+                        ttl_remaining_ms=e.ttl_remaining_ms,
+                        conn_id=e.conn_id,
+                    )
+                    for e in status.active_leases
+                ],
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.get("/api/hat/mcu/status", response_model=McuStatusResponse, tags=["HAT"])
+    async def get_mcu_status():
+        """Return MCU reset statistics tracked by the daemon.
+
+        Returns
+        -------
+        McuStatusResponse
+            Reset count since daemon start and seconds since last reset (null if none).
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            status = await asyncio.to_thread(_hat_client.get_mcu_status)
+            return McuStatusResponse(
+                resets_since_start=status.resets_since_start,
+                last_reset_s_ago=status.last_reset_s_ago,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
         except HatConnectionError as e:
