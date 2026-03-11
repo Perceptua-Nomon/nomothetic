@@ -111,16 +111,16 @@ Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](ha
 - [x] `POST /api/hat/reset` endpoint (Python + Rust both complete)
 - [x] OTA binary deploy script (`nomopractic/scripts/deploy.sh`)
 
+**Milestone 5.4 — CI & Release pipeline:**
+- [x] GitHub Actions CI for `nomopractic`: fmt + clippy + tests + cross-compile aarch64
+- [x] GitHub Releases on `v*` tags with SHA-256 artifact manifest
+- [x] GitHub Actions CI for `nomothetic`: lint + type-check + tests
+
 **Milestone 5.5 — Daemon State Endpoints:**
 - [x] `nomopractic`: `get_servo_status` (active leases) and `get_mcu_status` (reset counter) IPC methods
 - [x] `nomothetic.hat.HatClient.get_servo_status()` / `get_mcu_status()` with typed dataclasses
 - [x] `GET /api/hat/servo/status` and `GET /api/hat/mcu/status` REST endpoints
 - [x] Mock-socket tests in `tests/test_hat.py`; API tests in `tests/test_api.py`
-
-**Milestone 5.4 — CI & Release pipeline:**
-- [x] GitHub Actions CI for `nomopractic`: fmt + clippy + tests + cross-compile aarch64
-- [x] GitHub Releases on `v*` tags with SHA-256 artifact manifest
-- [x] GitHub Actions CI for `nomothetic`: lint + type-check + tests
 
 **Design constraints:**
 - Cross-compiled for `aarch64-unknown-linux-gnu` (CI uses `cross`)
