@@ -17,7 +17,7 @@
 #
 # The server PID is written to /tmp/nomothetic-<type>.pid.
 # Stop it with:
-#   ./scripts/stop.sh --<type>
+#   ./scripts/stop.sh <stream|api|all>
 # or:
 #   kill $(cat /tmp/nomothetic-<type>.pid)
 
