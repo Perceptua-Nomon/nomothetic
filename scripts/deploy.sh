@@ -19,11 +19,13 @@
 #   ./scripts/deploy.sh v0.2.0
 #
 # Environment (read from .env in the repo root):
-#   NOMON_PI_HOST   SSH target — "user@host" or plain hostname. Optional;
-#                   if unset the script runs locally.
-#   NOMON_SSH_KEY   Path to SSH private key (optional; if set it is passed to
-#                   ssh with -i. If unset, SSH may prompt for a password or
-#                   use the ssh-agent / default identity.)
+#   NOMON_PI_HOST     SSH target — "user@host" or plain hostname. Optional;
+#                     if unset the script runs locally.
+#   NOMON_SSH_KEY     Path to SSH private key (optional; if set it is passed to
+#                     ssh with -i. If unset, SSH may prompt for a password or
+#                     use the ssh-agent / default identity.)
+#   NOMON_REMOTE_DIR  Absolute path to the repo directory on the Pi. Optional;
+#                     defaults to ${HOME}/perceptua-nomon/nomothetic.
 #
 # The script connects to the Pi and performs the following steps there:
 #   1. Stops all nomothetic servers.
@@ -72,7 +74,7 @@ if [[ -f "${ENV_FILE}" ]]; then
         val="${val#\"}" ; val="${val%\"}"
         val="${val#\'}" ; val="${val%\'}"
         case "${key}" in
-            NOMON_PI_HOST|NOMON_SSH_KEY) export "${key}=${val}" ;;
+            NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR) export "${key}=${val}" ;;
         esac
     done < "${ENV_FILE}"
 fi
@@ -105,11 +107,11 @@ fi
 # ── Deployment ─────────────────────────────────────────────────────────────────
 # All steps below run on the Pi (remote or local) via a single shell session.
 
-"${RUN_CMD[@]}" "${VERSION}" << 'END_REMOTE'
+"${RUN_CMD[@]}" "${VERSION}" "${NOMON_REMOTE_DIR:-}" << 'END_REMOTE'
 set -euo pipefail
 
 readonly REQUESTED_VERSION="$1"
-readonly REMOTE_DIR="${HOME}/perceptua-nomon/nomothetic"
+readonly REMOTE_DIR="${2:-${HOME}/perceptua-nomon/nomothetic}"
 
 if [[ ! -d "${REMOTE_DIR}" ]]; then
     echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
