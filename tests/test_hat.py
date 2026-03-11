@@ -20,6 +20,8 @@ from nomothetic.hat import (
     HatError,
     HatHealthResult,
     McuStatusResult,
+    MotorLeaseEntry,
+    MotorStatusResult,
     ServoLeaseEntry,
     ServoStatusResult,
 )
@@ -48,6 +50,14 @@ _DEFAULT_RESPONSES: dict[str, Any] = {
     "get_mcu_status": {
         "resets_since_start": 3,
         "last_reset_s_ago": 120,
+    },
+    "set_motor_speed": {"channel": 0, "speed_pct": 50.0},
+    "stop_all_motors": {"stopped": 2},
+    "get_motor_status": {
+        "active_leases": [
+            {"channel": 0, "ttl_remaining_ms": 312, "conn_id": 4},
+            {"channel": 1, "ttl_remaining_ms": 198, "conn_id": 4},
+        ]
     },
 }
 
@@ -511,5 +521,130 @@ def test_get_mcu_status_no_previous_reset(tmp_path):
         result = hat.get_mcu_status()
     assert result.resets_since_start == 0
     assert result.last_reset_s_ago is None
+
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# set_motor_speed()
+# ---------------------------------------------------------------------------
+
+
+def test_set_motor_speed_success(mock_server):
+    """`set_motor_speed()` returns without error on success."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_motor_speed(channel=0, speed_pct=50.0)
+
+
+def test_set_motor_speed_full_reverse(mock_server):
+    """Negative speed_pct (full reverse) is accepted."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_motor_speed(channel=1, speed_pct=-100.0)
+
+
+def test_set_motor_speed_stop(mock_server):
+    """speed_pct=0.0 (stop) is accepted."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_motor_speed(channel=0, speed_pct=0.0)
+
+
+def test_set_motor_speed_bad_channel_high(mock_server):
+    """channel above 3 raises `ValueError` before sending."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="channel"):
+        hat.set_motor_speed(channel=4, speed_pct=50.0)
+
+
+def test_set_motor_speed_bad_channel_negative(mock_server):
+    """Negative channel raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="channel"):
+        hat.set_motor_speed(channel=-1, speed_pct=0.0)
+
+
+def test_set_motor_speed_pct_too_high(mock_server):
+    """`speed_pct` above 100 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="speed_pct"):
+        hat.set_motor_speed(channel=0, speed_pct=101.0)
+
+
+def test_set_motor_speed_pct_too_low(mock_server):
+    """`speed_pct` below -100 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="speed_pct"):
+        hat.set_motor_speed(channel=0, speed_pct=-101.0)
+
+
+# ---------------------------------------------------------------------------
+# stop_all_motors()
+# ---------------------------------------------------------------------------
+
+
+def test_stop_all_motors_success(mock_server):
+    """`stop_all_motors()` returns the stopped count from the daemon."""
+    with HatClient(socket_path=mock_server) as hat:
+        stopped = hat.stop_all_motors()
+    assert stopped == 2
+
+
+def test_stop_all_motors_zero(tmp_path):
+    """`stop_all_motors()` returns 0 when no motors are configured."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    responses = dict(_DEFAULT_RESPONSES)
+    responses["stop_all_motors"] = {"stopped": 0}
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, responses),
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        stopped = hat.stop_all_motors()
+    assert stopped == 0
+
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# get_motor_status()
+# ---------------------------------------------------------------------------
+
+
+def test_get_motor_status_returns_dataclass(mock_server):
+    """`get_motor_status()` returns a `MotorStatusResult` with lease entries."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.get_motor_status()
+    assert isinstance(result, MotorStatusResult)
+    assert len(result.active_leases) == 2
+    lease = result.active_leases[0]
+    assert isinstance(lease, MotorLeaseEntry)
+    assert lease.channel == 0
+    assert lease.ttl_remaining_ms == 312
+    assert lease.conn_id == 4
+
+
+def test_get_motor_status_empty_list(tmp_path):
+    """`get_motor_status()` handles an empty active_leases list."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    responses = dict(_DEFAULT_RESPONSES)
+    responses["get_motor_status"] = {"active_leases": []}
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, responses),
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        result = hat.get_motor_status()
+    assert result.active_leases == []
 
     t.join(timeout=2.0)

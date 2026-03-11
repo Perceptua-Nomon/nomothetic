@@ -1,4 +1,4 @@
-.PHONY: install install-dev install-pi test lint format type-check clean
+.PHONY: install install-dev install-pi test lint format type-check clean start-stream start-api stop-stream stop-api stop
 
 install:
 	uv sync
@@ -24,6 +24,21 @@ format:
 type-check:
 	mypy src/ tests/
 
+start-stream:
+	./scripts/start.sh stream
+
+start-api:
+	./scripts/start.sh api
+
+stop-stream:
+	./scripts/stop.sh stream
+
+stop-api:
+	./scripts/stop.sh api
+
+stop:
+	./scripts/stop.sh all
+
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
@@ -40,3 +55,8 @@ help:
 	@echo "  format       - Format code with black and ruff"
 	@echo "  type-check   - Run type checking with mypy"
 	@echo "  clean        - Remove generated files and caches"
+	@echo "  start-stream - Start the MJPEG stream server in the background"
+	@echo "  start-api    - Start the REST API server in the background"
+	@echo "  stop-stream  - Stop the MJPEG stream server"
+	@echo "  stop-api     - Stop the REST API server"
+	@echo "  stop         - Stop all background servers"

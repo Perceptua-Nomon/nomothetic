@@ -103,6 +103,22 @@ class McuStatusResult:
     last_reset_s_ago: int | None
 
 
+@dataclass
+class MotorLeaseEntry:
+    """A single active motor TTL lease."""
+
+    channel: int
+    ttl_remaining_ms: int
+    conn_id: int
+
+
+@dataclass
+class MotorStatusResult:
+    """Result payload from the ``get_motor_status`` IPC method."""
+
+    active_leases: list[MotorLeaseEntry]
+
+
 class HatClient:
     """Client for the nomopractic Unix domain socket IPC daemon.
 
@@ -415,3 +431,85 @@ class HatClient:
             resets_since_start=result["resets_since_start"],
             last_reset_s_ago=result.get("last_reset_s_ago"),
         )
+
+    def set_motor_speed(
+        self,
+        channel: int,
+        speed_pct: float,
+        ttl_ms: int = 500,
+    ) -> None:
+        """Set a DC motor's speed as a signed percentage.
+
+        Parameters
+        ----------
+        channel : int
+            IPC motor index (0-based position in daemon ``config.motors``).
+            Supported range: 0–3.
+        speed_pct : float
+            Signed speed: −100.0 (full reverse) to +100.0 (full forward).
+            0.0 stops the motor.
+        ttl_ms : int
+            Lease TTL in milliseconds. Motor is stopped if not refreshed.
+            Default: 500.
+
+        Raises
+        ------
+        ValueError
+            If ``channel`` or ``speed_pct`` is out of range.
+        HatError
+            On hardware write failure.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        if not 0 <= channel <= 3:
+            raise ValueError(f"channel must be 0–3, got {channel}")
+        if not -100.0 <= speed_pct <= 100.0:
+            raise ValueError(f"speed_pct must be -100.0–100.0, got {speed_pct}")
+        self._request(
+            "set_motor_speed",
+            {"channel": channel, "speed_pct": speed_pct, "ttl_ms": ttl_ms},
+        )
+
+    def stop_all_motors(self) -> int:
+        """Immediately stop all configured DC motors and clear their leases.
+
+        Returns
+        -------
+        int
+            Number of motors commanded to stop.
+
+        Raises
+        ------
+        HatError
+            If the daemon returns ok=false.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("stop_all_motors", {})
+        return int(result["stopped"])
+
+    def get_motor_status(self) -> MotorStatusResult:
+        """Return the daemon's active motor TTL lease table.
+
+        Returns
+        -------
+        MotorStatusResult
+            Active lease list (may be empty).
+
+        Raises
+        ------
+        HatError
+            If the daemon returns ok=false.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("get_motor_status", {})
+        leases = [
+            MotorLeaseEntry(
+                channel=entry["channel"],
+                ttl_remaining_ms=entry["ttl_remaining_ms"],
+                conn_id=entry["conn_id"],
+            )
+            for entry in result.get("active_leases", [])
+        ]
+        return MotorStatusResult(active_leases=leases)

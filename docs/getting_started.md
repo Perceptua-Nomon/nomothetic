@@ -45,31 +45,41 @@ echo '{"id":"1","method":"health","params":{}}' \
 
 ---
 
-## Step 6 — Start the REST API server
+## Step 6 — Configure the servers
 
-The REST API exposes camera control and HAT endpoints over HTTPS.
-
-On the Pi, create a launcher script or run directly:
-
-```python
-from nomothetic.api import APIServer
-
-server = APIServer(
-    host="0.0.0.0",   # bind on all interfaces so remote clients can connect
-    port=8443,
-    use_ssl=True,      # auto-generates a self-signed cert in .certs/
-)
-server.run()
-```
-
-Or run the bundled example:
+Copy the example config and edit it to match your deployment:
 
 ```bash
 cd nomothetic/
-python examples/api_server.py
+cp config.toml.example config.toml
+$EDITOR config.toml
 ```
 
-The server starts at **`https://<pi-address>:8443`**.
+Key settings in `config.toml`:
+
+| Section | Key | Default | Description |
+|---------|-----|---------|-------------|
+| `[stream]` | `host` | `0.0.0.0` | Bind address |
+| `[stream]` | `port` | `8000` | HTTP port |
+| `[api]` | `host` | `0.0.0.0` | Bind address |
+| `[api]` | `port` | `8443` | HTTPS port |
+| `[api]` | `use_ssl` | `true` | Auto-generates self-signed cert in `.certs/` |
+| `[hat]` | `socket_path` | `/run/nomopractic/nomopractic.sock` | IPC socket |
+
+---
+
+## Step 7 — Start the REST API server
+
+The REST API exposes camera control and HAT endpoints over HTTPS.
+
+```bash
+make start-api
+# or: ./scripts/start.sh api
+```
+
+The server starts at **`https://<pi-address>:8443`** and runs in the
+background. Its PID is saved to `/tmp/nomothetic-api.pid` and logs go to
+`logs/api.log`.
 
 Key endpoints:
 
@@ -92,21 +102,13 @@ Interactive API docs are available at `https://<pi-address>:8443/docs`.
 
 ---
 
-## Step 7 — Start the MJPEG streaming server
+## Step 8 — Start the MJPEG streaming server
 
 The streaming server serves a live camera feed viewable in any browser.
 
-```python
-from nomothetic.streaming import StreamServer
-
-stream = StreamServer(
-    host="0.0.0.0",   # bind on all interfaces
-    port=8000,
-    width=1280,
-    height=720,
-    fps=30,
-)
-stream.start()
+```bash
+make start-stream
+# or: ./scripts/start.sh stream
 ```
 
 Open **`http://<pi-address>:8000`** in a browser to watch the live feed.
@@ -124,20 +126,31 @@ cap = cv2.VideoCapture("http://<pi-address>:8000/stream")
 
 ---
 
-## Running both servers together
+## Running both servers
 
-To keep both servers running in the same process, start the streaming server
-in a background thread and block on the API server:
+Start and stop both servers together:
 
-```python
-from nomothetic.api import APIServer
-from nomothetic.streaming import StreamServer
+```bash
+make start-stream
+make start-api
 
-stream = StreamServer(host="0.0.0.0", port=8000)
-stream.start_background()
+make stop           # stop both
+make stop-stream    # stop stream only
+make stop-api       # stop API only
+```
 
-api = APIServer(host="0.0.0.0", port=8443)
-api.run()   # blocks until Ctrl+C
+Or using the scripts directly (supports `--foreground` and `--config` flags):
+
+```bash
+./scripts/start.sh stream
+./scripts/start.sh api
+./scripts/stop.sh all
+```
+
+Use `--foreground` when debugging — Ctrl-C stops the server:
+
+```bash
+./scripts/start.sh api --foreground
 ```
 
 ---
@@ -170,8 +183,8 @@ open http://$PI:8000    # macOS; use xdg-open on Linux
 
 | Symptom | Fix |
 |---------|-----|
-| `Connection refused` on port 8443 | API server not running; check for Python errors |
-| `Connection refused` on port 8000 | Streaming server not running |
+| `Connection refused` on port 8443 | API server not running — `make start-api`; check `logs/api.log` |
+| `Connection refused` on port 8000 | Streaming server not running — `make start-stream`; check `logs/stream.log` |
 | `503 Service Unavailable` from HAT endpoint | nomopractic daemon not running — `sudo systemctl start nomopractic` |
 | `HARDWARE_ERROR` from battery/servo | HAT not connected or I2C not detected — `sudo i2cdetect -y 1` should show `0x14` |
 | Certificate warning in browser | Expected for self-signed certs — click through or import `.certs/cert.pem` |

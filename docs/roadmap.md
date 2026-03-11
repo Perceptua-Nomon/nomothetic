@@ -10,6 +10,7 @@
 | 2.5 | Auth & Rate Limiting | 🔲 Optional / Deferred |
 | 3 | MQTT Telemetry | ✅ Complete |
 | 5 | HAT Module Driver (Rust) | ✅ Complete |
+| 6 | Motor API Endpoints | 🔲 In Progress |
 
 ---
 
@@ -78,6 +79,8 @@
 
 > Updated total including Phase 5 Milestone 5.5: **140 passing** (23 camera + 14 streaming + 43 API + 36 telemetry + 24 HAT)
 
+> Updated total including Phase 6 Motor API: **165 passing** (23 camera + 14 streaming + 61 API + 36 telemetry + 31 HAT)
+
 ---
 
 ### Phase 5 — HAT Module Driver (Rust, Separate Repo)
@@ -116,6 +119,12 @@ Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](ha
 - [x] GitHub Releases on `v*` tags with SHA-256 artifact manifest
 - [x] GitHub Actions CI for `nomothetic`: lint + type-check + tests
 
+**Milestone 5.6 — Launch scripts:**
+- [x] `config.toml.example` — unified configuration template (`[stream]`, `[api]`, `[hat]`, `[logging]`)
+- [x] `scripts/start.sh stream|api|all` — background launch with PID tracking and log file
+- [x] `scripts/stop.sh stream|api|all` — graceful shutdown via PID file
+- [x] `Makefile` targets: `start-stream`, `start-api`, `stop-stream`, `stop-api`, `stop`
+
 **Milestone 5.5 — Daemon State Endpoints:**
 - [x] `nomopractic`: `get_servo_status` (active leases) and `get_mcu_status` (reset counter) IPC methods
 - [x] `nomothetic.hat.HatClient.get_servo_status()` / `get_mcu_status()` with typed dataclasses
@@ -130,6 +139,13 @@ Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](ha
 **nomopractic test totals:** 82 tests (9 config + 5 handler + 5 integration + 3 i2c + 4 adc + 3 battery + 14 servo + 5 pwm + 6 gpio + 1 reset + 11 handler/integration additions)
 
 > Updated nomopractic total (Phase 5 Milestone 5.5): **89 tests** (+5 unit handler tests, +2 servo `get_active_leases` tests)
+
+> Updated nomopractic total (v0.1.1 bugfix release): **90 tests** (+1 ADC command-byte write-payload test)
+
+**nomopractic v0.1.1 — Bug fixes (2026-03-10):**
+- ADC command byte: was `0x10 + channel`; correct formula is `0x10 | (7 - channel)` (robot-hat register map)
+- Battery scaling: was `raw × 3`; correct formula is `(raw / 4095) × 3.3 × 3.0` (12-bit ADC, 3.3 V ref, 3:1 divider)
+- Both fixes confirmed by live Pi integration tests at v0.1.0; patched and released as v0.1.1
 
 ---
 
@@ -179,3 +195,36 @@ Developed in a separate repository.
 **AWS IoT path:** If AWS IoT is adopted, the management server uses
 AWS IoT Core as the MQTT broker and AWS IoT Jobs for fleet update dispatch.
 See ADR-007 and [docs/phase5_planning.md](phase5_planning.md).
+
+---
+
+## Phase 6 — Motor API Endpoints
+
+**Goal**: Expose the DC motor control IPC methods (`set_motor_speed`,
+`stop_all_motors`, `get_motor_status`) implemented in `nomopractic` as REST
+API endpoints in `nomothetic.api`, with a matching `HatClient` façade and
+full mock-socket/unit test coverage.
+
+### 6.1 — HatClient Motor Methods (`nomothetic.hat`)
+- [x] `MotorLeaseEntry` dataclass: `channel`, `ttl_remaining_ms`, `conn_id`
+- [x] `MotorStatusResult` dataclass: `active_leases: list[MotorLeaseEntry]`
+- [x] `set_motor_speed(channel, speed_pct, ttl_ms)` — validates channel 0–3,
+      speed_pct −100.0–100.0; sends `set_motor_speed` IPC call
+- [x] `stop_all_motors()` — sends `stop_all_motors` IPC call; returns `stopped` count
+- [x] `get_motor_status()` — sends `get_motor_status`; returns `MotorStatusResult`
+
+### 6.2 — REST Endpoints (`nomothetic.api`)
+- [x] `POST /api/hat/motor` — set a motor channel's speed
+      Request: `{channel: 0–3, speed_pct: −100.0–100.0, ttl_ms: 100–5000}`
+      Response: `{channel, speed_pct, timestamp}`
+- [x] `POST /api/hat/motor/stop` — immediately stop all motors
+      Response: `{stopped: N, timestamp}`
+- [x] `GET /api/hat/motor/status` — return active motor TTL lease table
+      Response: `{active_leases: [...], timestamp}`
+- [x] `503` on `HatConnectionError`; `500` on `HatError`; `422` on invalid params
+
+### 6.3 — Tests
+- [x] `tests/test_hat.py`: `set_motor_speed`, `stop_all_motors`, `get_motor_status`
+      (success, validation errors, hardware error)
+- [x] `tests/test_api.py`: all three motor endpoints (success, 503 no client,
+      503 connection error, 500 hardware error, 422 invalid params)

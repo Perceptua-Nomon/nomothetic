@@ -214,6 +214,84 @@ Mapping: `pulse_us = 500 + (angle / 180.0) × 2000`
 
 ---
 
+### `set_motor_speed`
+
+Set a DC motor's speed as a signed percentage. IPC motor channel indices
+map to the configured `[[motors]]` entries (0-based order in `config.toml`).
+
+**Hardware detail:** TC1508S H-bridge — direction pin HIGH = forward,
+LOW = reverse; PWM duty sets speed. Channels 12–15, timer group 3 (100 Hz).
+
+**Request:**
+```json
+{"id": "m1", "method": "set_motor_speed", "params": {"channel": 0, "speed_pct": 50.0, "ttl_ms": 500}}\n
+```
+
+| Param | Type | Required | Range | Description |
+|-------|------|----------|-------|-------------|
+| `channel` | integer | yes | 0–3 | IPC motor index (position in `config.motors`) |
+| `speed_pct` | float | yes | −100.0–100.0 | Signed speed: negative = reverse, 0 = stop |
+| `ttl_ms` | integer | no | 100–5000 | Lease TTL (ms); motor stopped if not refreshed. Default: 500 |
+
+**Response (`result`):**
+```json
+{"channel": 0, "speed_pct": 50.0}
+```
+
+**Error codes:** `INVALID_PARAMS` if channel is not configured or `speed_pct`
+is out of range; `HARDWARE_ERROR` on I2C or GPIO failure.
+
+---
+
+### `stop_all_motors`
+
+Immediately set all configured motor channels to zero duty (stop). Clears all
+motor leases.
+
+**Request:**
+```json
+{"id": "m2", "method": "stop_all_motors", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{"stopped": 2}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `stopped` | integer | Number of motors commanded to stop |
+
+---
+
+### `get_motor_status`
+
+Return the currently active motor TTL leases.
+
+**Request:**
+```json
+{"id": "m3", "method": "get_motor_status", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{
+  "active_leases": [
+    {"channel": 0, "ttl_remaining_ms": 312, "conn_id": 4},
+    {"channel": 1, "ttl_remaining_ms": 198, "conn_id": 4}
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `active_leases` | array | Per-motor lease entries (empty if no active leases) |
+| `active_leases[].channel` | integer | IPC motor channel index |
+| `active_leases[].ttl_remaining_ms` | integer | Milliseconds until auto-stop |
+| `active_leases[].conn_id` | integer | Connection that holds the lease |
+
+---
+
 ### `reset_mcu`
 
 Asserts and de-asserts the MCU reset line to restart the Robot HAT V4
@@ -240,11 +318,12 @@ microcontroller.
 
 ---
 
-## Safety: Servo TTL Lease
+## Safety: Servo & Motor TTL Lease
 
 Servos hold their last commanded position and draw stall current indefinitely
-if the controller disappears. To prevent this, every `set_servo_pulse_us` and
-`set_servo_angle` command carries a **TTL (time-to-live)** parameter.
+if the controller disappears. Motors would continue spinning uncontrolled.
+To prevent this, every `set_servo_*` and `set_motor_speed` command carries a
+**TTL (time-to-live)** parameter.
 
 ### Daemon Behaviour
 

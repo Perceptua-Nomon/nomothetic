@@ -706,3 +706,201 @@ def test_get_mcu_status_hardware_error(client, mock_hat):
     assert response.status_code == 500
 
     nomothetic.api._hat_client = None
+
+
+# ============================================================================
+# Motor Endpoints
+# ============================================================================
+
+
+def test_set_motor_no_client(client):
+    """POST /api/hat/motor returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/hat/motor", json={"channel": 0, "speed_pct": 50.0})
+    assert response.status_code == 503
+
+
+def test_set_motor_success(client, mock_hat):
+    """POST /api/hat/motor returns channel, speed_pct, and timestamp on success."""
+    import nomothetic.api
+
+    mock_hat.set_motor_speed.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/motor", json={"channel": 1, "speed_pct": -75.0})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["channel"] == 1
+    assert data["speed_pct"] == pytest.approx(-75.0)
+    assert "timestamp" in data
+    mock_hat.set_motor_speed.assert_called_once_with(1, -75.0, 500)
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_motor_invalid_channel(client, mock_hat):
+    """POST /api/hat/motor returns 422 when channel is out of range."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.post("/api/hat/motor", json={"channel": 4, "speed_pct": 50.0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_motor_invalid_speed(client, mock_hat):
+    """POST /api/hat/motor returns 422 when speed_pct is out of range."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.post("/api/hat/motor", json={"channel": 0, "speed_pct": 150.0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_motor_connection_error(client, mock_hat):
+    """POST /api/hat/motor returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.set_motor_speed.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/motor", json={"channel": 0, "speed_pct": 50.0})
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_motor_hardware_error(client, mock_hat):
+    """POST /api/hat/motor returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.set_motor_speed.side_effect = HatError("HARDWARE_ERROR", "GPIO failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/motor", json={"channel": 0, "speed_pct": 50.0})
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+def test_stop_motors_no_client(client):
+    """POST /api/hat/motor/stop returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/hat/motor/stop")
+    assert response.status_code == 503
+
+
+def test_stop_motors_success(client, mock_hat):
+    """POST /api/hat/motor/stop returns stopped count and timestamp."""
+    import nomothetic.api
+
+    mock_hat.stop_all_motors.return_value = 2
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/motor/stop")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["stopped"] == 2
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_stop_motors_connection_error(client, mock_hat):
+    """POST /api/hat/motor/stop returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.stop_all_motors.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/motor/stop")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_motor_status_no_client(client):
+    """GET /api/hat/motor/status returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/hat/motor/status")
+    assert response.status_code == 503
+
+
+def test_get_motor_status_success(client, mock_hat):
+    """GET /api/hat/motor/status returns lease list and timestamp."""
+    import nomothetic.api
+    from nomothetic.hat import MotorLeaseEntry, MotorStatusResult
+
+    mock_hat.get_motor_status.return_value = MotorStatusResult(
+        active_leases=[
+            MotorLeaseEntry(channel=0, ttl_remaining_ms=312, conn_id=4),
+            MotorLeaseEntry(channel=1, ttl_remaining_ms=198, conn_id=4),
+        ]
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/motor/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["active_leases"]) == 2
+    assert data["active_leases"][0]["channel"] == 0
+    assert data["active_leases"][0]["ttl_remaining_ms"] == 312
+    assert data["active_leases"][1]["channel"] == 1
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_motor_status_empty(client, mock_hat):
+    """GET /api/hat/motor/status returns empty list when no leases active."""
+    import nomothetic.api
+    from nomothetic.hat import MotorStatusResult
+
+    mock_hat.get_motor_status.return_value = MotorStatusResult(active_leases=[])
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/motor/status")
+    assert response.status_code == 200
+    assert response.json()["active_leases"] == []
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_motor_status_connection_error(client, mock_hat):
+    """GET /api/hat/motor/status returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.get_motor_status.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/motor/status")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_motor_status_hardware_error(client, mock_hat):
+    """GET /api/hat/motor/status returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.get_motor_status.side_effect = HatError("HARDWARE_ERROR", "motor read failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/motor/status")
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None

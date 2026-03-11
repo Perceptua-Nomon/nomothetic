@@ -149,6 +149,46 @@ class McuStatusResponse(BaseModel):
     timestamp: str
 
 
+class MotorRequest(BaseModel):
+    """DC motor speed control request."""
+
+    channel: int = Field(..., ge=0, le=3, description="Motor channel index (0–3)")
+    speed_pct: float = Field(
+        ..., ge=-100.0, le=100.0, description="Signed speed (-100 reverse to +100 forward)"
+    )
+    ttl_ms: int = Field(default=500, ge=100, le=5000, description="Lease TTL in ms")
+
+
+class MotorResponse(BaseModel):
+    """DC motor speed control response."""
+
+    channel: int
+    speed_pct: float
+    timestamp: str
+
+
+class StopMotorsResponse(BaseModel):
+    """Response for stop_all_motors."""
+
+    stopped: int
+    timestamp: str
+
+
+class MotorLeaseItem(BaseModel):
+    """A single active motor TTL lease entry."""
+
+    channel: int
+    ttl_remaining_ms: int
+    conn_id: int
+
+
+class MotorStatusResponse(BaseModel):
+    """Active motor lease table response."""
+
+    active_leases: list[MotorLeaseItem]
+    timestamp: str
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -603,6 +643,108 @@ def create_app() -> FastAPI:
             return McuStatusResponse(
                 resets_since_start=status.resets_since_start,
                 last_reset_s_ago=status.last_reset_s_ago,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/hat/motor", response_model=MotorResponse, tags=["HAT"])
+    async def set_motor(request: MotorRequest):
+        """Set a DC motor channel to the requested speed.
+
+        Parameters
+        ----------
+        request : MotorRequest
+            Target channel (0–3), signed speed percentage, and optional TTL.
+
+        Returns
+        -------
+        MotorResponse
+            Echoed channel, speed_pct, and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware write failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(
+                _hat_client.set_motor_speed,
+                request.channel,
+                request.speed_pct,
+                request.ttl_ms,
+            )
+            return MotorResponse(
+                channel=request.channel,
+                speed_pct=request.speed_pct,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/hat/motor/stop", response_model=StopMotorsResponse, tags=["HAT"])
+    async def stop_motors():
+        """Immediately stop all DC motors and clear their leases.
+
+        Returns
+        -------
+        StopMotorsResponse
+            Number of motors stopped and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            stopped = await asyncio.to_thread(_hat_client.stop_all_motors)
+            return StopMotorsResponse(
+                stopped=stopped,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.get("/api/hat/motor/status", response_model=MotorStatusResponse, tags=["HAT"])
+    async def get_motor_status():
+        """Return the daemon's active motor TTL lease table.
+
+        Returns
+        -------
+        MotorStatusResponse
+            List of active leases with channel, TTL remaining, and connection ID.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            status = await asyncio.to_thread(_hat_client.get_motor_status)
+            return MotorStatusResponse(
+                active_leases=[
+                    MotorLeaseItem(
+                        channel=e.channel,
+                        ttl_remaining_ms=e.ttl_remaining_ms,
+                        conn_id=e.conn_id,
+                    )
+                    for e in status.active_leases
+                ],
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
         except HatConnectionError as e:
