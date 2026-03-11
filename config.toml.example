@@ -4,8 +4,8 @@
 # Usage:
 #   cp config.toml.example config.toml
 #   $EDITOR config.toml
-#   ./scripts/start_stream.sh
-#   ./scripts/start_api.sh
+#   ./scripts/start.sh stream   # MJPEG stream server
+#   ./scripts/start.sh api      # REST API server
 
 # ─── MJPEG stream server ─────────────────────────────────────────────────────
 [stream]
