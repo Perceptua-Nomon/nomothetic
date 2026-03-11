@@ -604,6 +604,34 @@ def test_get_servo_status_empty(client, mock_hat):
     nomothetic.api._hat_client = None
 
 
+def test_get_servo_status_connection_error(client, mock_hat):
+    """GET /api/hat/servo/status returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.get_servo_status.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/servo/status")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_servo_status_hardware_error(client, mock_hat):
+    """GET /api/hat/servo/status returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.get_servo_status.side_effect = HatError("HARDWARE_ERROR", "lease read failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/servo/status")
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
 def test_get_mcu_status_no_client(client):
     """GET /api/hat/mcu/status returns 503 when _hat_client is None."""
     import nomothetic.api
@@ -648,5 +676,33 @@ def test_get_mcu_status_never_reset(client, mock_hat):
     data = response.json()
     assert data["resets_since_start"] == 0
     assert data["last_reset_s_ago"] is None
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_mcu_status_connection_error(client, mock_hat):
+    """GET /api/hat/mcu/status returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.get_mcu_status.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/mcu/status")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_mcu_status_hardware_error(client, mock_hat):
+    """GET /api/hat/mcu/status returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.get_mcu_status.side_effect = HatError("HARDWARE_ERROR", "MCU status read failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/mcu/status")
+    assert response.status_code == 500
 
     nomothetic.api._hat_client = None
