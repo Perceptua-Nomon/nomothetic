@@ -556,3 +556,97 @@ def test_reset_mcu_success(client, mock_hat):
     assert "timestamp" in data
 
     nomothetic.api._hat_client = None
+
+
+def test_get_servo_status_no_client(client):
+    """GET /api/hat/servo/status returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/hat/servo/status")
+    assert response.status_code == 503
+
+
+def test_get_servo_status_success(client, mock_hat):
+    """GET /api/hat/servo/status returns lease list and timestamp."""
+    import nomothetic.api
+    from nomothetic.hat import ServoLeaseEntry, ServoStatusResult
+
+    mock_hat.get_servo_status.return_value = ServoStatusResult(
+        active_leases=[ServoLeaseEntry(channel=1, ttl_remaining_ms=400, conn_id=5)]
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/servo/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["active_leases"]) == 1
+    assert data["active_leases"][0]["channel"] == 1
+    assert data["active_leases"][0]["ttl_remaining_ms"] == 400
+    assert data["active_leases"][0]["conn_id"] == 5
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_servo_status_empty(client, mock_hat):
+    """GET /api/hat/servo/status returns empty list when no leases active."""
+    import nomothetic.api
+    from nomothetic.hat import ServoStatusResult
+
+    mock_hat.get_servo_status.return_value = ServoStatusResult(active_leases=[])
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/servo/status")
+    assert response.status_code == 200
+    assert response.json()["active_leases"] == []
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_mcu_status_no_client(client):
+    """GET /api/hat/mcu/status returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/hat/mcu/status")
+    assert response.status_code == 503
+
+
+def test_get_mcu_status_success(client, mock_hat):
+    """GET /api/hat/mcu/status returns reset count, last reset age, and timestamp."""
+    import nomothetic.api
+    from nomothetic.hat import McuStatusResult
+
+    mock_hat.get_mcu_status.return_value = McuStatusResult(
+        resets_since_start=2, last_reset_s_ago=60
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/mcu/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["resets_since_start"] == 2
+    assert data["last_reset_s_ago"] == 60
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_mcu_status_never_reset(client, mock_hat):
+    """GET /api/hat/mcu/status returns null last_reset_s_ago when never reset."""
+    import nomothetic.api
+    from nomothetic.hat import McuStatusResult
+
+    mock_hat.get_mcu_status.return_value = McuStatusResult(
+        resets_since_start=0, last_reset_s_ago=None
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/mcu/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["resets_since_start"] == 0
+    assert data["last_reset_s_ago"] is None
+
+    nomothetic.api._hat_client = None
