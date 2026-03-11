@@ -161,7 +161,10 @@ StreamServer(
 ).start()
 "
 else
-  export NOM_API_HOST NOM_API_PORT NOM_API_USE_SSL NOM_API_CERT_DIR NOM_HAT_SOCKET
+  if [[ -n "${NOM_HAT_SOCKET-}" ]]; then
+    NOMON_HAT_SOCKET_PATH="${NOM_HAT_SOCKET}"
+  fi
+  export NOM_API_HOST NOM_API_PORT NOM_API_USE_SSL NOM_API_CERT_DIR NOMON_HAT_SOCKET_PATH
   SCHEME="$([[ "${NOM_API_USE_SSL}" == "true" ]] && echo "https" || echo "http")"
   DISPLAY_URL="${SCHEME}://${NOM_API_HOST}:${NOM_API_PORT}"
   DISPLAY_EXTRA="  Docs: ${DISPLAY_URL}/docs"$'\n'
