@@ -15,6 +15,8 @@ HatTimeoutError
     Raised on per-request read timeout.
 HatHealthResult
     Dataclass for the health IPC method result.
+GrayscaleResult
+    Dataclass for the read_grayscale IPC method result.
 """
 
 from __future__ import annotations
@@ -117,6 +119,22 @@ class MotorStatusResult:
     """Result payload from the ``get_motor_status`` IPC method."""
 
     active_leases: list[MotorLeaseEntry]
+
+
+@dataclass
+class GrayscaleResult:
+    """Result payload from the ``read_grayscale`` IPC method.
+
+    Attributes
+    ----------
+    channels : list[int]
+        ADC channel numbers used [left, center, right].
+    values : list[int]
+        Raw 12-bit ADC readings (0–4095) for each channel.
+    """
+
+    channels: list[int]
+    values: list[int]
 
 
 class HatClient:
@@ -513,3 +531,137 @@ class HatClient:
             for entry in result.get("active_leases", [])
         ]
         return MotorStatusResult(active_leases=leases)
+
+    # ------------------------------------------------------------------
+    # Convenience / coordinated methods
+    # ------------------------------------------------------------------
+
+    def drive(self, speed_pct: float, ttl_ms: int = 500) -> int:
+        """Set all configured DC motors to the same speed simultaneously.
+
+        Sends a single ``drive`` IPC request that commands all motors in the
+        daemon in one atomic Rust call, ensuring the motors start in sync
+        without per-motor round-trip latency.
+
+        Parameters
+        ----------
+        speed_pct : float
+            Signed speed: −100.0 (full reverse) to +100.0 (full forward).
+            0.0 stops all motors.
+        ttl_ms : int
+            Lease TTL in milliseconds. Motors stop if not refreshed.
+            Default: 500.
+
+        Returns
+        -------
+        int
+            Number of motors commanded.
+
+        Raises
+        ------
+        ValueError
+            If ``speed_pct`` is out of range.
+        HatError
+            On hardware write failure.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        if not -100.0 <= speed_pct <= 100.0:
+            raise ValueError(f"speed_pct must be -100.0–100.0, got {speed_pct}")
+        result = self._request("drive", {"speed_pct": speed_pct, "ttl_ms": ttl_ms})
+        return int(result["motors"])
+
+    def steer(self, angle_deg: float, ttl_ms: int = 500) -> None:
+        """Set the steering servo to the requested angle.
+
+        Parameters
+        ----------
+        angle_deg : float
+            Target angle in degrees (0.0–180.0). 90° is centre / straight.
+        ttl_ms : int
+            Lease TTL in milliseconds. Default: 500.
+
+        Raises
+        ------
+        ValueError
+            If ``angle_deg`` is out of range.
+        HatError
+            On hardware write failure or if steering servo is not configured.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        if not 0.0 <= angle_deg <= 180.0:
+            raise ValueError(f"angle_deg must be 0.0–180.0, got {angle_deg}")
+        self._request("steer", {"angle_deg": angle_deg, "ttl_ms": ttl_ms})
+
+    def pan_camera(self, angle_deg: float, ttl_ms: int = 500) -> None:
+        """Set the camera pan (horizontal, left/right) servo angle.
+
+        Parameters
+        ----------
+        angle_deg : float
+            Target angle in degrees (0.0–180.0). 90° is centred.
+        ttl_ms : int
+            Lease TTL in milliseconds. Default: 500.
+
+        Raises
+        ------
+        ValueError
+            If ``angle_deg`` is out of range.
+        HatError
+            On hardware write failure or if camera_pan servo is not configured.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        if not 0.0 <= angle_deg <= 180.0:
+            raise ValueError(f"angle_deg must be 0.0–180.0, got {angle_deg}")
+        self._request("pan_camera", {"angle_deg": angle_deg, "ttl_ms": ttl_ms})
+
+    def tilt_camera(self, angle_deg: float, ttl_ms: int = 500) -> None:
+        """Set the camera tilt (vertical, up/down) servo angle.
+
+        Parameters
+        ----------
+        angle_deg : float
+            Target angle in degrees (0.0–180.0). 90° is centred.
+        ttl_ms : int
+            Lease TTL in milliseconds. Default: 500.
+
+        Raises
+        ------
+        ValueError
+            If ``angle_deg`` is out of range.
+        HatError
+            On hardware write failure or if camera_tilt servo is not configured.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        if not 0.0 <= angle_deg <= 180.0:
+            raise ValueError(f"angle_deg must be 0.0–180.0, got {angle_deg}")
+        self._request("tilt_camera", {"angle_deg": angle_deg, "ttl_ms": ttl_ms})
+
+    def read_grayscale(self) -> GrayscaleResult:
+        """Read all three grayscale sensor ADC channels.
+
+        Returns raw 12-bit ADC values for the left, center, and right
+        grayscale sensors (cliff / line detection).  Channel assignments are
+        configured in the daemon's ``[sensors]`` config table.
+
+        Returns
+        -------
+        GrayscaleResult
+            ``channels``: ADC channel numbers [left, center, right].
+            ``values``: raw 12-bit readings (0–4095) for each channel.
+
+        Raises
+        ------
+        HatError
+            On hardware read failure.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("read_grayscale", {})
+        return GrayscaleResult(
+            channels=list(result["channels"]),
+            values=list(result["values"]),
+        )

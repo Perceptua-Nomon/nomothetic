@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from nomothetic.hat import (
+    GrayscaleResult,
     HatClient,
     HatConnectionError,
     HatError,
@@ -59,6 +60,11 @@ _DEFAULT_RESPONSES: dict[str, Any] = {
             {"channel": 1, "ttl_remaining_ms": 198, "conn_id": 4},
         ]
     },
+    "drive": {"speed_pct": 60.0, "motors": 2},
+    "steer": {"servo": "steering", "channel": 2, "angle_deg": 90.0, "pulse_us": 1500},
+    "pan_camera": {"servo": "camera_pan", "channel": 0, "angle_deg": 45.0, "pulse_us": 1000},
+    "tilt_camera": {"servo": "camera_tilt", "channel": 1, "angle_deg": 60.0, "pulse_us": 1167},
+    "read_grayscale": {"channels": [0, 1, 2], "values": [1200, 3000, 800]},
 }
 
 
@@ -646,5 +652,173 @@ def test_get_motor_status_empty_list(tmp_path):
     with HatClient(socket_path=sock_path) as hat:
         result = hat.get_motor_status()
     assert result.active_leases == []
+
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# drive()
+# ---------------------------------------------------------------------------
+
+
+def test_drive_returns_motor_count(mock_server):
+    """`drive()` returns the number of motors commanded."""
+    with HatClient(socket_path=mock_server) as hat:
+        motors = hat.drive(speed_pct=60.0)
+    assert motors == 2
+
+
+def test_drive_forward(mock_server):
+    """`drive()` accepts positive speed_pct."""
+    with HatClient(socket_path=mock_server) as hat:
+        motors = hat.drive(speed_pct=100.0)
+    assert motors == 2
+
+
+def test_drive_reverse(mock_server):
+    """`drive()` accepts negative speed_pct for reverse."""
+    with HatClient(socket_path=mock_server) as hat:
+        motors = hat.drive(speed_pct=-50.0)
+    assert motors == 2
+
+
+def test_drive_stop(mock_server):
+    """`drive(0.0)` stops all motors."""
+    with HatClient(socket_path=mock_server) as hat:
+        motors = hat.drive(speed_pct=0.0)
+    assert motors == 2
+
+
+def test_drive_speed_too_high(mock_server):
+    """`speed_pct` above 100 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="speed_pct"):
+        hat.drive(speed_pct=101.0)
+
+
+def test_drive_speed_too_low(mock_server):
+    """`speed_pct` below -100 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="speed_pct"):
+        hat.drive(speed_pct=-101.0)
+
+
+# ---------------------------------------------------------------------------
+# steer()
+# ---------------------------------------------------------------------------
+
+
+def test_steer_succeeds(mock_server):
+    """`steer()` completes without error."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.steer(angle_deg=90.0)
+
+
+def test_steer_full_left(mock_server):
+    """`steer()` accepts 0° (full left)."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.steer(angle_deg=0.0)
+
+
+def test_steer_full_right(mock_server):
+    """`steer()` accepts 180° (full right)."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.steer(angle_deg=180.0)
+
+
+def test_steer_angle_too_high(mock_server):
+    """`angle_deg` above 180 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="angle_deg"):
+        hat.steer(angle_deg=181.0)
+
+
+def test_steer_angle_too_low(mock_server):
+    """`angle_deg` below 0 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="angle_deg"):
+        hat.steer(angle_deg=-1.0)
+
+
+# ---------------------------------------------------------------------------
+# pan_camera()
+# ---------------------------------------------------------------------------
+
+
+def test_pan_camera_succeeds(mock_server):
+    """`pan_camera()` completes without error."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.pan_camera(angle_deg=45.0)
+
+
+def test_pan_camera_centre(mock_server):
+    """`pan_camera(90)` is the centred position."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.pan_camera(angle_deg=90.0)
+
+
+def test_pan_camera_angle_out_of_range(mock_server):
+    """`angle_deg` outside 0–180 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="angle_deg"):
+        hat.pan_camera(angle_deg=200.0)
+
+
+# ---------------------------------------------------------------------------
+# tilt_camera()
+# ---------------------------------------------------------------------------
+
+
+def test_tilt_camera_succeeds(mock_server):
+    """`tilt_camera()` completes without error."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.tilt_camera(angle_deg=60.0)
+
+
+def test_tilt_camera_angle_out_of_range(mock_server):
+    """`angle_deg` outside 0–180 raises `ValueError`."""
+    hat = HatClient(socket_path=mock_server)
+    with pytest.raises(ValueError, match="angle_deg"):
+        hat.tilt_camera(angle_deg=-5.0)
+
+
+# ---------------------------------------------------------------------------
+# read_grayscale()
+# ---------------------------------------------------------------------------
+
+
+def test_read_grayscale_returns_dataclass(mock_server):
+    """`read_grayscale()` returns a `GrayscaleResult` with three values."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.read_grayscale()
+    assert isinstance(result, GrayscaleResult)
+    assert result.channels == [0, 1, 2]
+    assert result.values == [1200, 3000, 800]
+
+
+def test_read_grayscale_three_values(mock_server):
+    """`read_grayscale()` result always has exactly three channel/value entries."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.read_grayscale()
+    assert len(result.channels) == 3
+    assert len(result.values) == 3
+
+
+def test_read_grayscale_hardware_error(tmp_path):
+    """`read_grayscale()` propagates `HatError` on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "read_grayscale", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.read_grayscale()
 
     t.join(timeout=2.0)

@@ -189,6 +189,80 @@ class MotorStatusResponse(BaseModel):
     timestamp: str
 
 
+# ---------------------------------------------------------------------------
+# Vehicle-level request/response models (high-level convenience API)
+# ---------------------------------------------------------------------------
+
+
+class DriveRequest(BaseModel):
+    """Coordinated all-motor drive request."""
+
+    speed_pct: float = Field(
+        ..., ge=-100.0, le=100.0, description="Signed speed (-100 reverse to +100 forward)"
+    )
+    ttl_ms: int = Field(default=500, ge=100, le=5000, description="Lease TTL in ms")
+
+
+class DriveResponse(BaseModel):
+    """Coordinated drive response."""
+
+    speed_pct: float
+    motors: int
+    timestamp: str
+
+
+class SteerRequest(BaseModel):
+    """Steering servo request."""
+
+    angle_deg: float = Field(
+        ..., ge=0.0, le=180.0, description="Steering angle degrees (90 = straight)"
+    )
+    ttl_ms: int = Field(default=500, ge=100, le=5000, description="Lease TTL in ms")
+
+
+class SteerResponse(BaseModel):
+    """Steering response."""
+
+    angle_deg: float
+    timestamp: str
+
+
+class PanRequest(BaseModel):
+    """Camera pan servo request."""
+
+    angle_deg: float = Field(..., ge=0.0, le=180.0, description="Pan angle degrees (90 = centre)")
+    ttl_ms: int = Field(default=500, ge=100, le=5000, description="Lease TTL in ms")
+
+
+class PanResponse(BaseModel):
+    """Camera pan response."""
+
+    angle_deg: float
+    timestamp: str
+
+
+class TiltRequest(BaseModel):
+    """Camera tilt servo request."""
+
+    angle_deg: float = Field(..., ge=0.0, le=180.0, description="Tilt angle degrees (90 = centre)")
+    ttl_ms: int = Field(default=500, ge=100, le=5000, description="Lease TTL in ms")
+
+
+class TiltResponse(BaseModel):
+    """Camera tilt response."""
+
+    angle_deg: float
+    timestamp: str
+
+
+class GrayscaleResponse(BaseModel):
+    """Grayscale sensor ADC readings."""
+
+    channels: list[int]
+    values: list[int]
+    timestamp: str
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -745,6 +819,178 @@ def create_app() -> FastAPI:
                     )
                     for e in status.active_leases
                 ],
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # ========================================================================
+    # Vehicle Endpoints (high-level convenience API)
+    # ========================================================================
+
+    @app.post("/api/drive", response_model=DriveResponse, tags=["Vehicle"])
+    async def drive(request: DriveRequest):
+        """Drive all configured DC motors at the same speed simultaneously.
+
+        Sends a single coordinated ``drive`` IPC command that sets all motors
+        in one atomic operation, ensuring synchronised wheel movement.
+
+        Parameters
+        ----------
+        request : DriveRequest
+            Signed speed (−100–100) and optional TTL lease.
+
+        Returns
+        -------
+        DriveResponse
+            Echoed speed, number of motors commanded, and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware write failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            motors = await asyncio.to_thread(_hat_client.drive, request.speed_pct, request.ttl_ms)
+            return DriveResponse(
+                speed_pct=request.speed_pct,
+                motors=motors,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/steer", response_model=SteerResponse, tags=["Vehicle"])
+    async def steer(request: SteerRequest):
+        """Set the steering servo angle.
+
+        Parameters
+        ----------
+        request : SteerRequest
+            Angle in degrees (0–180, 90 = straight ahead) and optional TTL.
+
+        Returns
+        -------
+        SteerResponse
+            Echoed angle and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware write failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.steer, request.angle_deg, request.ttl_ms)
+            return SteerResponse(
+                angle_deg=request.angle_deg,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/camera/pan", response_model=PanResponse, tags=["Vehicle"])
+    async def pan_camera(request: PanRequest):
+        """Set the camera pan (horizontal) servo angle.
+
+        Parameters
+        ----------
+        request : PanRequest
+            Angle in degrees (0–180, 90 = centre) and optional TTL.
+
+        Returns
+        -------
+        PanResponse
+            Echoed angle and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware write failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.pan_camera, request.angle_deg, request.ttl_ms)
+            return PanResponse(
+                angle_deg=request.angle_deg,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/camera/tilt", response_model=TiltResponse, tags=["Vehicle"])
+    async def tilt_camera(request: TiltRequest):
+        """Set the camera tilt (vertical) servo angle.
+
+        Parameters
+        ----------
+        request : TiltRequest
+            Angle in degrees (0–180, 90 = centre) and optional TTL.
+
+        Returns
+        -------
+        TiltResponse
+            Echoed angle and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware write failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.tilt_camera, request.angle_deg, request.ttl_ms)
+            return TiltResponse(
+                angle_deg=request.angle_deg,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.get("/api/sensor/grayscale", response_model=GrayscaleResponse, tags=["Vehicle"])
+    async def get_grayscale():
+        """Read all three grayscale sensor ADC channels.
+
+        Returns raw 12-bit ADC values for the left, center, and right
+        grayscale sensors used for cliff and line detection.
+
+        Returns
+        -------
+        GrayscaleResponse
+            ADC channel numbers and raw readings (0–4095) per channel.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware read failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(_hat_client.read_grayscale)
+            return GrayscaleResponse(
+                channels=result.channels,
+                values=result.values,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
         except HatConnectionError as e:
