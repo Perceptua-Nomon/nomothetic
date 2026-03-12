@@ -1,11 +1,6 @@
 # nomothetic server configuration
-# Copy to config.toml and adjust for your deployment.
-#
-# Usage:
-#   cp config.toml.example config.toml
-#   $EDITOR config.toml
-#   ./scripts/start.sh stream   # MJPEG stream server
-#   ./scripts/start.sh api      # REST API server
+# Safe defaults — edit to suit your deployment.
+# Sensitive values (SSH keys, JWT secrets, MQTT credentials) belong in .env.
 
 # ─── MJPEG stream server ─────────────────────────────────────────────────────
 [stream]
@@ -38,6 +33,28 @@ cert_dir = ".certs"   # Relative to working directory; created automatically.
 # ─── HAT IPC (optional – enables /api/hat/* endpoints) ──────────────────────
 [hat]
 socket_path = "/run/nomopractic/nomopractic.sock"
+
+# ─── Audio ───────────────────────────────────────────────────────────────────
+[audio]
+# Directory where recorded WAV files are saved.
+dir = "/home/pi/nomon-audio"
+
+# ALSA device index for the USB microphone (PCM2902 = card 2 on Robot HAT V4).
+input_device_index = 2
+
+# ─── Telemetry ───────────────────────────────────────────────────────────────
+[telemetry]
+# Unique identifier for this Pi in the fleet.
+# Leave empty to auto-detect from /proc/cpuinfo serial number.
+device_id = ""
+
+# ─── MQTT ────────────────────────────────────────────────────────────────────
+[mqtt]
+# MQTT broker address.  Leave empty to disable telemetry publishing.
+broker   = ""
+port     = 1883
+topic    = "nomon/telemetry"
+interval = 30   # seconds between publishes
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 [logging]

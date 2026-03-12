@@ -144,8 +144,6 @@ ENV/
 env.bak/
 venv.bak/
 
-# Configuration (prod)
-config.toml
 
 # TLS/SSL Certificates (auto-generated)
 # Self-signed certificates and keys are generated at runtime

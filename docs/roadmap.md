@@ -71,7 +71,7 @@
 - `TelemetryPublisher` class using `paho-mqtt` 2.x
 - Background daemon thread (non-blocking, REST API unaffected)
 - Structured JSON telemetry payload (device ID, camera status, nomothetic version, UTC timestamp)
-- Configurable broker host/port/topic/interval via `.env` (`NOMON_MQTT_*`)
+- Configurable broker host/port/topic/interval via `config.toml` (`[mqtt]` section)
 - Device ID auto-detection: env var → `/proc/cpuinfo` Pi serial → hostname
 - Reconnect/retry with exponential back-off (1 s → 60 s cap)
 - Optional dependency: `paho-mqtt` in `[telemetry]` group
@@ -122,7 +122,7 @@ Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](ha
 - [x] Mock-socket tests in `tests/test_hat.py`; API tests in `tests/test_api.py`
 
 **Milestone 5.6 — Launch scripts:**
-- [x] `config.toml.example` — unified configuration template (`[stream]`, `[api]`, `[hat]`, `[logging]`)
+- [x] `config.toml` — unified configuration template (`[stream]`, `[api]`, `[hat]`, `[audio]`, `[mqtt]`, `[telemetry]`, `[logging]`)
 - [x] `scripts/start.sh stream|api|all` — background launch with PID tracking and log file
 - [x] `scripts/stop.sh stream|api|all` — graceful shutdown via PID file
 - [x] `scripts/deploy.sh` — SSH deploy with rollback support
@@ -285,6 +285,24 @@ Adds security layers on top of the existing API. Can be deferred since Tailscale
 - Consider `fastapi-users` or hand-rolled JWT with `python-jose`/`authlib`
 - Rate limiting via `slowapi` (wraps `limits`)
 - Log to file; Phase 3 MQTT can forward logs to management server
+
+---
+
+### v0.3.0 Release Prep
+
+**Goal**: Consolidate configuration strategy, remove legacy setup files, and
+confirm all new work passes checks before tagging.
+
+- [x] Config strategy formalised: `.env` = secrets only; `config.toml` = safe
+      defaults (committed to repo; no copy step required)
+- [x] `config.toml` ships with new `[audio]`, `[mqtt]`, `[telemetry]` sections
+- [x] `scripts/start.sh` extended to parse and export audio/MQTT/telemetry config
+- [x] `requirements.txt` and `requirements-dev.txt` removed (superseded by
+      `pyproject.toml` + `uv.lock`)
+- [x] `docs/releases/` removed (GitHub auto-generates release notes from tags)
+- [x] Version bumped to `0.3.0` in `pyproject.toml`
+- [x] `uv run pytest tests/` — 262 passing
+- [x] `uv run ruff check`, `black --check`, `mypy` — clean
 
 ---
 

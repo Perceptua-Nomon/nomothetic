@@ -37,14 +37,10 @@ except ImportError:  # pragma: no cover — pyaudio not installed in dev env
 # ---------------------------------------------------------------------------
 
 #: Default directory where recorded audio files are saved.
-DEFAULT_AUDIO_DIR: str = os.environ.get(
-    "NOMON_AUDIO_DIR", "/home/pi/nomon-audio"
-)
+DEFAULT_AUDIO_DIR: str = os.environ.get("NOMON_AUDIO_DIR", "/home/pi/nomon-audio")
 
 #: ALSA card index for the USB microphone (PCM2902 on PicarX).
-DEFAULT_INPUT_DEVICE_INDEX: int = int(os.environ.get(
-    "NOMON_AUDIO_INPUT_INDEX", "2"
-))
+DEFAULT_INPUT_DEVICE_INDEX: int = int(os.environ.get("NOMON_AUDIO_INPUT_INDEX", "2"))
 
 #: Recording sample rate (Hz).
 RECORD_RATE: int = 44100
