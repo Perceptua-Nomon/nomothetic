@@ -703,31 +703,30 @@ class HatClient:
         return UltrasonicResult(distance_cm=float(result["distance_cm"]))
 
     def enable_speaker(self) -> None:
-        """Assert the speaker-amplifier enable pin HIGH.
+        """Enable the on-board speaker amplifier.
 
-        Enables the on-board speaker amplifier on the Robot HAT V4 by
-        setting BCM 20 (``spk_en``) HIGH.  Call this before starting audio
-        playback so the amplifier is powered on.
+        Sends an ``enable_speaker`` IPC request to the daemon, which turns on
+        the amplifier so that audio playback is audible.
 
         Raises
         ------
         HatError
-            On GPIO write failure.
+            If the daemon reports a failure enabling the speaker.
         HatConnectionError
             If the socket connection is lost.
         """
         self._request("enable_speaker", {})
 
     def disable_speaker(self) -> None:
-        """Pull the speaker-amplifier enable pin LOW.
+        """Disable the on-board speaker amplifier.
 
-        Powers off the on-board speaker amplifier (BCM 20 LOW).  Call this
-        after audio playback ends to save power and reduce heat.
+        Sends a ``disable_speaker`` IPC request to the daemon, which turns off
+        the amplifier after audio playback to save power.
 
         Raises
         ------
         HatError
-            On GPIO write failure.
+            If the daemon reports a failure disabling the speaker.
         HatConnectionError
             If the socket connection is lost.
         """
