@@ -1192,9 +1192,11 @@ def create_app() -> FastAPI:
     async def get_ultrasonic():
         """Trigger the ultrasonic sensor and return the measured distance.
 
-        The nomopractic daemon drives TRIG (D2/BCM27) for 10 µs and times
-        the ECHO (D3/BCM22) pulse to compute the distance. Valid range is
-        2–400 cm for HC-SR04-compatible sensors.
+        The nomopractic daemon drives the ultrasonic trigger line for 10 µs and times
+        the echo pulse to compute the distance. GPIO mappings for trigger and echo
+        are defined in the nomopractic configuration and IPC schema
+        (see ``docs/hat_ipc_schema.md``). Valid range is 2–400 cm for
+        HC-SR04-compatible sensors.
 
         Returns
         -------
