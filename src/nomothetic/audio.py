@@ -37,7 +37,10 @@ except ImportError:  # pragma: no cover — pyaudio not installed in dev env
 # ---------------------------------------------------------------------------
 
 #: Default directory where recorded audio files are saved.
-DEFAULT_AUDIO_DIR: str = os.environ.get("NOMON_AUDIO_DIR", "/home/pi/nomon-audio")
+#: Resolved from ``NOMON_MEDIA_DIR/audio`` (with tilde expansion).
+DEFAULT_AUDIO_DIR: str = str(
+    Path(os.environ.get("NOMON_MEDIA_DIR", "~/perceptua-nomon/media")).expanduser() / "audio"
+)
 
 #: ALSA card index for the USB microphone (PCM2902 on PicarX).
 DEFAULT_INPUT_DEVICE_INDEX: int = int(os.environ.get("NOMON_AUDIO_INPUT_INDEX", "2"))
@@ -91,7 +94,7 @@ class AudioRecorder:
     ----------
     audio_dir : str | Path | None
         Directory where recorded WAV files are saved.  Defaults to
-        ``NOMON_AUDIO_DIR`` env var or ``/home/pi/nomon-audio``.
+        ``NOMON_MEDIA_DIR`` env var / ``~/perceptua-nomon/media/audio``.
     input_device_index : int
         PyAudio device index for the USB microphone.
     """

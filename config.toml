@@ -34,11 +34,17 @@ cert_dir = ".certs"   # Relative to working directory; created automatically.
 [hat]
 socket_path = "/run/nomopractic/nomopractic.sock"
 
-# ─── Audio ───────────────────────────────────────────────────────────────────
-[audio]
-# Directory where recorded WAV files are saved.
-dir = "/home/pi/nomon-audio"
+# ─── Media storage ──────────────────────────────────────────────────────────
+[media]
+# Root directory for all saved media files.  Sub-folders are created
+# automatically at runtime:
+#   photos/ — still image captures
+#   videos/ — video recordings
+#   audio/  — WAV recordings
+dir = "~/perceptua-nomon/media"
 
+# ─── Audio input ─────────────────────────────────────────────────────────────
+[audio]
 # ALSA device index for the USB microphone (PCM2902 = card 2 on Robot HAT V4).
 input_device_index = 2
 

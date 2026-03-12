@@ -18,6 +18,7 @@ create_self_signed_cert
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -517,15 +518,21 @@ _stream_host: str = "0.0.0.0"
 _stream_port: int = 8000
 _audio_recorder: Optional[AudioRecorder] = None
 _audio_player: Optional[AudioPlayer] = None
+_media_dir: Path = Path("~/perceptua-nomon/media").expanduser()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage camera, HAT client, and audio initialization and cleanup."""
-    global _camera, _hat_client, _audio_recorder, _audio_player
+    global _camera, _hat_client, _audio_recorder, _audio_player, _media_dir
+    # Resolve media directory from environment (set by start.sh from config.toml)
+    _media_dir = Path(os.environ.get("NOMON_MEDIA_DIR", "~/perceptua-nomon/media")).expanduser()
     # Startup: Initialize camera
     try:
-        _camera = Camera()
+        _camera = Camera(
+            directory=_media_dir / "videos",
+            photo_directory=_media_dir / "photos",
+        )
     except RuntimeError as e:
         logger.warning("Camera initialization failed; API will run without camera: %s", e)
 
@@ -533,8 +540,8 @@ async def lifespan(app: FastAPI):
     _hat_client = HatClient()
 
     # Startup: Initialize audio recorder and player
-    _audio_recorder = AudioRecorder()
-    _audio_player = AudioPlayer()
+    _audio_recorder = AudioRecorder(audio_dir=_media_dir / "audio")
+    _audio_player = AudioPlayer(audio_dir=_media_dir / "audio")
 
     yield
 
@@ -1493,7 +1500,7 @@ def create_app() -> FastAPI:
         AudioFilesResponse
             ``files``: sorted list of WAV file basenames.
         """
-        files = await asyncio.to_thread(list_audio_files)
+        files = await asyncio.to_thread(list_audio_files, _media_dir / "audio")
         return AudioFilesResponse(
             files=files,
             timestamp=datetime.now(timezone.utc).isoformat(),
