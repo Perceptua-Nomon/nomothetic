@@ -96,6 +96,27 @@ class TestAudioRecorder:
             with pytest.raises(RuntimeError, match="pyaudio"):
                 recorder.start()
 
+    def test_start_rejects_absolute_path(self, tmp_path):
+        """ValueError raised when filename is an absolute path."""
+        with patch("nomothetic.audio._PYAUDIO_AVAILABLE", True):
+            recorder = AudioRecorder(audio_dir=tmp_path)
+            with pytest.raises(ValueError, match="absolute"):
+                recorder.start("/etc/passwd")
+
+    def test_start_rejects_path_traversal(self, tmp_path):
+        """ValueError raised when filename contains path separators."""
+        with patch("nomothetic.audio._PYAUDIO_AVAILABLE", True):
+            recorder = AudioRecorder(audio_dir=tmp_path)
+            with pytest.raises(ValueError, match="separator"):
+                recorder.start("../escape.wav")
+
+    def test_start_rejects_dotfile(self, tmp_path):
+        """ValueError raised when filename starts with a dot."""
+        with patch("nomothetic.audio._PYAUDIO_AVAILABLE", True):
+            recorder = AudioRecorder(audio_dir=tmp_path)
+            with pytest.raises(ValueError, match=r"\.'"):
+                recorder.start(".hidden.wav")
+
     def test_stop_with_no_recording_returns_none(self, tmp_path):
         recorder = AudioRecorder(audio_dir=tmp_path)
         assert recorder.stop() is None

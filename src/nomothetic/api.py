@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from nomothetic.audio import AudioPlayer, AudioRecorder, list_audio_files
 from nomothetic.camera import Camera
 from nomothetic.hat import HatClient, HatConnectionError, HatError
+
 try:
     from nomothetic.streaming import StreamServer
 except ImportError:
@@ -389,7 +390,7 @@ class AudioRecordStopResponse(BaseModel):
 class AudioPlayRequest(BaseModel):
     """Start audio playback request."""
 
-    filename: str = Field(..., description="WAV filename or absolute path to play")
+    filename: str = Field(..., description="WAV basename to play (no directory components)")
 
 
 class AudioPlayResponse(BaseModel):
@@ -540,8 +541,12 @@ _media_dir: Path = Path("~/perceptua-nomon/media").expanduser()
 async def lifespan(app: FastAPI):
     """Manage camera, HAT client, and audio initialization and cleanup."""
     global _camera, _hat_client, _audio_recorder, _audio_player, _media_dir
+    global _stream_host, _stream_port
     # Resolve media directory from environment (set by start.sh from config.toml)
     _media_dir = Path(os.environ.get("NOMON_MEDIA_DIR", "~/perceptua-nomon/media")).expanduser()
+    # Resolve stream defaults from environment (set by start.sh from [stream] config)
+    _stream_host = os.environ.get("NOM_STREAM_HOST", "0.0.0.0")
+    _stream_port = int(os.environ.get("NOM_STREAM_PORT", "8000"))
     # Startup: Initialize camera
     try:
         _camera = Camera(
@@ -1230,8 +1235,8 @@ def create_app() -> FastAPI:
     async def set_speaker(request: SpeakerRequest):
         """Enable or disable the speaker amplifier on the Robot HAT V4.
 
-        The amplifier is controlled by asserting BCM 20 (``spk_en``) HIGH
-        (enabled) or LOW (disabled) via the nomopractic daemon.
+        The request is forwarded to the nomopractic daemon, which controls
+        the underlying hardware signal used to power the amplifier on or off.
 
         Parameters
         ----------
@@ -1247,7 +1252,7 @@ def create_app() -> FastAPI:
         ------
         HTTPException
             503 if the nomopractic daemon is unavailable.
-            500 on GPIO error.
+            500 on hardware error.
         """
         if _hat_client is None:
             raise HTTPException(status_code=503, detail="nomopractic daemon not available")
@@ -1273,8 +1278,11 @@ def create_app() -> FastAPI:
     async def start_stream(request: StreamStartRequest):
         """Start the MJPEG stream server in the background.
 
-        Uses the host and port from the request (or defaults from the server
-        config) to start a Flask-based MJPEG stream server.  If a stream is
+        Uses the host and port from the request (or defaults from the
+        ``NOM_STREAM_HOST`` / ``NOM_STREAM_PORT`` environment variables set
+        by ``start.sh`` from ``config.toml``) to start a Flask-based MJPEG
+        stream server.  The existing API camera instance is shared with the
+        stream server to avoid conflicting camera handles.  If a stream is
         already running the existing URL is returned without restarting.
 
         Returns
@@ -1305,7 +1313,7 @@ def create_app() -> FastAPI:
             )
 
         try:
-            server = StreamServer(host=host, port=port)
+            server = StreamServer(host=host, port=port, camera=_camera)
             server.start_background()
             _stream_server = server
         except Exception as e:
@@ -1383,11 +1391,12 @@ def create_app() -> FastAPI:
         Returns
         -------
         AudioRecordStartResponse
-            ``filename``: absolute path of the output WAV file.
+            ``filename``: basename of the output WAV file.
 
         Raises
         ------
         HTTPException
+            400 if ``filename`` contains path components.
             409 if a recording is already in progress.
             500 on hardware error.
         """
@@ -1396,12 +1405,14 @@ def create_app() -> FastAPI:
         if _audio_recorder.is_recording:
             raise HTTPException(status_code=409, detail="A recording is already in progress")
         try:
-            filename = await asyncio.to_thread(_audio_recorder.start, request.filename)
+            recording_path = await asyncio.to_thread(_audio_recorder.start, request.filename)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
         return AudioRecordStartResponse(
             recording=True,
-            filename=filename,
+            filename=Path(recording_path).name,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -1414,15 +1425,15 @@ def create_app() -> FastAPI:
         Returns
         -------
         AudioRecordStopResponse
-            ``filename``: path of the completed recording, or null if no
+            ``filename``: basename of the completed recording, or null if no
             recording was active.
         """
         if _audio_recorder is None:
             raise HTTPException(status_code=503, detail="audio not available")
-        filename = await asyncio.to_thread(_audio_recorder.stop)
+        recording_path = await asyncio.to_thread(_audio_recorder.stop)
         return AudioRecordStopResponse(
             recording=False,
-            filename=filename,
+            filename=Path(recording_path).name if recording_path else None,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -1440,16 +1451,17 @@ def create_app() -> FastAPI:
         Parameters
         ----------
         request : AudioPlayRequest
-            ``filename``: path or basename of the WAV file to play.
+            ``filename``: basename of the WAV file to play (no path components).
 
         Returns
         -------
         AudioPlayResponse
-            ``filename``: resolved path of the file being played.
+            ``filename``: basename of the file being played.
 
         Raises
         ------
         HTTPException
+            400 if the filename contains path components.
             404 if the file does not exist.
             409 if playback is already in progress.
             500 on hardware error.
@@ -1468,6 +1480,8 @@ def create_app() -> FastAPI:
 
         try:
             await asyncio.to_thread(_audio_player.play, request.filename)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except RuntimeError as e:
@@ -1479,9 +1493,10 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
+        current = _audio_player.current_file
         return AudioPlayResponse(
             playing=True,
-            filename=_audio_player.current_file or request.filename,
+            filename=Path(current).name if current else request.filename,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -1530,11 +1545,13 @@ def create_app() -> FastAPI:
     @app.get("/api/audio/status", response_model=AudioStatusResponse, tags=["Audio"])
     async def get_audio_status():
         """Return current audio recorder and player state."""
+        rec_file = _audio_recorder.current_file if _audio_recorder else None
+        play_file = _audio_player.current_file if _audio_player else None
         return AudioStatusResponse(
             recording=_audio_recorder.is_recording if _audio_recorder else False,
-            recording_file=_audio_recorder.current_file if _audio_recorder else None,
+            recording_file=Path(rec_file).name if rec_file else None,
             playing=_audio_player.is_playing if _audio_player else False,
-            playback_file=_audio_player.current_file if _audio_player else None,
+            playback_file=Path(play_file).name if play_file else None,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
