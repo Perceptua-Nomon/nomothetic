@@ -1314,8 +1314,10 @@ def test_start_stream_success(client, mock_camera):
     nomothetic.api._camera = mock_camera
     nomothetic.api._stream_server = None
 
-    with patch("nomothetic.api.StreamServer", return_value=mock_server):
+    with patch("nomothetic.api.StreamServer", return_value=mock_server) as MockStreamServer:
         response = client.post("/api/stream/start", json={})
+        # Verify the existing camera instance is passed to avoid resource conflicts.
+        MockStreamServer.assert_called_once_with(host="0.0.0.0", port=8000, camera=mock_camera)
 
     assert response.status_code == 200
     data = response.json()
@@ -1444,7 +1446,7 @@ def test_start_audio_recording_success(client):
     assert response.status_code == 200
     data = response.json()
     assert data["recording"] is True
-    assert data["filename"] == "/tmp/recording_001.wav"
+    assert data["filename"] == "recording_001.wav"
     assert "timestamp" in data
 
     nomothetic.api._audio_recorder = None
@@ -1494,6 +1496,23 @@ def test_start_audio_recording_with_filename(client):
     nomothetic.api._audio_recorder = None
 
 
+def test_start_audio_recording_invalid_filename(client):
+    """POST /api/audio/record/start returns 400 for path-traversal filenames."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_recorder = MagicMock()
+    mock_recorder.is_recording = False
+    mock_recorder.start.side_effect = ValueError("filename cannot contain path separators")
+    nomothetic.api._audio_recorder = mock_recorder
+
+    response = client.post("/api/audio/record/start", json={"filename": "../escape.wav"})
+    assert response.status_code == 400
+
+    nomothetic.api._audio_recorder = None
+
+
 def test_stop_audio_recording_success(client):
     """POST /api/audio/record/stop returns recording=false and filename."""
     from unittest.mock import MagicMock
@@ -1508,7 +1527,7 @@ def test_stop_audio_recording_success(client):
     assert response.status_code == 200
     data = response.json()
     assert data["recording"] is False
-    assert data["filename"] == "/tmp/recording_001.wav"
+    assert data["filename"] == "recording_001.wav"
 
     nomothetic.api._audio_recorder = None
 
@@ -1562,7 +1581,7 @@ def test_play_audio_success(client, mock_hat):
     assert response.status_code == 200
     data = response.json()
     assert data["playing"] is True
-    assert "filename" in data
+    assert data["filename"] == "clip.wav"
     mock_player.play.assert_called_once_with("clip.wav")
 
     nomothetic.api._audio_player = None
@@ -1707,9 +1726,9 @@ def test_get_audio_status_active(client):
     assert response.status_code == 200
     data = response.json()
     assert data["recording"] is True
-    assert data["recording_file"] == "/tmp/rec.wav"
+    assert data["recording_file"] == "rec.wav"
     assert data["playing"] is True
-    assert data["playback_file"] == "/tmp/play.wav"
+    assert data["playback_file"] == "play.wav"
 
     nomothetic.api._audio_recorder = None
     nomothetic.api._audio_player = None

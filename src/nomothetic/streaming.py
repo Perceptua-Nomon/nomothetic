@@ -98,9 +98,10 @@ class StreamServer:
     MJPEG (Motion JPEG) protocol over HTTP. Works in any browser
     without plugins or external libraries.
 
-    The server creates a Camera instance internally and streams
-    frames via the `/stream` endpoint. The root `/` endpoint
-    serves an HTML viewer page.
+    The server can either create a ``Camera`` instance internally or accept
+    an existing one via the ``camera`` parameter.  When an existing camera is
+    provided the server does **not** close it on :meth:`close`, leaving
+    lifecycle management to the caller.
 
     Parameters
     ----------
@@ -109,15 +110,24 @@ class StreamServer:
     port : int, optional
         Port to bind to (default: 8000)
     camera_index : int, optional
-        Camera index to use (default: 0)
+        Camera index to use when creating a new camera (default: 0).
+        Ignored when ``camera`` is provided.
     width : int, optional
-        Capture width in pixels (default: 1280)
+        Capture width in pixels (default: 1280).
+        Ignored when ``camera`` is provided.
     height : int, optional
-        Capture height in pixels (default: 720)
+        Capture height in pixels (default: 720).
+        Ignored when ``camera`` is provided.
     fps : int, optional
-        Frames per second (default: 30)
+        Frames per second (default: 30).
+        Ignored when ``camera`` is provided.
     encoder : str, optional
-        Video encoder: 'h264' or 'mjpeg' (default: 'h264')
+        Video encoder: 'h264' or 'mjpeg' (default: 'h264').
+        Ignored when ``camera`` is provided.
+    camera : Camera, optional
+        Existing ``Camera`` instance to stream from.  When provided the
+        server does **not** own the camera and will not close it on
+        :meth:`close`.  All camera-related keyword arguments are ignored.
     """
 
     def __init__(
@@ -129,6 +139,7 @@ class StreamServer:
         height: int = 720,
         fps: int = 30,
         encoder: str = "h264",
+        camera: Optional[Camera] = None,
     ) -> None:
         """Initialize the streaming server.
 
@@ -139,15 +150,24 @@ class StreamServer:
         port : int, optional
             Port to bind to (default: 8000)
         camera_index : int, optional
-            Camera index to use (default: 0)
+            Camera index to use when creating a new camera (default: 0).
+            Ignored when ``camera`` is provided.
         width : int, optional
-            Capture width in pixels (default: 1280)
+            Capture width in pixels (default: 1280).
+            Ignored when ``camera`` is provided.
         height : int, optional
-            Capture height in pixels (default: 720)
+            Capture height in pixels (default: 720).
+            Ignored when ``camera`` is provided.
         fps : int, optional
-            Frames per second (default: 30)
+            Frames per second (default: 30).
+            Ignored when ``camera`` is provided.
         encoder : str, optional
-            Video encoder: 'h264' or 'mjpeg' (default: 'h264')
+            Video encoder: 'h264' or 'mjpeg' (default: 'h264').
+            Ignored when ``camera`` is provided.
+        camera : Camera, optional
+            Existing ``Camera`` instance to stream from.  When provided the
+            server does **not** own the camera and will not close it on
+            :meth:`close`.  All camera-related keyword arguments are ignored.
 
         Raises
         ------
@@ -166,19 +186,29 @@ class StreamServer:
 
         self.host = host
         self.port = port
-        self.width = width
-        self.height = height
-        self.fps = fps
-        self.encoder = encoder
 
-        # Create camera instance
-        self.camera = Camera(
-            camera_index=camera_index,
-            width=width,
-            height=height,
-            fps=fps,
-            encoder=encoder,
-        )
+        if camera is not None:
+            # Use the provided camera; caller retains ownership.
+            self.camera = camera
+            self._owns_camera = False
+            self.width = camera.width
+            self.height = camera.height
+            self.fps = camera.fps
+            self.encoder = camera.encoder
+        else:
+            self.width = width
+            self.height = height
+            self.fps = fps
+            self.encoder = encoder
+            self._owns_camera = True
+            # Create camera instance
+            self.camera = Camera(
+                camera_index=camera_index,
+                width=width,
+                height=height,
+                fps=fps,
+                encoder=encoder,
+            )
 
         # Thread synchronization for frame sharing
         self._frame_lock = threading.Lock()
@@ -297,9 +327,11 @@ class StreamServer:
     def close(self) -> None:
         """Clean up and close the server.
 
-        Closes the camera and releases resources.
+        Closes the camera only if this server created it (i.e. no external
+        ``camera`` was passed to :meth:`__init__`).
         """
-        self.camera.close()
+        if self._owns_camera:
+            self.camera.close()
 
     def __repr__(self) -> str:
         """Return string representation of server."""

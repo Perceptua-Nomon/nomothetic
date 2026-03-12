@@ -64,10 +64,14 @@ Key settings in `config.toml`:
 | `[api]` | `port` | `8443` | HTTPS port |
 | `[api]` | `use_ssl` | `true` | Auto-generates self-signed cert in `.certs/` |
 | `[hat]` | `socket_path` | `/run/nomopractic/nomopractic.sock` | IPC socket |
-| `[audio]` | `dir` | `/home/pi/nomon-audio` | WAV recording directory |
+| `[media]` | `dir` | `~/perceptua-nomon/media` | Base media directory for video and audio |
 | `[audio]` | `input_device_index` | `2` | ALSA mic device index |
 | `[mqtt]` | `broker` | `""` | MQTT broker address (leave empty to disable telemetry) |
 | `[telemetry]` | `device_id` | `""` | Fleet node ID (auto-detected if empty) |
+
+Audio recordings are stored under the directory configured by `[media].dir`
+(sub-folder `audio/` is created automatically).  The microphone device index
+is controlled via `[audio].input_device_index` in `config.toml`.
 
 Sensitive values (SSH keys, JWT secrets, MQTT credentials) belong in `.env`
 rather than `config.toml`.  Copy `.env.example` → `.env` and fill in only

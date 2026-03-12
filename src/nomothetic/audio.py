@@ -17,6 +17,7 @@ AudioStatus
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -53,6 +54,8 @@ RECORD_CHANNELS: int = 1
 
 #: PyAudio sample format for recording.
 RECORD_FORMAT_NAME: str = "paInt16"
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +143,8 @@ class AudioRecorder:
         ------
         RuntimeError
             If a recording is already in progress or PyAudio is unavailable.
+        ValueError
+            If ``filename`` contains path components, is absolute, or starts with ``'.'``.
         """
         if not _PYAUDIO_AVAILABLE:
             raise RuntimeError("pyaudio is not installed; add it with: pip install pyaudio")
@@ -151,6 +156,16 @@ class AudioRecorder:
             if filename is None:
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 filename = f"recording_{timestamp}.wav"
+            else:
+                # Validate: only plain basenames are accepted from external input.
+                if Path(filename).is_absolute():
+                    raise ValueError(f"filename cannot be an absolute path: {filename}")
+                if "/" in filename or "\\" in filename:
+                    raise ValueError(f"filename cannot contain path separators: {filename}")
+                if filename in ("..", "."):
+                    raise ValueError(f"filename cannot be '{filename}'")
+                if filename.startswith("."):
+                    raise ValueError(f"filename cannot start with '.': {filename}")
             out_path = str(self._audio_dir / filename)
             self._current_file = out_path
             self._recording = True
@@ -191,6 +206,7 @@ class AudioRecorder:
         chunk = 1024
         fmt = getattr(pyaudio, RECORD_FORMAT_NAME)
         pa = pyaudio.PyAudio()
+        frames: list[bytes] = []
         try:
             stream = pa.open(
                 format=fmt,
@@ -200,16 +216,21 @@ class AudioRecorder:
                 input_device_index=self._input_device_index,
                 frames_per_buffer=chunk,
             )
-            frames: list[bytes] = []
             while not self._stop_event.is_set():
                 data = stream.read(chunk, exception_on_overflow=False)
                 frames.append(data)
             stream.stop_stream()
             stream.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except OSError as e:
+            logger.error("Audio recording stream error: %s", e)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Unexpected error in audio recording thread: %s", e)
         finally:
             pa.terminate()
+
+        if not frames:
+            logger.warning("No audio frames captured; skipping WAV write for %s", out_path)
+            return
 
         # Write collected frames to WAV.
         try:
@@ -218,8 +239,8 @@ class AudioRecorder:
                 wf.setsampwidth(2)  # 16-bit = 2 bytes
                 wf.setframerate(RECORD_RATE)
                 wf.writeframes(b"".join(frames))
-        except Exception:  # noqa: BLE001
-            pass
+        except OSError as e:
+            logger.error("Failed to write WAV file %s: %s", out_path, e)
 
 
 # ---------------------------------------------------------------------------
@@ -343,8 +364,8 @@ class AudioPlayer:
                     data = wf.readframes(chunk)
                 stream.stop_stream()
                 stream.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            logger.error("Audio playback error: %s", e)
         finally:
             pa.terminate()
             with self._lock:
