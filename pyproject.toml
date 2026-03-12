@@ -68,7 +68,7 @@ telemetry = [
     "paho-mqtt>=2.0",
 ]
 audio = [
-    "pyaudio>=0.2.14",
+    "pyaudio>=0.2.14; sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
 
 [project.urls]
