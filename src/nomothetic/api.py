@@ -32,8 +32,23 @@ from pydantic import BaseModel, Field
 from nomothetic.audio import AudioPlayer, AudioRecorder, list_audio_files
 from nomothetic.camera import Camera
 from nomothetic.hat import HatClient, HatConnectionError, HatError
-from nomothetic.streaming import StreamServer
+try:
+    from nomothetic.streaming import StreamServer
+except ImportError:
+    class StreamServer:  # type: ignore[no-redef]
+        """Placeholder StreamServer used when Flask/web streaming is unavailable.
 
+        This fallback ensures that the API module remains importable even if the
+        optional Flask-based streaming stack is not installed. Any attempt to
+        instantiate this class will raise a RuntimeError with guidance on how
+        to enable streaming support.
+        """
+
+        def __init__(self, *args, **kwargs) -> None:
+            raise RuntimeError(
+                "nomothetic.streaming.StreamServer requires Flask. "
+                "Install the 'nomothetic[web]' extra to enable streaming endpoints."
+            )
 logger = logging.getLogger(__name__)
 
 # ============================================================================
