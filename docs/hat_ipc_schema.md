@@ -214,6 +214,84 @@ Mapping: `pulse_us = 500 + (angle / 180.0) × 2000`
 
 ---
 
+### `set_motor_speed`
+
+Set a DC motor's speed as a signed percentage. IPC motor channel indices
+map to the configured `[[motors]]` entries (0-based order in `config.toml`).
+
+**Hardware detail:** TC1508S H-bridge — direction pin HIGH = forward,
+LOW = reverse; PWM duty sets speed. Channels 12–15, timer group 3 (100 Hz).
+
+**Request:**
+```json
+{"id": "m1", "method": "set_motor_speed", "params": {"channel": 0, "speed_pct": 50.0, "ttl_ms": 500}}\n
+```
+
+| Param | Type | Required | Range | Description |
+|-------|------|----------|-------|-------------|
+| `channel` | integer | yes | 0–3 | IPC motor index (position in `config.motors`) |
+| `speed_pct` | float | yes | −100.0–100.0 | Signed speed: negative = reverse, 0 = stop |
+| `ttl_ms` | integer | no | 100–5000 | Lease TTL (ms); motor stopped if not refreshed. Default: 500 |
+
+**Response (`result`):**
+```json
+{"channel": 0, "speed_pct": 50.0}
+```
+
+**Error codes:** `INVALID_PARAMS` if channel is not configured or `speed_pct`
+is out of range; `HARDWARE_ERROR` on I2C or GPIO failure.
+
+---
+
+### `stop_all_motors`
+
+Immediately set all configured motor channels to zero duty (stop). Clears all
+motor leases.
+
+**Request:**
+```json
+{"id": "m2", "method": "stop_all_motors", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{"stopped": 2}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `stopped` | integer | Number of motors commanded to stop |
+
+---
+
+### `get_motor_status`
+
+Return the currently active motor TTL leases.
+
+**Request:**
+```json
+{"id": "m3", "method": "get_motor_status", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{
+  "active_leases": [
+    {"channel": 0, "ttl_remaining_ms": 312, "conn_id": 4},
+    {"channel": 1, "ttl_remaining_ms": 198, "conn_id": 4}
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `active_leases` | array | Per-motor lease entries (empty if no active leases) |
+| `active_leases[].channel` | integer | IPC motor channel index |
+| `active_leases[].ttl_remaining_ms` | integer | Milliseconds until auto-stop |
+| `active_leases[].conn_id` | integer | Connection that holds the lease |
+
+---
+
 ### `reset_mcu`
 
 Asserts and de-asserts the MCU reset line to restart the Robot HAT V4
@@ -240,11 +318,145 @@ microcontroller.
 
 ---
 
-## Safety: Servo TTL Lease
+### `drive`
+
+Set all configured DC motors to the same speed simultaneously. This is the
+preferred way to drive the robot — it is atomic (no inter-motor delay) and
+returns the number of motors commanded.
+
+**Request:**
+```json
+{"id": "d1", "method": "drive", "params": {"speed_pct": 50.0, "ttl_ms": 500}}\n
+```
+
+| Param | Type | Required | Range | Description |
+|-------|------|----------|-------|-------------|
+| `speed_pct` | float | yes | −100.0–100.0 | Signed speed: negative = reverse, 0 = coast |
+| `ttl_ms` | integer | no | 100–5000 | Lease TTL (ms); motors stop if not refreshed. Default: 500 |
+
+**Response (`result`):**
+```json
+{"speed_pct": 50.0, "motors": 2}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `speed_pct` | float | Commanded speed (echoed) |
+| `motors` | integer | Number of motors set |
+
+---
+
+### `steer`
+
+Set the steering servo to a target angle using the channel configured as
+`config.servos.steering` (PicarX default: P2).
+
+**Request:**
+```json
+{"id": "d2", "method": "steer", "params": {"angle_deg": 90.0, "ttl_ms": 500}}\n
+```
+
+| Param | Type | Required | Range | Description |
+|-------|------|----------|-------|-------------|
+| `angle_deg` | float | yes | 0.0–180.0 | Target angle (90° = straight ahead) |
+| `ttl_ms` | integer | no | 100–5000 | Lease TTL (ms). Default: 500 |
+
+**Response (`result`):**
+```json
+{"servo": "steering", "channel": 2, "angle_deg": 90.0, "pulse_us": 1611}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `servo` | string | Logical servo name (`"steering"`) |
+| `channel` | integer | Physical PWM channel used |
+| `angle_deg` | float | Commanded angle (echoed) |
+| `pulse_us` | integer | Resulting pulse width in µs |
+
+**Error:** Returns `INVALID_PARAMS` if steering servo is not configured
+(`config.servos.steering = null`).
+
+---
+
+### `pan_camera`
+
+Set the camera pan (horizontal) servo to a target angle using the channel
+configured as `config.servos.camera_pan` (PicarX default: P0).
+
+**Request:**
+```json
+{"id": "d3", "method": "pan_camera", "params": {"angle_deg": 90.0, "ttl_ms": 500}}\n
+```
+
+| Param | Type | Required | Range | Description |
+|-------|------|----------|-------|-------------|
+| `angle_deg` | float | yes | 0.0–180.0 | Target angle (90° = centre) |
+| `ttl_ms` | integer | no | 100–5000 | Lease TTL (ms). Default: 500 |
+
+**Response (`result`):**
+```json
+{"servo": "camera_pan", "channel": 0, "angle_deg": 90.0, "pulse_us": 1611}
+```
+
+**Error:** Returns `INVALID_PARAMS` if camera_pan servo is not configured.
+
+---
+
+### `tilt_camera`
+
+Set the camera tilt (vertical) servo using the channel configured as
+`config.servos.camera_tilt` (PicarX default: P1).
+
+**Request:**
+```json
+{"id": "d4", "method": "tilt_camera", "params": {"angle_deg": 90.0, "ttl_ms": 500}}\n
+```
+
+| Param | Type | Required | Range | Description |
+|-------|------|----------|-------|-------------|
+| `angle_deg` | float | yes | 0.0–180.0 | Target angle (90° = horizontal) |
+| `ttl_ms` | integer | no | 100–5000 | Lease TTL (ms). Default: 500 |
+
+**Response (`result`):**
+```json
+{"servo": "camera_tilt", "channel": 1, "angle_deg": 90.0, "pulse_us": 1611}
+```
+
+**Error:** Returns `INVALID_PARAMS` if camera_tilt servo is not configured.
+
+---
+
+### `read_grayscale`
+
+Read all three grayscale sensor ADC channels in a single IPC round-trip.
+Channel indices come from `config.sensors.grayscale` (PicarX default: A0, A1, A2).
+
+**Request:**
+```json
+{"id": "d5", "method": "read_grayscale", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{
+  "channels": [0, 1, 2],
+  "values": [1876, 3421, 892]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `channels` | array[integer] | ADC channel numbers read (from config) |
+| `values` | array[integer] | Raw 12-bit ADC readings, one per channel (0–4095) |
+
+---
+
+## Safety: Servo & Motor TTL Lease
 
 Servos hold their last commanded position and draw stall current indefinitely
-if the controller disappears. To prevent this, every `set_servo_pulse_us` and
-`set_servo_angle` command carries a **TTL (time-to-live)** parameter.
+if the controller disappears. Motors would continue spinning uncontrolled.
+To prevent this, every `set_servo_*` and `set_motor_speed` command carries a
+**TTL (time-to-live)** parameter.
 
 ### Daemon Behaviour
 

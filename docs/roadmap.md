@@ -10,6 +10,10 @@
 | 2.5 | Auth & Rate Limiting | 🔲 Optional / Deferred |
 | 3 | MQTT Telemetry | ✅ Complete |
 | 5 | HAT Module Driver (Rust) | ✅ Complete |
+| 6 | Motor API Endpoints | ✅ Complete |
+| 7 | Vehicle Convenience API | ✅ Complete |
+
+**Test totals (current): 208 passing** (23 camera + 14 streaming + 81 API + 36 telemetry + 54 HAT)
 
 ---
 
@@ -72,12 +76,6 @@
 - Optional dependency: `paho-mqtt` in `[telemetry]` group
 - 23 passing tests
 
-**Test totals: 86 passing (20 camera + 14 streaming + 26 API + 3 integration + 23 telemetry)**
-
-> Updated total including Phase 5: **130 passing** (23 camera + 14 streaming + 37 API + 36 telemetry + 20 HAT)
-
-> Updated total including Phase 5 Milestone 5.5: **140 passing** (23 camera + 14 streaming + 43 API + 36 telemetry + 24 HAT)
-
 ---
 
 ### Phase 5 — HAT Module Driver (Rust, Separate Repo)
@@ -122,18 +120,90 @@ Python client: `nomothetic.hat.HatClient` — see [docs/hat_python_client.md](ha
 - [x] `GET /api/hat/servo/status` and `GET /api/hat/mcu/status` REST endpoints
 - [x] Mock-socket tests in `tests/test_hat.py`; API tests in `tests/test_api.py`
 
+**Milestone 5.6 — Launch scripts:**
+- [x] `config.toml.example` — unified configuration template (`[stream]`, `[api]`, `[hat]`, `[logging]`)
+- [x] `scripts/start.sh stream|api|all` — background launch with PID tracking and log file
+- [x] `scripts/stop.sh stream|api|all` — graceful shutdown via PID file
+- [x] `scripts/deploy.sh` — SSH deploy with rollback support
+- [x] `Makefile` targets: `start-stream`, `start-api`, `stop-stream`, `stop-api`, `stop`, `deploy`
+
 **Design constraints:**
 - Cross-compiled for `aarch64-unknown-linux-gnu` (CI uses `cross`)
 - `nomothetic.api` HAT endpoints return `503 Service Unavailable` if daemon not running
 - Python tests mock the IPC socket — testable on any developer machine without Pi hardware
 
-**nomopractic test totals:** 82 tests (9 config + 5 handler + 5 integration + 3 i2c + 4 adc + 3 battery + 14 servo + 5 pwm + 6 gpio + 1 reset + 11 handler/integration additions)
+---
 
-> Updated nomopractic total (Phase 5 Milestone 5.5): **89 tests** (+5 unit handler tests, +2 servo `get_active_leases` tests)
+### Phase 6 — Motor API Endpoints
+
+**Goal**: Expose the DC motor control IPC methods (`set_motor_speed`,
+`stop_all_motors`, `get_motor_status`) implemented in `nomopractic` as REST
+API endpoints in `nomothetic.api`, with a matching `HatClient` façade and
+full mock-socket/unit test coverage.
+
+#### 6.1 — HatClient Motor Methods (`nomothetic.hat`)
+- [x] `MotorLeaseEntry` dataclass: `channel`, `ttl_remaining_ms`, `conn_id`
+- [x] `MotorStatusResult` dataclass: `active_leases: list[MotorLeaseEntry]`
+- [x] `set_motor_speed(channel, speed_pct, ttl_ms)` — validates channel 0–3,
+      speed_pct −100.0–100.0; sends `set_motor_speed` IPC call
+- [x] `stop_all_motors()` — sends `stop_all_motors` IPC call; returns `stopped` count
+- [x] `get_motor_status()` — sends `get_motor_status`; returns `MotorStatusResult`
+
+#### 6.2 — REST Endpoints (`nomothetic.api`)
+- [x] `POST /api/hat/motor` — set a motor channel's speed
+      Request: `{channel: 0–3, speed_pct: −100.0–100.0, ttl_ms: 100–5000}`
+      Response: `{channel, speed_pct, timestamp}`
+- [x] `POST /api/hat/motor/stop` — immediately stop all motors
+      Response: `{stopped: N, timestamp}`
+- [x] `GET /api/hat/motor/status` — return active motor TTL lease table
+      Response: `{active_leases: [...], timestamp}`
+- [x] `503` on `HatConnectionError`; `500` on `HatError`; `422` on invalid params
+
+#### 6.3 — Tests
+- [x] `tests/test_hat.py`: `set_motor_speed`, `stop_all_motors`, `get_motor_status`
+      (success, validation errors, hardware error)
+- [x] `tests/test_api.py`: all three motor endpoints (success, 503 no client,
+      503 connection error, 500 hardware error, 422 invalid params)
 
 ---
 
-## Upcoming Phases
+### Phase 7 — Vehicle Convenience API
+
+**Goal**: High-level REST endpoints and matching `HatClient` methods that
+replace raw channel-index calls with named, coordinated vehicle commands.
+Channel-to-peripheral mappings are owned by the `nomopractic` daemon config;
+nomothetic simply calls the named IPC methods.
+
+#### 7.1 — HatClient Vehicle Methods
+- [x] `GrayscaleResult` dataclass: `channels: list[int]`, `values: list[int]`
+- [x] `drive(speed_pct, ttl_ms)` → IPC `drive` (all motors in sync)
+- [x] `steer(angle_deg, ttl_ms)` → IPC `steer`
+- [x] `pan_camera(angle_deg, ttl_ms)` → IPC `pan_camera`
+- [x] `tilt_camera(angle_deg, ttl_ms)` → IPC `tilt_camera`
+- [x] `read_grayscale()` → IPC `read_grayscale`, returns `GrayscaleResult`
+- [x] `ValueError` raised on out-of-range inputs before IPC call
+
+#### 7.2 — REST Vehicle Endpoints
+- [x] `POST /api/drive` — `{ speed_pct, ttl_ms? }` → `{ speed_pct, motors }`
+- [x] `POST /api/steer` — `{ angle_deg, ttl_ms? }` → `{ angle_deg }`
+- [x] `POST /api/camera/pan` — `{ angle_deg, ttl_ms? }` → `{ angle_deg }`
+- [x] `POST /api/camera/tilt` — `{ angle_deg, ttl_ms? }` → `{ angle_deg }`
+- [x] `GET /api/sensor/grayscale` → `{ channels, values }`
+- [x] All endpoints tagged `"Vehicle"` in OpenAPI docs
+- [x] 503 on daemon unavailable, 500 on hardware error, 422 on invalid params
+
+#### 7.3 — Tests
+- [x] `tests/test_hat.py`: 23 new tests (drive, steer, pan_camera, tilt_camera,
+      read_grayscale — success, validation, error cases)
+- [x] `tests/test_api.py`: 20 new tests for all 5 vehicle endpoints
+- [x] `uv run pytest tests/` — 208 passing
+- [x] `uv run ruff check src/ tests/` — 0 errors
+- [x] `uv run black --check src/ tests/` — clean
+- [x] `uv run mypy src/ tests/` — 0 errors
+
+---
+
+## Upcoming
 
 ### Phase 2.5 — Authentication & Rate Limiting (Optional)
 
@@ -154,7 +224,9 @@ Adds security layers on top of the existing API. Can be deferred since Tailscale
 
 ---
 
-## Mobile App
+## Adjacent Systems
+
+### Mobile App
 
 Developed in a separate repository. Consumes the `nomothetic` REST API.
 
@@ -164,9 +236,7 @@ Developed in a separate repository. Consumes the `nomothetic` REST API.
 - Endpoints: status, capture, record start/stop
 - Future: stream preview, telemetry dashboard, HAT control
 
----
-
-## Management Server
+### Management Server
 
 Developed in a separate repository.
 

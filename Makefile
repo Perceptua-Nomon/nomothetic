@@ -1,4 +1,7 @@
-.PHONY: install install-dev install-pi test lint format type-check clean
+VERSION ?=
+PI_HOST ?=
+
+.PHONY: install install-dev install-pi test lint format type-check check clean start-stream start-api stop-stream stop-api stop deploy coverage
 
 install:
 	uv sync
@@ -11,7 +14,10 @@ install-pi:
 	uv sync --extra pi --extra web --extra api --extra telemetry
 
 test:
-	pytest tests/ -v --cov=src/nomothetic --cov-report=html
+	pytest tests/ -v
+
+coverage:
+	pytest tests/ -v --cov=src/nomothetic --cov-report=html --cov-report=term-missing
 
 lint:
 	ruff check src/ tests/
@@ -24,6 +30,29 @@ format:
 type-check:
 	mypy src/ tests/
 
+check: lint type-check test
+
+start:
+	./scripts/start.sh all
+
+start-stream:
+	./scripts/start.sh stream
+
+start-api:
+	./scripts/start.sh api
+
+stop-stream:
+	./scripts/stop.sh stream
+
+stop-api:
+	./scripts/stop.sh api
+
+stop:
+	./scripts/stop.sh all
+
+deploy:
+	./scripts/deploy.sh $(VERSION) $(PI_HOST)
+
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
@@ -35,8 +64,17 @@ help:
 	@echo "  install      - Install the package"
 	@echo "  install-dev  - Install package and development dependencies"
 	@echo "  install-pi   - Install package on Raspberry Pi"
-	@echo "  test         - Run tests with coverage"
-	@echo "  lint         - Check code style"
+	@echo "  test         - Run tests"
+	@echo "  coverage     - Run tests with HTML and terminal coverage report"
+	@echo "  lint         - Check code style and formatting"
 	@echo "  format       - Format code with black and ruff"
 	@echo "  type-check   - Run type checking with mypy"
+	@echo "  check        - Run lint, type-check, and tests (release checks)"
+	@echo "  deploy       - Deploy to Raspberry Pi over SSH (VERSION=v0.x.y PI_HOST=user@host)"
 	@echo "  clean        - Remove generated files and caches"
+	@echo "  start        - Start both the stream and API servers in the background"
+	@echo "  start-stream - Start the MJPEG stream server in the background"
+	@echo "  start-api    - Start the REST API server in the background"
+	@echo "  stop-stream  - Stop the MJPEG stream server"
+	@echo "  stop-api     - Stop the REST API server"
+	@echo "  stop         - Stop all background servers"

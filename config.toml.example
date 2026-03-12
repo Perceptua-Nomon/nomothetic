@@ -1,0 +1,45 @@
+# nomothetic server configuration
+# Copy to config.toml and adjust for your deployment.
+#
+# Usage:
+#   cp config.toml.example config.toml
+#   $EDITOR config.toml
+#   ./scripts/start.sh stream   # MJPEG stream server
+#   ./scripts/start.sh api      # REST API server
+
+# ─── MJPEG stream server ─────────────────────────────────────────────────────
+[stream]
+# Network interface to bind.  "0.0.0.0" = all interfaces, "127.0.0.1" = loopback only.
+host = "0.0.0.0"
+port = 8000
+
+# Camera device index (usually 0 for the first attached camera).
+camera_index = 0
+
+# Capture resolution and frame rate.
+width  = 1280
+height = 720
+fps    = 30
+
+# Encoder to use: "h264" or "mjpeg".
+encoder = "h264"
+
+# ─── REST API server ─────────────────────────────────────────────────────────
+[api]
+# Network interface to bind.
+host = "0.0.0.0"
+port = 8443
+
+# Enable HTTPS with a self-signed certificate.
+# Set to false for plain HTTP (not recommended outside of local testing).
+use_ssl  = true
+cert_dir = ".certs"   # Relative to working directory; created automatically.
+
+# ─── HAT IPC (optional – enables /api/hat/* endpoints) ──────────────────────
+[hat]
+socket_path = "/run/nomopractic/nomopractic.sock"
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+[logging]
+# Directory for server log files.  Relative paths are anchored to the repo root.
+log_dir = "logs"

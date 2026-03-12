@@ -706,3 +706,457 @@ def test_get_mcu_status_hardware_error(client, mock_hat):
     assert response.status_code == 500
 
     nomothetic.api._hat_client = None
+
+
+# ============================================================================
+# Motor Endpoints
+# ============================================================================
+
+
+def test_set_motor_no_client(client):
+    """POST /api/hat/motor returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/hat/motor", json={"channel": 0, "speed_pct": 50.0})
+    assert response.status_code == 503
+
+
+def test_set_motor_success(client, mock_hat):
+    """POST /api/hat/motor returns channel, speed_pct, and timestamp on success."""
+    import nomothetic.api
+
+    mock_hat.set_motor_speed.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/motor", json={"channel": 1, "speed_pct": -75.0})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["channel"] == 1
+    assert data["speed_pct"] == pytest.approx(-75.0)
+    assert "timestamp" in data
+    mock_hat.set_motor_speed.assert_called_once_with(1, -75.0, 500)
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_motor_invalid_channel(client, mock_hat):
+    """POST /api/hat/motor returns 422 when channel is out of range."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.post("/api/hat/motor", json={"channel": 4, "speed_pct": 50.0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_motor_invalid_speed(client, mock_hat):
+    """POST /api/hat/motor returns 422 when speed_pct is out of range."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.post("/api/hat/motor", json={"channel": 0, "speed_pct": 150.0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_motor_connection_error(client, mock_hat):
+    """POST /api/hat/motor returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.set_motor_speed.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/motor", json={"channel": 0, "speed_pct": 50.0})
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_motor_hardware_error(client, mock_hat):
+    """POST /api/hat/motor returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.set_motor_speed.side_effect = HatError("HARDWARE_ERROR", "GPIO failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/motor", json={"channel": 0, "speed_pct": 50.0})
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+def test_stop_motors_no_client(client):
+    """POST /api/hat/motor/stop returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/hat/motor/stop")
+    assert response.status_code == 503
+
+
+def test_stop_motors_success(client, mock_hat):
+    """POST /api/hat/motor/stop returns stopped count and timestamp."""
+    import nomothetic.api
+
+    mock_hat.stop_all_motors.return_value = 2
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/motor/stop")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["stopped"] == 2
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_stop_motors_connection_error(client, mock_hat):
+    """POST /api/hat/motor/stop returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.stop_all_motors.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/motor/stop")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_motor_status_no_client(client):
+    """GET /api/hat/motor/status returns 503 when _hat_client is None."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/hat/motor/status")
+    assert response.status_code == 503
+
+
+def test_get_motor_status_success(client, mock_hat):
+    """GET /api/hat/motor/status returns lease list and timestamp."""
+    import nomothetic.api
+    from nomothetic.hat import MotorLeaseEntry, MotorStatusResult
+
+    mock_hat.get_motor_status.return_value = MotorStatusResult(
+        active_leases=[
+            MotorLeaseEntry(channel=0, ttl_remaining_ms=312, conn_id=4),
+            MotorLeaseEntry(channel=1, ttl_remaining_ms=198, conn_id=4),
+        ]
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/motor/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["active_leases"]) == 2
+    assert data["active_leases"][0]["channel"] == 0
+    assert data["active_leases"][0]["ttl_remaining_ms"] == 312
+    assert data["active_leases"][1]["channel"] == 1
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_motor_status_empty(client, mock_hat):
+    """GET /api/hat/motor/status returns empty list when no leases active."""
+    import nomothetic.api
+    from nomothetic.hat import MotorStatusResult
+
+    mock_hat.get_motor_status.return_value = MotorStatusResult(active_leases=[])
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/motor/status")
+    assert response.status_code == 200
+    assert response.json()["active_leases"] == []
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_motor_status_connection_error(client, mock_hat):
+    """GET /api/hat/motor/status returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.get_motor_status.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/motor/status")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_motor_status_hardware_error(client, mock_hat):
+    """GET /api/hat/motor/status returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.get_motor_status.side_effect = HatError("HARDWARE_ERROR", "motor read failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/hat/motor/status")
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+# ============================================================================
+# Vehicle Endpoints (/api/drive, /api/steer, /api/camera/pan,
+#                   /api/camera/tilt, /api/sensor/grayscale)
+# ============================================================================
+
+
+def test_drive_success(client, mock_hat):
+    """POST /api/drive returns DriveResponse on success."""
+    import nomothetic.api
+
+    mock_hat.drive.return_value = 2
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/drive", json={"speed_pct": 60.0, "ttl_ms": 500})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["speed_pct"] == 60.0
+    assert data["motors"] == 2
+    assert "timestamp" in data
+    mock_hat.drive.assert_called_once_with(60.0, 500)
+
+    nomothetic.api._hat_client = None
+
+
+def test_drive_no_client(client):
+    """POST /api/drive returns 503 when daemon unavailable."""
+    response = client.post("/api/drive", json={"speed_pct": 50.0})
+    assert response.status_code == 503
+
+
+def test_drive_connection_error(client, mock_hat):
+    """POST /api/drive returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.drive.side_effect = HatConnectionError("lost")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/drive", json={"speed_pct": 30.0})
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_drive_hardware_error(client, mock_hat):
+    """POST /api/drive returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.drive.side_effect = HatError("HARDWARE_ERROR", "motor stuck")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/drive", json={"speed_pct": 30.0})
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+def test_drive_invalid_speed(client, mock_hat):
+    """POST /api/drive returns 422 for speed_pct out of range."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.post("/api/drive", json={"speed_pct": 200.0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_steer_success(client, mock_hat):
+    """POST /api/steer returns SteerResponse on success."""
+    import nomothetic.api
+
+    mock_hat.steer.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/steer", json={"angle_deg": 90.0, "ttl_ms": 500})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["angle_deg"] == 90.0
+    assert "timestamp" in data
+    mock_hat.steer.assert_called_once_with(90.0, 500)
+
+    nomothetic.api._hat_client = None
+
+
+def test_steer_no_client(client):
+    """POST /api/steer returns 503 when daemon unavailable."""
+    response = client.post("/api/steer", json={"angle_deg": 90.0})
+    assert response.status_code == 503
+
+
+def test_steer_connection_error(client, mock_hat):
+    """POST /api/steer returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.steer.side_effect = HatConnectionError("lost")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/steer", json={"angle_deg": 45.0})
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_steer_invalid_angle(client, mock_hat):
+    """POST /api/steer returns 422 for angle_deg out of range."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.post("/api/steer", json={"angle_deg": 200.0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_pan_camera_success(client, mock_hat):
+    """POST /api/camera/pan returns PanResponse on success."""
+    import nomothetic.api
+
+    mock_hat.pan_camera.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/camera/pan", json={"angle_deg": 45.0, "ttl_ms": 500})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["angle_deg"] == 45.0
+    assert "timestamp" in data
+    mock_hat.pan_camera.assert_called_once_with(45.0, 500)
+
+    nomothetic.api._hat_client = None
+
+
+def test_pan_camera_no_client(client):
+    """POST /api/camera/pan returns 503 when daemon unavailable."""
+    response = client.post("/api/camera/pan", json={"angle_deg": 90.0})
+    assert response.status_code == 503
+
+
+def test_pan_camera_invalid_angle(client, mock_hat):
+    """POST /api/camera/pan returns 422 for angle_deg out of range."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.post("/api/camera/pan", json={"angle_deg": -10.0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_pan_camera_connection_error(client, mock_hat):
+    """POST /api/camera/pan returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.pan_camera.side_effect = HatConnectionError("lost")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/camera/pan", json={"angle_deg": 45.0})
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_tilt_camera_success(client, mock_hat):
+    """POST /api/camera/tilt returns TiltResponse on success."""
+    import nomothetic.api
+
+    mock_hat.tilt_camera.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/camera/tilt", json={"angle_deg": 60.0, "ttl_ms": 500})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["angle_deg"] == 60.0
+    assert "timestamp" in data
+    mock_hat.tilt_camera.assert_called_once_with(60.0, 500)
+
+    nomothetic.api._hat_client = None
+
+
+def test_tilt_camera_no_client(client):
+    """POST /api/camera/tilt returns 503 when daemon unavailable."""
+    response = client.post("/api/camera/tilt", json={"angle_deg": 90.0})
+    assert response.status_code == 503
+
+
+def test_tilt_camera_connection_error(client, mock_hat):
+    """POST /api/camera/tilt returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.tilt_camera.side_effect = HatConnectionError("lost")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/camera/tilt", json={"angle_deg": 60.0})
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_grayscale_success(client, mock_hat):
+    """GET /api/sensor/grayscale returns GrayscaleResponse on success."""
+    import nomothetic.api
+    from nomothetic.hat import GrayscaleResult
+
+    mock_hat.read_grayscale.return_value = GrayscaleResult(
+        channels=[0, 1, 2], values=[1200, 3000, 800]
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/sensor/grayscale")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["channels"] == [0, 1, 2]
+    assert data["values"] == [1200, 3000, 800]
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_grayscale_no_client(client):
+    """GET /api/sensor/grayscale returns 503 when daemon unavailable."""
+    response = client.get("/api/sensor/grayscale")
+    assert response.status_code == 503
+
+
+def test_get_grayscale_connection_error(client, mock_hat):
+    """GET /api/sensor/grayscale returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.read_grayscale.side_effect = HatConnectionError("lost")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/sensor/grayscale")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_grayscale_hardware_error(client, mock_hat):
+    """GET /api/sensor/grayscale returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.read_grayscale.side_effect = HatError("HARDWARE_ERROR", "ADC failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/sensor/grayscale")
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
