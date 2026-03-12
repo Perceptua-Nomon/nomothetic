@@ -1469,7 +1469,11 @@ def create_app() -> FastAPI:
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except RuntimeError as e:
-            raise HTTPException(status_code=409, detail=str(e)) from e
+            message = str(e)
+            lower_message = message.lower()
+            if "pyaudio not installed" in lower_message or "pyaudio not available" in lower_message:
+                raise HTTPException(status_code=503, detail=message) from e
+            raise HTTPException(status_code=409, detail=message) from e
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
