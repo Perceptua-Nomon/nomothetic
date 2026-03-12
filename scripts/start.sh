@@ -2,17 +2,18 @@
 # Start a nomothetic server in the background.
 #
 # Usage:
-#   ./scripts/start.sh <stream|api> [OPTIONS]
+#   ./scripts/start.sh <stream|api|all> [OPTIONS]
 #
 # Arguments:
 #   stream   Start the MJPEG stream server (Flask, HTTP).
 #   api      Start the REST API server (FastAPI/uvicorn, HTTPS).
+#   all      Start both the stream and API servers.
 #
 # Options:
 #   --config FILE   Path to TOML config file.
 #                   Defaults to ./config.toml, then <repo-root>/config.toml.
 #   --foreground    Run in the foreground instead of backgrounding (useful
-#                   for debugging – Ctrl-C to stop).
+#                   for debugging – Ctrl-C to stop). Not supported with 'all'.
 #   -h, --help      Show this help and exit.
 #
 # The server PID is written to /tmp/nomothetic-<type>.pid.
@@ -31,20 +32,18 @@ FOREGROUND=false
 
 # ─── Parse server type (required first arg) ───────────────────────────────────
 if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
-  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
 SERVER_TYPE="$1"
 shift
 
-if [[ "${SERVER_TYPE}" != "stream" && "${SERVER_TYPE}" != "api" ]]; then
-  echo "Error: server type must be 'stream' or 'api', got '${SERVER_TYPE}'." >&2
+if [[ "${SERVER_TYPE}" != "stream" && "${SERVER_TYPE}" != "api" && "${SERVER_TYPE}" != "all" ]]; then
+  echo "Error: server type must be 'stream', 'api', or 'all', got '${SERVER_TYPE}'." >&2
   echo "Run '$(basename "$0") --help' for usage." >&2
   exit 1
 fi
-
-PID_FILE="/tmp/nomothetic-${SERVER_TYPE}.pid"
 
 # ─── Parse optional arguments ─────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -58,7 +57,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -68,6 +67,21 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ─── Handle 'all' by delegating to stream + api ──────────────────────────────
+if [[ "${SERVER_TYPE}" == "all" ]]; then
+  if [[ "${FOREGROUND}" == "true" ]]; then
+    echo "Error: --foreground is not supported with 'all'; use 'stream' or 'api' directly." >&2
+    exit 1
+  fi
+  FORWARD_ARGS=()
+  [[ -n "${CONFIG_FILE}" ]] && FORWARD_ARGS+=(--config "${CONFIG_FILE}")
+  "$0" stream "${FORWARD_ARGS[@]}"
+  "$0" api    "${FORWARD_ARGS[@]}"
+  exit 0
+fi
+
+PID_FILE="/tmp/nomothetic-${SERVER_TYPE}.pid"
 
 # ─── Locate config file ───────────────────────────────────────────────────────
 if [[ -z "${CONFIG_FILE}" ]]; then
@@ -208,4 +222,4 @@ echo "  PID:  ${SERVER_PID}  (${PID_FILE})"
 echo "  URL:  ${DISPLAY_URL}"
 printf '%s' "${DISPLAY_EXTRA}"
 echo "  Logs: ${LOG_FILE}"
-echo "  Stop: ./scripts/stop.sh --${SERVER_TYPE}"
+echo "  Stop: ./scripts/stop.sh ${SERVER_TYPE}"

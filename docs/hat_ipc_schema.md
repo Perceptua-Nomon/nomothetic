@@ -440,14 +440,14 @@ Channel indices come from `config.sensors.grayscale` (PicarX default: A0, A1, A2
 ```json
 {
   "channels": [0, 1, 2],
-  "values": [12345, 8900, 14200]
+  "values": [1876, 3421, 892]
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `channels` | array[integer] | ADC channel numbers read (from config) |
-| `values` | array[integer] | Raw 16-bit ADC readings, one per channel |
+| `values` | array[integer] | Raw 12-bit ADC readings, one per channel (0–4095) |
 
 ---
 

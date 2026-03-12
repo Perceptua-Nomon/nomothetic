@@ -72,6 +72,7 @@ help:
 	@echo "  check        - Run lint, type-check, and tests (release checks)"
 	@echo "  deploy       - Deploy to Raspberry Pi over SSH (VERSION=v0.x.y PI_HOST=user@host)"
 	@echo "  clean        - Remove generated files and caches"
+	@echo "  start        - Start both the stream and API servers in the background"
 	@echo "  start-stream - Start the MJPEG stream server in the background"
 	@echo "  start-api    - Start the REST API server in the background"
 	@echo "  stop-stream  - Stop the MJPEG stream server"
