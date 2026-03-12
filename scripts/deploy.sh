@@ -33,7 +33,8 @@
 #   3. Fetches tags from origin and checks out the target version.
 #   4. Installs Python dependencies (production + dev extras).
 #   5. Runs release checks: lint (ruff), format (black), type-check (mypy), tests.
-#   6. Starts all servers and verifies they are running.
+#   6. Starts the API server, waits for readiness, starts the stream via the API,
+#      performs a health check, then stops the stream and API.
 #
 # Rollback:
 #   If any step from 3–6 fails the script checks out the previous ref,
@@ -173,11 +174,10 @@ rollback() {
     echo "  Reinstalling previous version..." >&2
     uv sync --extra pi --extra web --extra api --extra telemetry 2>&1 || true
 
-    echo "  Restarting servers..." >&2
-    ./scripts/start.sh stream 2>&1 || true
-    ./scripts/start.sh api    2>&1 || true
+    echo "  Restarting API server..." >&2
+    ./scripts/start.sh api 2>&1 || true
 
-    echo "!! Rollback complete. Servers restored to ${PREV_LABEL}." >&2
+    echo "!! Rollback complete. API server restored to ${PREV_LABEL}." >&2
     exit 2
 }
 
@@ -194,50 +194,71 @@ echo "==> Checking out ${TARGET}..."
 git checkout --quiet "${TARGET}"
 
 # ── Install dependencies ───────────────────────────────────────────────────────
-# Install with dev extras so we can run the full release check suite.
 
 echo "==> Installing dependencies..."
-uv sync --extra pi --extra web --extra api --extra telemetry --extra dev
+make install-pi
 
 # ── Release checks ─────────────────────────────────────────────────────────────
 
-echo "==> [1/4] Lint (ruff)..."
-uv run ruff check src/ tests/
-
-echo "==> [2/4] Format check (black)..."
-uv run black --check src/ tests/
-
-echo "==> [3/4] Type check (mypy)..."
-uv run mypy src/ tests/
-
-echo "==> [4/4] Tests..."
-uv run pytest tests/ -q
+echo "==> Release checks..."
+make check
 
 # ── Start servers & verify liveness ───────────────────────────────────────────
 
-echo "==> Starting servers..."
-./scripts/start.sh stream
+# Derive the API base URL from config.toml so curl hits the right endpoint.
+_api_cfg=$(python3 - config.toml <<'PYEOF'
+import sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
+with open(sys.argv[1], "rb") as f:
+    cfg = tomllib.load(f)
+a = cfg.get("api", {})
+print("NOM_API_PORT=" + str(int(a.get("port", 8443))))
+print("NOM_API_USE_SSL=" + str(bool(a.get("use_ssl", True))).lower())
+PYEOF
+)
+eval "${_api_cfg}"
+_scheme="$([[ "${NOM_API_USE_SSL}" == "true" ]] && echo "https" || echo "http")"
+_api_base="${_scheme}://127.0.0.1:${NOM_API_PORT}"
+_curl=(curl -sf -k --max-time 5)
+
+echo "==> Starting API server..."
 ./scripts/start.sh api
 
-# Allow servers a moment to initialise before checking liveness.
-sleep 4
-
-echo "==> Verifying servers are running..."
-declare -A SERVER_PIDS
-for pid_file in /tmp/nomothetic-stream.pid /tmp/nomothetic-api.pid; do
-    server="${pid_file#/tmp/nomothetic-}"
-    server="${server%.pid}"
-    if [[ ! -f "${pid_file}" ]]; then
-        echo "Error: ${server} server PID file not found — it may have crashed." >&2
+echo "==> Waiting for API to be ready..."
+_attempts=0
+until "${_curl[@]}" "${_api_base}/" > /dev/null 2>&1; do
+    _attempts=$(( _attempts + 1 ))
+    if [[ "${_attempts}" -ge 12 ]]; then
+        echo "Error: API server did not respond after 30 s." >&2
         exit 1
     fi
-    pid="$(cat "${pid_file}")"
-    if ! kill -0 "${pid}" 2>/dev/null; then
-        echo "Error: ${server} server (PID ${pid}) is not running." >&2
-        exit 1
-    fi
-    echo "  ${server}: running (PID ${pid}) ✓"
+    sleep 2.5
 done
+echo "  API ready ✓"
+
+echo "==> Starting stream server via API..."
+"${_curl[@]}" -X POST "${_api_base}/api/stream/start" \
+    -H "Content-Type: application/json" -d '{}' > /dev/null
+echo "  Stream server started ✓"
+
+echo "==> Health check..."
+_health="$("${_curl[@]}" "${_api_base}/")"
+_status="$(printf '%s' "${_health}" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("status",""))')"
+if [[ "${_status}" != "ok" ]]; then
+    echo "Error: health check failed — response: ${_health}" >&2
+    exit 1
+fi
+echo "  Health: ${_status} ✓"
+
+echo "==> Stopping stream server via API..."
+"${_curl[@]}" -X POST "${_api_base}/api/stream/stop" > /dev/null
+echo "  Stream server stopped ✓"
+
+echo "==> Stopping API server..."
+./scripts/stop.sh api
 
 echo ""
 echo "✓ nomothetic ${TARGET} deployed successfully to ${HOSTNAME}."

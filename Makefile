@@ -10,25 +10,26 @@ install-dev:
 	uv sync --all-extras --no-extra pi
 
 install-pi:
+	rm -rf .venv
 	uv venv --system-site-packages
-	uv sync --extra pi --extra web --extra api --extra telemetry
+	uv sync --all-extras --no-extra docs
 
 test:
-	pytest tests/ -v
+	uv run pytest tests/ -v
 
 coverage:
-	pytest tests/ -v --cov=src/nomothetic --cov-report=html --cov-report=term-missing
+	uv run pytest tests/ -v --cov=src/nomothetic --cov-report=html --cov-report=term-missing
 
 lint:
-	ruff check src/ tests/
-	black --check src/ tests/
+	uv run ruff check src/ tests/
+	uv run black --check src/ tests/
 
 format:
-	black src/ tests/
-	ruff check --fix src/ tests/
+	uv run black src/ tests/
+	uv run ruff check --fix src/ tests/
 
 type-check:
-	mypy src/ tests/
+	uv run mypy src/ tests/
 
 check: lint type-check test
 
