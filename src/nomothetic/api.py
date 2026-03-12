@@ -28,8 +28,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from nomothetic.audio import AudioPlayer, AudioRecorder, list_audio_files
 from nomothetic.camera import Camera
 from nomothetic.hat import HatClient, HatConnectionError, HatError
+from nomothetic.streaming import StreamServer
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +265,149 @@ class GrayscaleResponse(BaseModel):
     timestamp: str
 
 
+# ---------------------------------------------------------------------------
+# Ultrasonic sensor models
+# ---------------------------------------------------------------------------
+
+
+class UltrasonicResponse(BaseModel):
+    """Ultrasonic distance sensor reading."""
+
+    distance_cm: float
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Speaker models
+# ---------------------------------------------------------------------------
+
+
+class SpeakerRequest(BaseModel):
+    """Speaker amplifier enable/disable request."""
+
+    enabled: bool = Field(..., description="True to enable amplifier, False to disable")
+
+
+class SpeakerResponse(BaseModel):
+    """Speaker amplifier state response."""
+
+    enabled: bool
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Stream start/stop models
+# ---------------------------------------------------------------------------
+
+
+class StreamStartRequest(BaseModel):
+    """Stream server start request (all fields optional — defaults from config)."""
+
+    host: Optional[str] = Field(
+        default=None, description="Bind host (default: from config or 0.0.0.0)"
+    )
+    port: Optional[int] = Field(
+        default=None, ge=1, le=65535, description="Port (default: from config or 8000)"
+    )
+
+
+class StreamStartResponse(BaseModel):
+    """Stream server started successfully."""
+
+    url: str
+    host: str
+    port: int
+    timestamp: str
+
+
+class StreamStopResponse(BaseModel):
+    """Stream server stopped."""
+
+    success: bool
+    timestamp: str
+
+
+class StreamStatusResponse(BaseModel):
+    """Current stream server status."""
+
+    running: bool
+    url: Optional[str]
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Audio recording models
+# ---------------------------------------------------------------------------
+
+
+class AudioRecordStartRequest(BaseModel):
+    """Start audio recording request."""
+
+    filename: Optional[str] = Field(
+        default=None,
+        description="Output WAV filename (basename only). Auto-generated if absent.",
+    )
+
+
+class AudioRecordStartResponse(BaseModel):
+    """Audio recording started."""
+
+    recording: bool
+    filename: str
+    timestamp: str
+
+
+class AudioRecordStopResponse(BaseModel):
+    """Audio recording stopped."""
+
+    recording: bool
+    filename: Optional[str]
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Audio playback models
+# ---------------------------------------------------------------------------
+
+
+class AudioPlayRequest(BaseModel):
+    """Start audio playback request."""
+
+    filename: str = Field(..., description="WAV filename or absolute path to play")
+
+
+class AudioPlayResponse(BaseModel):
+    """Playback started."""
+
+    playing: bool
+    filename: str
+    timestamp: str
+
+
+class AudioPlayStopResponse(BaseModel):
+    """Playback stopped."""
+
+    success: bool
+    timestamp: str
+
+
+class AudioFilesResponse(BaseModel):
+    """List of available audio files."""
+
+    files: list[str]
+    timestamp: str
+
+
+class AudioStatusResponse(BaseModel):
+    """Current audio recorder and player state."""
+
+    recording: bool
+    recording_file: Optional[str]
+    playing: bool
+    playback_file: Optional[str]
+    timestamp: str
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -367,12 +512,17 @@ def create_self_signed_cert(cert_path: Path, key_path: Path) -> None:
 
 _camera: Optional[Camera] = None
 _hat_client: Optional[HatClient] = None
+_stream_server: Optional[StreamServer] = None
+_stream_host: str = "0.0.0.0"
+_stream_port: int = 8000
+_audio_recorder: Optional[AudioRecorder] = None
+_audio_player: Optional[AudioPlayer] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage camera and HAT client initialization and cleanup."""
-    global _camera, _hat_client
+    """Manage camera, HAT client, and audio initialization and cleanup."""
+    global _camera, _hat_client, _audio_recorder, _audio_player
     # Startup: Initialize camera
     try:
         _camera = Camera()
@@ -382,9 +532,23 @@ async def lifespan(app: FastAPI):
     # Startup: Create HAT client (lazy connect — daemon may not be running yet)
     _hat_client = HatClient()
 
+    # Startup: Initialize audio recorder and player
+    _audio_recorder = AudioRecorder()
+    _audio_player = AudioPlayer()
+
     yield
 
-    # Shutdown: Cleanup
+    # Shutdown: stop any active audio sessions
+    if _audio_recorder and _audio_recorder.is_recording:
+        _audio_recorder.stop()
+    if _audio_player and _audio_player.is_playing:
+        _audio_player.stop()
+
+    # Shutdown: stop stream server if running
+    if _stream_server is not None:
+        _stream_server.close()
+
+    # Shutdown: Cleanup camera and HAT
     if _camera:
         _camera.close()
     if _hat_client:
@@ -997,6 +1161,354 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail=str(e)) from e
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # ========================================================================
+    # Ultrasonic Sensor
+    # ========================================================================
+
+    @app.get("/api/sensor/ultrasonic", response_model=UltrasonicResponse, tags=["Sensor"])
+    async def get_ultrasonic():
+        """Trigger the ultrasonic sensor and return the measured distance.
+
+        The nomopractic daemon drives TRIG (D2/BCM27) for 10 µs and times
+        the ECHO (D3/BCM22) pulse to compute the distance. Valid range is
+        2–400 cm for HC-SR04-compatible sensors.
+
+        Returns
+        -------
+        UltrasonicResponse
+            ``distance_cm``: distance in centimetres.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware error (timeout, no echo, GPIO failure).
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(_hat_client.read_ultrasonic)
+            return UltrasonicResponse(
+                distance_cm=result.distance_cm,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # ========================================================================
+    # Speaker amplifier
+    # ========================================================================
+
+    @app.post("/api/hat/speaker", response_model=SpeakerResponse, tags=["HAT"])
+    async def set_speaker(request: SpeakerRequest):
+        """Enable or disable the speaker amplifier on the Robot HAT V4.
+
+        The amplifier is controlled by asserting BCM 20 (``spk_en``) HIGH
+        (enabled) or LOW (disabled) via the nomopractic daemon.
+
+        Parameters
+        ----------
+        request : SpeakerRequest
+            ``enabled``: true to power the amplifier on, false to power off.
+
+        Returns
+        -------
+        SpeakerResponse
+            Current ``enabled`` state.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on GPIO error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            if request.enabled:
+                await asyncio.to_thread(_hat_client.enable_speaker)
+            else:
+                await asyncio.to_thread(_hat_client.disable_speaker)
+            return SpeakerResponse(
+                enabled=request.enabled,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # ========================================================================
+    # MJPEG stream start / stop
+    # ========================================================================
+
+    @app.post("/api/stream/start", response_model=StreamStartResponse, tags=["Stream"])
+    async def start_stream(request: StreamStartRequest):
+        """Start the MJPEG stream server in the background.
+
+        Uses the host and port from the request (or defaults from the server
+        config) to start a Flask-based MJPEG stream server.  If a stream is
+        already running the existing URL is returned without restarting.
+
+        Returns
+        -------
+        StreamStartResponse
+            ``url``: base URL of the stream viewer (``http://host:port``).
+
+        Raises
+        ------
+        HTTPException
+            503 if the camera is not available.
+            500 if the stream server fails to start.
+        """
+        global _stream_server, _stream_host, _stream_port
+        if _camera is None:
+            raise HTTPException(status_code=503, detail="camera not available")
+
+        host = request.host or _stream_host
+        port = request.port or _stream_port
+
+        if _stream_server is not None:
+            url = f"http://{_stream_server.host}:{_stream_server.port}"
+            return StreamStartResponse(
+                url=url,
+                host=_stream_server.host,
+                port=_stream_server.port,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+
+        try:
+            server = StreamServer(host=host, port=port)
+            server.start_background()
+            _stream_server = server
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to start stream: {e}") from e
+
+        url = f"http://{host}:{port}"
+        return StreamStartResponse(
+            url=url,
+            host=host,
+            port=port,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/stream/stop", response_model=StreamStopResponse, tags=["Stream"])
+    async def stop_stream():
+        """Stop the MJPEG stream server.
+
+        Stops the background stream server so that the camera is available
+        for capture and recording operations again.
+
+        Returns
+        -------
+        StreamStopResponse
+            ``success``: true if a running stream was stopped.
+        """
+        global _stream_server
+        if _stream_server is None:
+            return StreamStopResponse(
+                success=False,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        try:
+            _stream_server.close()
+        except Exception:
+            pass
+        _stream_server = None
+        return StreamStopResponse(
+            success=True,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/stream/status", response_model=StreamStatusResponse, tags=["Stream"])
+    async def get_stream_status():
+        """Return the current stream server state."""
+        running = _stream_server is not None
+        url = (
+            f"http://{_stream_server.host}:{_stream_server.port}"
+            if _stream_server is not None
+            else None
+        )
+        return StreamStatusResponse(
+            running=running,
+            url=url,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    # ========================================================================
+    # Audio recording
+    # ========================================================================
+
+    @app.post("/api/audio/record/start", response_model=AudioRecordStartResponse, tags=["Audio"])
+    async def start_audio_recording(request: AudioRecordStartRequest):
+        """Start recording audio from the USB microphone.
+
+        Records from the built-in USB microphone (PCM2902 codec) to a WAV
+        file in the configured audio directory.  Recording continues until
+        ``POST /api/audio/record/stop`` is called.
+
+        Parameters
+        ----------
+        request : AudioRecordStartRequest
+            Optional ``filename`` (basename only).  A timestamped name is
+            generated when absent.
+
+        Returns
+        -------
+        AudioRecordStartResponse
+            ``filename``: absolute path of the output WAV file.
+
+        Raises
+        ------
+        HTTPException
+            409 if a recording is already in progress.
+            500 on hardware error.
+        """
+        if _audio_recorder is None:
+            raise HTTPException(status_code=503, detail="audio not available")
+        if _audio_recorder.is_recording:
+            raise HTTPException(status_code=409, detail="A recording is already in progress")
+        try:
+            filename = await asyncio.to_thread(_audio_recorder.start, request.filename)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return AudioRecordStartResponse(
+            recording=True,
+            filename=filename,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/audio/record/stop", response_model=AudioRecordStopResponse, tags=["Audio"])
+    async def stop_audio_recording():
+        """Stop the active audio recording session.
+
+        Finalises and flushes the WAV file.
+
+        Returns
+        -------
+        AudioRecordStopResponse
+            ``filename``: path of the completed recording, or null if no
+            recording was active.
+        """
+        if _audio_recorder is None:
+            raise HTTPException(status_code=503, detail="audio not available")
+        filename = await asyncio.to_thread(_audio_recorder.stop)
+        return AudioRecordStopResponse(
+            recording=False,
+            filename=filename,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    # ========================================================================
+    # Audio playback
+    # ========================================================================
+
+    @app.post("/api/audio/play", response_model=AudioPlayResponse, tags=["Audio"])
+    async def play_audio(request: AudioPlayRequest):
+        """Play a WAV audio file over the speaker.
+
+        Enables the speaker amplifier via the nomopractic HAT daemon, then
+        starts playback of the specified WAV file through the HifiBerry DAC.
+
+        Parameters
+        ----------
+        request : AudioPlayRequest
+            ``filename``: path or basename of the WAV file to play.
+
+        Returns
+        -------
+        AudioPlayResponse
+            ``filename``: resolved path of the file being played.
+
+        Raises
+        ------
+        HTTPException
+            404 if the file does not exist.
+            409 if playback is already in progress.
+            500 on hardware error.
+        """
+        if _audio_player is None:
+            raise HTTPException(status_code=503, detail="audio not available")
+        if _audio_player.is_playing:
+            raise HTTPException(status_code=409, detail="Playback is already in progress")
+
+        # Enable speaker amplifier before playback (best-effort).
+        if _hat_client is not None:
+            try:
+                await asyncio.to_thread(_hat_client.enable_speaker)
+            except (HatError, HatConnectionError):
+                pass  # Continue without amplifier enable if daemon unavailable.
+
+        try:
+            await asyncio.to_thread(_audio_player.play, request.filename)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+        return AudioPlayResponse(
+            playing=True,
+            filename=_audio_player.current_file or request.filename,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/audio/play/stop", response_model=AudioPlayStopResponse, tags=["Audio"])
+    async def stop_audio_playback():
+        """Stop ongoing audio playback.
+
+        Stops the player and disables the speaker amplifier.
+
+        Returns
+        -------
+        AudioPlayStopResponse
+            ``success``: true.
+        """
+        if _audio_player is None:
+            raise HTTPException(status_code=503, detail="audio not available")
+        await asyncio.to_thread(_audio_player.stop)
+
+        # Disable speaker amplifier after playback (best-effort).
+        if _hat_client is not None:
+            try:
+                await asyncio.to_thread(_hat_client.disable_speaker)
+            except (HatError, HatConnectionError):
+                pass
+
+        return AudioPlayStopResponse(
+            success=True,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/audio/files", response_model=AudioFilesResponse, tags=["Audio"])
+    async def list_audio():
+        """List available WAV audio files in the configured audio directory.
+
+        Returns
+        -------
+        AudioFilesResponse
+            ``files``: sorted list of WAV file basenames.
+        """
+        files = await asyncio.to_thread(list_audio_files)
+        return AudioFilesResponse(
+            files=files,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/audio/status", response_model=AudioStatusResponse, tags=["Audio"])
+    async def get_audio_status():
+        """Return current audio recorder and player state."""
+        return AudioStatusResponse(
+            recording=_audio_recorder.is_recording if _audio_recorder else False,
+            recording_file=_audio_recorder.current_file if _audio_recorder else None,
+            playing=_audio_player.is_playing if _audio_player else False,
+            playback_file=_audio_player.current_file if _audio_player else None,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     # Global exception handler
     @app.exception_handler(HTTPException)

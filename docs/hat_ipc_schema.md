@@ -451,6 +451,71 @@ Channel indices come from `config.sensors.grayscale` (PicarX default: A0, A1, A2
 
 ---
 
+### `read_ultrasonic`
+
+Trigger the HC-SR04-compatible ultrasonic distance sensor and return the
+measured distance. The daemon drives `D2` (BCM 27) as TRIG and reads `D3`
+(BCM 22) as ECHO. Pins are configurable via the `[ultrasonic]` config section.
+
+**Request:**
+```json
+{"id": "u1", "method": "read_ultrasonic", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{ "distance_cm": 42.5 }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `distance_cm` | float | Measured distance in centimetres (valid range: 2–400 cm) |
+
+**Error codes:**
+
+| Code | Meaning |
+|------|---------|
+| `TIMEOUT` | ECHO pulse did not arrive within `timeout_ms` |
+| `NO_ECHO` | Measured distance outside valid range (2–400 cm) |
+| `HARDWARE_ERROR` | GPIO bus failure |
+
+---
+
+### `enable_speaker`
+
+Assert the speaker amplifier enable pin (BCM 20, `spk_en`) HIGH, powering the
+Robot HAT V4 on-board amplifier. Call this before initiating audio playback via
+the Python audio module.
+
+**Request:**
+```json
+{"id": "s1", "method": "enable_speaker", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{ "enabled": true, "pin_bcm": 20 }
+```
+
+---
+
+### `disable_speaker`
+
+Assert `spk_en` (BCM 20) LOW, disabling the amplifier. Call after audio
+playback completes to conserve power.
+
+**Request:**
+```json
+{"id": "s2", "method": "disable_speaker", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{ "enabled": false, "pin_bcm": 20 }
+```
+
+---
+
 ## Safety: Servo & Motor TTL Lease
 
 Servos hold their last commanded position and draw stall current indefinitely

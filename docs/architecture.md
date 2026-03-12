@@ -104,18 +104,39 @@ The primary remote control interface. Mobile app and management server talk to t
 
 **Endpoints:**
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | Health check |
-| `GET` | `/api/camera/status` | Camera state (resolution, fps, encoder, recording) |
-| `POST` | `/api/camera/capture` | Still image capture |
-| `POST` | `/api/camera/record/start` | Start video recording |
-| `POST` | `/api/camera/record/stop` | Stop video recording |
-| `GET` | `/api/hat/battery` | Read HAT battery voltage |
-| `POST` | `/api/hat/servo` | Set servo channel angle |
-| `POST` | `/api/hat/reset` | Assert MCU reset |
-| `GET` | `/docs` | Interactive Swagger UI |
-| `GET` | `/redoc` | ReDoc API docs |
+| Method | Path | Tag | Description |
+|--------|------|-----|-------------|
+| `GET` | `/` | Health | Health check |
+| `GET` | `/api/camera/status` | Camera | Camera state (resolution, fps, encoder, recording) |
+| `POST` | `/api/camera/capture` | Camera | Still image capture |
+| `POST` | `/api/camera/record/start` | Camera | Start video recording |
+| `POST` | `/api/camera/record/stop` | Camera | Stop video recording |
+| `POST` | `/api/camera/pan` | Vehicle | Set camera pan servo angle |
+| `POST` | `/api/camera/tilt` | Vehicle | Set camera tilt servo angle |
+| `GET` | `/api/hat/battery` | HAT | Read HAT battery voltage |
+| `POST` | `/api/hat/servo` | HAT | Set servo channel angle |
+| `POST` | `/api/hat/reset` | HAT | Assert MCU reset |
+| `GET` | `/api/hat/servo/status` | HAT | Active servo TTL leases |
+| `GET` | `/api/hat/mcu/status` | HAT | MCU reset counter |
+| `POST` | `/api/hat/motor` | HAT | Set DC motor channel speed |
+| `POST` | `/api/hat/motor/stop` | HAT | Stop all DC motors |
+| `GET` | `/api/hat/motor/status` | HAT | Active motor TTL leases |
+| `POST` | `/api/hat/speaker` | HAT | Enable/disable speaker amplifier (BCM 20) |
+| `POST` | `/api/drive` | Vehicle | Drive all motors at signed speed |
+| `POST` | `/api/steer` | Vehicle | Set steering servo angle |
+| `GET` | `/api/sensor/grayscale` | Vehicle | Read grayscale ADC channels |
+| `GET` | `/api/sensor/ultrasonic` | Sensor | Trigger ultrasonic and return distance |
+| `POST` | `/api/stream/start` | Stream | Start MJPEG stream server |
+| `POST` | `/api/stream/stop` | Stream | Stop MJPEG stream server |
+| `GET` | `/api/stream/status` | Stream | Current stream server state |
+| `POST` | `/api/audio/record/start` | Audio | Start USB mic recording |
+| `POST` | `/api/audio/record/stop` | Audio | Stop USB mic recording |
+| `POST` | `/api/audio/play` | Audio | Play WAV over HifiBerry DAC |
+| `POST` | `/api/audio/play/stop` | Audio | Stop audio playback |
+| `GET` | `/api/audio/files` | Audio | List available WAV files |
+| `GET` | `/api/audio/status` | Audio | Current recorder/player state |
+| `GET` | `/docs` | — | Interactive Swagger UI |
+| `GET` | `/redoc` | — | ReDoc API docs |
 
 **HTTP Status Codes:**
 
@@ -177,6 +198,37 @@ The IPC client for the `nomopractic` Rust daemon. See
 **Does NOT:**
 - Know about I2C addresses, PWM registers, ADC scaling
 - Run its own thread — called synchronously from route handlers (wrapped in `to_thread`)
+
+---
+
+### `nomothetic.audio` — `AudioRecorder` / `AudioPlayer`
+
+Handles USB microphone recording and HifiBerry DAC playback. Speaker amplifier
+enable/disable is delegated to `HatClient` (nomopractic BCM 20 GPIO).
+
+**Hardware:**
+- **Microphone**: USB PnP Sound Device (Texas Instruments PCM2902), ALSA card 2
+- **Speaker output**: HifiBerry DAC (ALSA card 1, `sndrpihifiberry`)
+- **Speaker amplifier enable**: BCM 20 (`spk_en` on Robot HAT V4), controlled
+  via `nomopractic` IPC (`enable_speaker` / `disable_speaker`)
+
+**Responsibilities:**
+- `AudioRecorder.start()`: opens PyAudio input stream on ALSA card 2, records in
+  background thread, closes and writes WAV on `stop()`
+- `AudioPlayer.play()`: opens PyAudio output stream on default device (HifiBerry
+  DAC), plays WAV chunks in background thread
+- `list_audio_files()`: lists `*.wav` files in the configured audio directory
+- Graceful degradation: `RuntimeError` raised when `pyaudio` is not installed
+
+**Key design decisions:**
+- Camera stays in `nomothetic` (complex libcamera Python interface, no HAT GPIO)
+- USB microphone stays in `nomothetic` (USB audio, no HAT GPIO interface needed)
+- Speaker GPIO enable stays in `nomopractic` (HAT pin, same as all other GPIO)
+- Audio playback stays in `nomothetic` (PyAudio/ALSA, Python-native)
+- Background threading (not asyncio) for pyaudio compatibility
+- `threading.Event` stop signal; thread joins with 3 s timeout
+
+**Optional dependency:** `pyaudio>=0.2.14` in `[audio]` extra group
 
 ---
 

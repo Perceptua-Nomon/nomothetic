@@ -1160,3 +1160,556 @@ def test_get_grayscale_hardware_error(client, mock_hat):
     assert response.status_code == 500
 
     nomothetic.api._hat_client = None
+
+
+# ============================================================================
+# Ultrasonic Sensor Endpoint (/api/sensor/ultrasonic)
+# ============================================================================
+
+
+def test_get_ultrasonic_success(client, mock_hat):
+    """GET /api/sensor/ultrasonic returns distance_cm and timestamp."""
+    import nomothetic.api
+    from nomothetic.hat import UltrasonicResult
+
+    mock_hat.read_ultrasonic.return_value = UltrasonicResult(distance_cm=42.5)
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/sensor/ultrasonic")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["distance_cm"] == pytest.approx(42.5)
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_ultrasonic_no_client(client):
+    """GET /api/sensor/ultrasonic returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/sensor/ultrasonic")
+    assert response.status_code == 503
+
+
+def test_get_ultrasonic_connection_error(client, mock_hat):
+    """GET /api/sensor/ultrasonic returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.read_ultrasonic.side_effect = HatConnectionError("socket gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/sensor/ultrasonic")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_ultrasonic_hardware_error(client, mock_hat):
+    """GET /api/sensor/ultrasonic returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.read_ultrasonic.side_effect = HatError("TIMEOUT", "no echo")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/sensor/ultrasonic")
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+# ============================================================================
+# Speaker Endpoint (/api/hat/speaker)
+# ============================================================================
+
+
+def test_set_speaker_enable_success(client, mock_hat):
+    """POST /api/hat/speaker enable returns enabled=true and timestamp."""
+    import nomothetic.api
+
+    mock_hat.enable_speaker.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/speaker", json={"enabled": True})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enabled"] is True
+    assert "timestamp" in data
+    mock_hat.enable_speaker.assert_called_once()
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_speaker_disable_success(client, mock_hat):
+    """POST /api/hat/speaker disable returns enabled=false and timestamp."""
+    import nomothetic.api
+
+    mock_hat.disable_speaker.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/speaker", json={"enabled": False})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enabled"] is False
+    mock_hat.disable_speaker.assert_called_once()
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_speaker_no_client(client):
+    """POST /api/hat/speaker returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/hat/speaker", json={"enabled": True})
+    assert response.status_code == 503
+
+
+def test_set_speaker_connection_error(client, mock_hat):
+    """POST /api/hat/speaker returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.enable_speaker.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/speaker", json={"enabled": True})
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_speaker_hardware_error(client, mock_hat):
+    """POST /api/hat/speaker returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.enable_speaker.side_effect = HatError("HARDWARE_ERROR", "GPIO failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/hat/speaker", json={"enabled": True})
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+# ============================================================================
+# Stream Endpoints (/api/stream/*)
+# ============================================================================
+
+
+def test_start_stream_success(client, mock_camera):
+    """POST /api/stream/start starts stream and returns url."""
+    from unittest.mock import MagicMock, patch
+
+    import nomothetic.api
+
+    mock_server = MagicMock()
+    mock_server.host = "0.0.0.0"
+    mock_server.port = 8000
+
+    nomothetic.api._camera = mock_camera
+    nomothetic.api._stream_server = None
+
+    with patch("nomothetic.api.StreamServer", return_value=mock_server):
+        response = client.post("/api/stream/start", json={})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "url" in data
+    assert "port" in data
+    assert "timestamp" in data
+    mock_server.start_background.assert_called_once()
+
+    # Cleanup
+    nomothetic.api._camera = None
+    nomothetic.api._stream_server = None
+
+
+def test_start_stream_already_running(client, mock_camera):
+    """POST /api/stream/start returns existing url when stream is running."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_server = MagicMock()
+    mock_server.host = "0.0.0.0"
+    mock_server.port = 8001
+
+    nomothetic.api._camera = mock_camera
+    nomothetic.api._stream_server = mock_server
+
+    response = client.post("/api/stream/start", json={})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["port"] == 8001
+
+    # Cleanup
+    nomothetic.api._camera = None
+    nomothetic.api._stream_server = None
+
+
+def test_start_stream_no_camera(client):
+    """POST /api/stream/start returns 503 when camera unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._camera = None
+
+    response = client.post("/api/stream/start", json={})
+    assert response.status_code == 503
+
+
+def test_stop_stream_success(client):
+    """POST /api/stream/stop stops a running stream and returns success=true."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_server = MagicMock()
+    nomothetic.api._stream_server = mock_server
+
+    response = client.post("/api/stream/stop")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    mock_server.close.assert_called_once()
+    assert nomothetic.api._stream_server is None
+
+
+def test_stop_stream_not_running(client):
+    """POST /api/stream/stop returns success=false when no stream is running."""
+    import nomothetic.api
+
+    nomothetic.api._stream_server = None
+
+    response = client.post("/api/stream/stop")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is False
+
+
+def test_get_stream_status_running(client):
+    """GET /api/stream/status returns running=true when stream is active."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_server = MagicMock()
+    mock_server.host = "0.0.0.0"
+    mock_server.port = 8000
+    nomothetic.api._stream_server = mock_server
+
+    response = client.get("/api/stream/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["running"] is True
+    assert data["url"] is not None
+
+    nomothetic.api._stream_server = None
+
+
+def test_get_stream_status_not_running(client):
+    """GET /api/stream/status returns running=false when no stream is active."""
+    import nomothetic.api
+
+    nomothetic.api._stream_server = None
+
+    response = client.get("/api/stream/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["running"] is False
+    assert data["url"] is None
+
+
+# ============================================================================
+# Audio Recording Endpoints (/api/audio/record/*)
+# ============================================================================
+
+
+def test_start_audio_recording_success(client):
+    """POST /api/audio/record/start returns recording=true and filename."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_recorder = MagicMock()
+    mock_recorder.is_recording = False
+    mock_recorder.start.return_value = "/tmp/recording_001.wav"
+    nomothetic.api._audio_recorder = mock_recorder
+
+    response = client.post("/api/audio/record/start", json={})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["recording"] is True
+    assert data["filename"] == "/tmp/recording_001.wav"
+    assert "timestamp" in data
+
+    nomothetic.api._audio_recorder = None
+
+
+def test_start_audio_recording_already_recording(client):
+    """POST /api/audio/record/start returns 409 when already recording."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_recorder = MagicMock()
+    mock_recorder.is_recording = True
+    nomothetic.api._audio_recorder = mock_recorder
+
+    response = client.post("/api/audio/record/start", json={})
+    assert response.status_code == 409
+
+    nomothetic.api._audio_recorder = None
+
+
+def test_start_audio_recording_no_recorder(client):
+    """POST /api/audio/record/start returns 503 when audio unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._audio_recorder = None
+
+    response = client.post("/api/audio/record/start", json={})
+    assert response.status_code == 503
+
+
+def test_start_audio_recording_with_filename(client):
+    """POST /api/audio/record/start passes filename to recorder."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_recorder = MagicMock()
+    mock_recorder.is_recording = False
+    mock_recorder.start.return_value = "/tmp/custom.wav"
+    nomothetic.api._audio_recorder = mock_recorder
+
+    response = client.post("/api/audio/record/start", json={"filename": "custom.wav"})
+    assert response.status_code == 200
+    mock_recorder.start.assert_called_once_with("custom.wav")
+
+    nomothetic.api._audio_recorder = None
+
+
+def test_stop_audio_recording_success(client):
+    """POST /api/audio/record/stop returns recording=false and filename."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_recorder = MagicMock()
+    mock_recorder.stop.return_value = "/tmp/recording_001.wav"
+    nomothetic.api._audio_recorder = mock_recorder
+
+    response = client.post("/api/audio/record/stop")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["recording"] is False
+    assert data["filename"] == "/tmp/recording_001.wav"
+
+    nomothetic.api._audio_recorder = None
+
+
+def test_stop_audio_recording_not_recording(client):
+    """POST /api/audio/record/stop returns filename=null when not recording."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_recorder = MagicMock()
+    mock_recorder.stop.return_value = None
+    nomothetic.api._audio_recorder = mock_recorder
+
+    response = client.post("/api/audio/record/stop")
+    assert response.status_code == 200
+    assert response.json()["filename"] is None
+
+    nomothetic.api._audio_recorder = None
+
+
+def test_stop_audio_recording_no_recorder(client):
+    """POST /api/audio/record/stop returns 503 when audio unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._audio_recorder = None
+
+    response = client.post("/api/audio/record/stop")
+    assert response.status_code == 503
+
+
+# ============================================================================
+# Audio Playback Endpoints (/api/audio/play, /api/audio/play/stop)
+# ============================================================================
+
+
+def test_play_audio_success(client, mock_hat):
+    """POST /api/audio/play starts playback and returns playing=true."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_player = MagicMock()
+    mock_player.is_playing = False
+    mock_player.current_file = "/tmp/clip.wav"
+    mock_hat.enable_speaker.return_value = None
+    nomothetic.api._audio_player = mock_player
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/audio/play", json={"filename": "clip.wav"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["playing"] is True
+    assert "filename" in data
+    mock_player.play.assert_called_once_with("clip.wav")
+
+    nomothetic.api._audio_player = None
+    nomothetic.api._hat_client = None
+
+
+def test_play_audio_file_not_found(client):
+    """POST /api/audio/play returns 404 when file is missing."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_player = MagicMock()
+    mock_player.is_playing = False
+    mock_player.play.side_effect = FileNotFoundError("not found")
+    nomothetic.api._audio_player = mock_player
+
+    response = client.post("/api/audio/play", json={"filename": "missing.wav"})
+    assert response.status_code == 404
+
+    nomothetic.api._audio_player = None
+
+
+def test_play_audio_already_playing(client):
+    """POST /api/audio/play returns 409 when playback is in progress."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_player = MagicMock()
+    mock_player.is_playing = True
+    nomothetic.api._audio_player = mock_player
+
+    response = client.post("/api/audio/play", json={"filename": "clip.wav"})
+    assert response.status_code == 409
+
+    nomothetic.api._audio_player = None
+
+
+def test_play_audio_no_player(client):
+    """POST /api/audio/play returns 503 when audio unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._audio_player = None
+
+    response = client.post("/api/audio/play", json={"filename": "clip.wav"})
+    assert response.status_code == 503
+
+
+def test_stop_audio_playback_success(client, mock_hat):
+    """POST /api/audio/play/stop returns success=true."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_player = MagicMock()
+    mock_hat.disable_speaker.return_value = None
+    nomothetic.api._audio_player = mock_player
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/audio/play/stop")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    mock_player.stop.assert_called_once()
+
+    nomothetic.api._audio_player = None
+    nomothetic.api._hat_client = None
+
+
+def test_stop_audio_playback_no_player(client):
+    """POST /api/audio/play/stop returns 503 when audio unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._audio_player = None
+
+    response = client.post("/api/audio/play/stop")
+    assert response.status_code == 503
+
+
+# ============================================================================
+# Audio Files and Status (/api/audio/files, /api/audio/status)
+# ============================================================================
+
+
+def test_list_audio_files_endpoint(client):
+    """GET /api/audio/files returns list of WAV filenames."""
+    from unittest.mock import patch
+
+    with patch("nomothetic.api.list_audio_files", return_value=["a.wav", "b.wav"]):
+        response = client.get("/api/audio/files")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["files"] == ["a.wav", "b.wav"]
+    assert "timestamp" in data
+
+
+def test_get_audio_status_idle(client):
+    """GET /api/audio/status returns idle state when not recording or playing."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_recorder = MagicMock()
+    mock_recorder.is_recording = False
+    mock_recorder.current_file = None
+    mock_player = MagicMock()
+    mock_player.is_playing = False
+    mock_player.current_file = None
+    nomothetic.api._audio_recorder = mock_recorder
+    nomothetic.api._audio_player = mock_player
+
+    response = client.get("/api/audio/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["recording"] is False
+    assert data["recording_file"] is None
+    assert data["playing"] is False
+    assert data["playback_file"] is None
+
+    nomothetic.api._audio_recorder = None
+    nomothetic.api._audio_player = None
+
+
+def test_get_audio_status_active(client):
+    """GET /api/audio/status reflects active recorder and player state."""
+    from unittest.mock import MagicMock
+
+    import nomothetic.api
+
+    mock_recorder = MagicMock()
+    mock_recorder.is_recording = True
+    mock_recorder.current_file = "/tmp/rec.wav"
+    mock_player = MagicMock()
+    mock_player.is_playing = True
+    mock_player.current_file = "/tmp/play.wav"
+    nomothetic.api._audio_recorder = mock_recorder
+    nomothetic.api._audio_player = mock_player
+
+    response = client.get("/api/audio/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["recording"] is True
+    assert data["recording_file"] == "/tmp/rec.wav"
+    assert data["playing"] is True
+    assert data["playback_file"] == "/tmp/play.wav"
+
+    nomothetic.api._audio_recorder = None
+    nomothetic.api._audio_player = None

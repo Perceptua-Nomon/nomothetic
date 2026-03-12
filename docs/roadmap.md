@@ -12,8 +12,9 @@
 | 5 | HAT Module Driver (Rust) | ✅ Complete |
 | 6 | Motor API Endpoints | ✅ Complete |
 | 7 | Vehicle Convenience API | ✅ Complete |
+| 8 | Audio & Peripheral Expansion | ✅ Complete |
 
-**Test totals (current): 208 passing** (23 camera + 14 streaming + 81 API + 36 telemetry + 54 HAT)
+**Test totals (current): 262 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio)
 
 ---
 
@@ -200,6 +201,69 @@ nomothetic simply calls the named IPC methods.
 - [x] `uv run ruff check src/ tests/` — 0 errors
 - [x] `uv run black --check src/ tests/` — clean
 - [x] `uv run mypy src/ tests/` — 0 errors
+
+---
+
+### Phase 8 — Audio & Peripheral Expansion
+
+**Goal**: Expose the ultrasonic distance sensor and speaker amplifier enable
+(both new in nomopractic Phase 8) as REST API endpoints, add USB microphone
+recording and HifiBerry DAC playback via a new `nomothetic.audio` module, and
+wire stream start/stop into the REST API.
+
+#### 8.1 — HatClient Peripheral Methods (`nomothetic.hat`)
+- [x] `UltrasonicResult` dataclass: `distance_cm: float`
+- [x] `read_ultrasonic()` → `UltrasonicResult` (IPC `read_ultrasonic`)
+- [x] `enable_speaker()` → `None` (IPC `enable_speaker`, asserts BCM 20 high)
+- [x] `disable_speaker()` → `None` (IPC `disable_speaker`, asserts BCM 20 low)
+
+#### 8.2 — Audio Module (`nomothetic.audio`)
+- [x] New module `src/nomothetic/audio.py`
+- [x] `AudioRecorder`: records USB mic (PCM2902, ALSA card 2) to WAV
+  - `start(filename=None) -> str`: starts background recording thread; returns output path
+  - `stop() -> str | None`: signals thread, finalises WAV; returns path or None
+  - Auto-generated timestamped filename when `filename` is absent
+- [x] `AudioPlayer`: plays WAV via HifiBerry DAC (default output device)
+  - `play(filename)`: resolves bare names against `audio_dir`; starts background thread
+  - `stop()`: signals thread early
+- [x] `AudioStatus` dataclass: `recording`, `recording_file`, `playing`, `playback_file`
+- [x] `list_audio_files(audio_dir=None) -> list[str]`: sorted WAV basenames
+- [x] Optional pyaudio dependency: `RuntimeError` raised when not installed
+- [x] Constants: `DEFAULT_AUDIO_DIR` (`NOMON_AUDIO_DIR` env), `DEFAULT_INPUT_DEVICE_INDEX`
+      (`NOMON_AUDIO_INPUT_INDEX` env, default 2)
+- [x] Optional dependency group `[audio]` — `pyaudio>=0.2.14`
+
+#### 8.3 — REST Endpoints (`nomothetic.api`)
+- [x] `GET /api/sensor/ultrasonic` → `{ distance_cm, timestamp }` (tag: Sensor)
+- [x] `POST /api/hat/speaker` → `{ enabled, timestamp }` (tag: HAT)
+- [x] `POST /api/stream/start` → `{ url, host, port, timestamp }` (tag: Stream)
+  - Starts `StreamServer` in background; returns existing URL if already running
+- [x] `POST /api/stream/stop` → `{ success, timestamp }` (tag: Stream)
+- [x] `GET /api/stream/status` → `{ running, url, timestamp }` (tag: Stream)
+- [x] `POST /api/audio/record/start` → `{ recording, filename, timestamp }` (tag: Audio)
+- [x] `POST /api/audio/record/stop` → `{ recording, filename, timestamp }` (tag: Audio)
+- [x] `POST /api/audio/play` → enables speaker, starts playback → `{ playing, filename, timestamp }`
+- [x] `POST /api/audio/play/stop` → stops playback, disables speaker → `{ success, timestamp }`
+- [x] `GET /api/audio/files` → `{ files, timestamp }` (tag: Audio)
+- [x] `GET /api/audio/status` → `{ recording, recording_file, playing, playback_file, timestamp }`
+- [x] `lifespan` initialises `AudioRecorder` and `AudioPlayer` on startup; tears them down on shutdown
+
+#### 8.4 — Tests
+- [x] `tests/test_hat.py`: 8 new tests (ultrasonic success/error; speaker enable/disable success/error)
+- [x] `tests/test_audio.py`: 16 new tests (list_audio_files, AudioRecorder, AudioPlayer)
+- [x] `tests/test_api.py`: 36 new tests covering all 11 new endpoints
+- [x] `uv run pytest tests/` — 262 passing
+- [x] `uv run ruff check src/ tests/` — 0 errors
+- [x] `uv run black --check src/ tests/` — clean
+- [x] `uv run mypy src/ tests/` — 0 errors
+
+**Architecture notes:**
+- Camera stays in `nomothetic` (Python libcamera; no HAT GPIO needed)
+- USB microphone recording stays in `nomothetic` (USB audio, not HAT GPIO)
+- Speaker GPIO enable (BCM 20) is controlled by `nomopractic`; audio output
+  (PyAudio → HifiBerry DAC) is handled directly by `nomothetic`
+- `POST /api/audio/play` automatically enables the speaker via HAT client
+  before starting playback; `POST /api/audio/play/stop` disables it after
 
 ---
 

@@ -137,6 +137,19 @@ class GrayscaleResult:
     values: list[int]
 
 
+@dataclass
+class UltrasonicResult:
+    """Result payload from the ``read_ultrasonic`` IPC method.
+
+    Attributes
+    ----------
+    distance_cm : float
+        Measured distance in centimetres (2–400 cm).
+    """
+
+    distance_cm: float
+
+
 class HatClient:
     """Client for the nomopractic Unix domain socket IPC daemon.
 
@@ -665,3 +678,57 @@ class HatClient:
             channels=list(result["channels"]),
             values=list(result["values"]),
         )
+
+    def read_ultrasonic(self) -> UltrasonicResult:
+        """Trigger the ultrasonic sensor and return the measured distance.
+
+        Sends a ``read_ultrasonic`` IPC request.  The daemon drives the TRIG
+        GPIO pin, measures the ECHO pulse width, and returns the computed
+        distance (2–400 cm range for HC-SR04-compatible sensors).
+
+        Returns
+        -------
+        UltrasonicResult
+            ``distance_cm``: distance in centimetres.
+
+        Raises
+        ------
+        HatError
+            On measurement timeout, no-echo (object out of range), or GPIO
+            failure.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("read_ultrasonic", {})
+        return UltrasonicResult(distance_cm=float(result["distance_cm"]))
+
+    def enable_speaker(self) -> None:
+        """Assert the speaker-amplifier enable pin HIGH.
+
+        Enables the on-board speaker amplifier on the Robot HAT V4 by
+        setting BCM 20 (``spk_en``) HIGH.  Call this before starting audio
+        playback so the amplifier is powered on.
+
+        Raises
+        ------
+        HatError
+            On GPIO write failure.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        self._request("enable_speaker", {})
+
+    def disable_speaker(self) -> None:
+        """Pull the speaker-amplifier enable pin LOW.
+
+        Powers off the on-board speaker amplifier (BCM 20 LOW).  Call this
+        after audio playback ends to save power and reduce heat.
+
+        Raises
+        ------
+        HatError
+            On GPIO write failure.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        self._request("disable_speaker", {})
