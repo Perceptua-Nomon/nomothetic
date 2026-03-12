@@ -36,6 +36,7 @@ from nomothetic.hat import HatClient, HatConnectionError, HatError
 try:
     from nomothetic.streaming import StreamServer
 except ImportError:
+
     class StreamServer:  # type: ignore[no-redef]
         """Placeholder StreamServer used when Flask/web streaming is unavailable.
 
@@ -50,6 +51,8 @@ except ImportError:
                 "nomothetic.streaming.StreamServer requires Flask. "
                 "Install the 'nomothetic[web]' extra to enable streaming endpoints."
             )
+
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
