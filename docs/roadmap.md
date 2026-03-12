@@ -306,6 +306,35 @@ confirm all new work passes checks before tagging.
 
 ---
 
+### Phase 9 — Audio Levels Control (P1)
+
+**Goal**: Add REST API endpoints (and matching `HatClient` methods) to control
+output volume (HifiBerry DAC) and input gain (USB microphone PCM2902). Requires
+corresponding IPC methods in `nomopractic` (see nomopractic Phase 9).
+
+**Candidate deliverables:**
+
+**Output Volume:**
+- [ ] `HatClient.set_volume(volume_pct: int)` — sends `set_volume` IPC call (0–100)
+- [ ] `HatClient.get_volume() -> int` — sends `get_volume` IPC call
+- [ ] `POST /api/audio/volume` request `{ volume_pct: 0–100 }` → response `{ volume_pct, timestamp }`
+- [ ] `GET /api/audio/volume` → response `{ volume_pct, timestamp }`
+- [ ] Pydantic models: `VolumeRequest`, `VolumeResponse`
+- [ ] Auto-apply configured default volume on `POST /api/audio/play` startup
+
+**Input Gain:**
+- [ ] `HatClient.set_mic_gain(gain_pct: int)` — sends `set_mic_gain` IPC call (0–100)
+- [ ] `HatClient.get_mic_gain() -> int` — sends `get_mic_gain` IPC call
+- [ ] `POST /api/audio/mic-gain` request `{ gain_pct: 0–100 }` → response `{ gain_pct, timestamp }`
+- [ ] `GET /api/audio/mic-gain` → response `{ gain_pct, timestamp }`
+- [ ] Pydantic models: `MicGainRequest`, `MicGainResponse`
+- [ ] Auto-apply configured default input gain on `POST /api/audio/record` startup
+
+**Testing & Integration:**
+- [ ] New tests in `test_hat.py` and `test_api.py` for volume and mic gain endpoints
+
+---
+
 ## Adjacent Systems
 
 ### Mobile App

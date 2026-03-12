@@ -20,6 +20,11 @@ except ImportError:
     Response = None  # type: ignore
     render_template_string = None  # type: ignore
 
+try:
+    from werkzeug.serving import BaseWSGIServer
+except ImportError:
+    BaseWSGIServer = None  # type: ignore
+
 from nomothetic.camera import Camera
 
 # HTML template for the viewer page
@@ -214,6 +219,15 @@ class StreamServer:
         self._frame_lock = threading.Lock()
         self._current_frame: Optional[bytes] = None
 
+        # Stop event — set to request server and streaming generators to halt
+        self._stop_event = threading.Event()
+
+        # Werkzeug BaseWSGIServer handle — populated by start()
+        self._httpd: Optional[BaseWSGIServer] = None
+
+        # Background thread handle — populated by start_background()
+        self._thread: Optional[threading.Thread] = None
+
         # Create Flask app
         self.app = Flask(__name__)
         self.app.add_url_rule("/", "viewer", self._viewer)
@@ -249,6 +263,8 @@ class StreamServer:
             """Generator that yields MJPEG boundary data."""
             try:
                 for jpeg_frame in self.camera.get_jpeg_frame_generator():
+                    if self._stop_event.is_set():
+                        break
                     # Wrap each frame in MJPEG boundary
                     boundary = b"--frame"
                     content_type = b"Content-Type: image/jpeg"
@@ -289,16 +305,17 @@ class StreamServer:
         to view the stream.
         """
         try:
-            self.app.run(
-                host=self.host,
-                port=self.port,
-                debug=debug,
-                use_reloader=False,
-            )
+            from werkzeug.serving import make_server
+
+            self._httpd = make_server(self.host, self.port, self.app)
+
+            if self._httpd:
+                self._httpd.serve_forever()
         except KeyboardInterrupt:
             # Handle Ctrl+C gracefully
             pass
         finally:
+            self._httpd = None
             self.close()
 
     def start_background(self) -> threading.Thread:
@@ -322,14 +339,24 @@ class StreamServer:
             daemon=True,
         )
         thread.start()
+        self._thread = thread
         return thread
 
     def close(self) -> None:
-        """Clean up and close the server.
+        """Shut down the server and clean up resources.
 
-        Closes the camera only if this server created it (i.e. no external
-        ``camera`` was passed to :meth:`__init__`).
+        Signals the MJPEG frame generators to stop, shuts down the Werkzeug
+        HTTP server (so the port is released and the background thread exits),
+        joins the background thread, and closes the camera only if this server
+        created it (i.e. no external ``camera`` was passed to :meth:`__init__`).
         """
+        self._stop_event.set()
+        if self._httpd is not None:
+            self._httpd.shutdown()
+            self._httpd = None
+        thread = getattr(self, "_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5.0)
         if self._owns_camera:
             self.camera.close()
 

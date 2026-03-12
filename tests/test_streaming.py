@@ -269,8 +269,8 @@ class TestStreamServerLifecycle:
 
     @patch("nomothetic.streaming.Camera")
     @patch("nomothetic.streaming.Flask")
-    def test_start_calls_flask_run(self, mock_flask, mock_camera):
-        """Test that start() calls Flask run()."""
+    def test_start_calls_make_server(self, mock_flask, mock_camera):
+        """Test that start() uses werkzeug make_server."""
         mock_app = MagicMock()
         mock_flask.return_value = mock_app
         mock_cam = MagicMock()
@@ -278,21 +278,17 @@ class TestStreamServerLifecycle:
 
         server = StreamServer(host="0.0.0.0", port=5000)
 
-        # Mock the app.run to avoid actually starting the server
-        with patch.object(server.app, "run"):
+        mock_httpd = MagicMock()
+        with patch("werkzeug.serving.make_server", return_value=mock_httpd) as mock_ms:
             server.start()
 
-            server.app.run.assert_called_once_with(
-                host="0.0.0.0",
-                port=5000,
-                debug=False,
-                use_reloader=False,
-            )
+            mock_ms.assert_called_once_with("0.0.0.0", 5000, server.app)
+            mock_httpd.serve_forever.assert_called_once()
 
     @patch("nomothetic.streaming.Camera")
     @patch("nomothetic.streaming.Flask")
     def test_start_with_debug(self, mock_flask, mock_camera):
-        """Test that start() respects debug parameter."""
+        """Test that start() completes without error (debug param accepted but unused)."""
         mock_app = MagicMock()
         mock_flask.return_value = mock_app
         mock_cam = MagicMock()
@@ -300,8 +296,7 @@ class TestStreamServerLifecycle:
 
         server = StreamServer()
 
-        with patch.object(server.app, "run"):
+        mock_httpd = MagicMock()
+        with patch("werkzeug.serving.make_server", return_value=mock_httpd):
             server.start(debug=True)
-
-            call_kwargs = server.app.run.call_args[1]
-            assert call_kwargs["debug"] is True
+            mock_httpd.serve_forever.assert_called_once()
