@@ -278,12 +278,25 @@ class AudioPlayer:
             If playback is already in progress or PyAudio is unavailable.
         FileNotFoundError
             If the file does not exist.
+        ValueError
+            If ``filename`` is not a bare name (contains path components or is absolute).
         """
         if not _PYAUDIO_AVAILABLE:
             raise RuntimeError("pyaudio is not installed; add it with: pip install pyaudio")
-        path = Path(filename)
-        if not path.is_absolute():
-            path = self._audio_dir / path
+
+        # Enforce project rule: only accept bare filenames from external input.
+        # Reject absolute paths and any string with directory components.
+        raw_path = Path(filename)
+        if raw_path.is_absolute() or raw_path.name != filename:
+            raise ValueError("filename must be a bare name without directory components")
+
+        audio_root = self._audio_dir.resolve()
+        path = (audio_root / raw_path.name).resolve()
+        try:
+            # Ensure the resolved path is still within the configured audio directory.
+            path.relative_to(audio_root)
+        except ValueError as e:
+            raise ValueError("resolved audio file path escapes audio_dir") from e
         if not path.exists():
             raise FileNotFoundError(f"audio file not found: {path}")
 
