@@ -206,14 +206,26 @@ class TestAudioPlayer:
                 player.play("missing.wav")
 
     def test_play_while_already_playing_raises(self, tmp_path):
+        import threading
+
         _write_dummy_wav(tmp_path / "a.wav")
         _write_dummy_wav(tmp_path / "b.wav")
 
+        # Use events so the background play thread is held inside stream.write()
+        # while we verify that a second play() call raises RuntimeError.
+        # Without this, on fast CI runners the thread can finish and clear
+        # _playing before the second play() call, causing a spurious pass.
+        write_started = threading.Event()
+        unblock_write = threading.Event()
+
+        def blocking_write(data):
+            write_started.set()
+            unblock_write.wait()
+
         mock_stream = MagicMock()
+        mock_stream.write.side_effect = blocking_write
         MockPyAudio = MagicMock()
         MockPyAudio.return_value.open.return_value = mock_stream
-        # readframes returns empty bytes immediately to end play loop fast
-        mock_stream.read.return_value = b""
 
         with (
             patch("nomothetic.audio._PYAUDIO_AVAILABLE", True),
@@ -224,8 +236,12 @@ class TestAudioPlayer:
 
             player = AudioPlayer(audio_dir=tmp_path)
             player.play("a.wav")
+            # Wait until background thread is blocked inside write(), so
+            # _playing is guaranteed to still be True.
+            assert write_started.wait(timeout=5.0), "play thread did not start"
             with pytest.raises(RuntimeError, match="already in progress"):
                 player.play("b.wav")
+            unblock_write.set()
             player.stop()
 
     def test_stop_when_not_playing_is_safe(self, tmp_path):
