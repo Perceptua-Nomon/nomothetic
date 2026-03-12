@@ -229,8 +229,8 @@ wire stream start/stop into the REST API.
 - [x] `AudioStatus` dataclass: `recording`, `recording_file`, `playing`, `playback_file`
 - [x] `list_audio_files(audio_dir=None) -> list[str]`: sorted WAV basenames
 - [x] Optional pyaudio dependency: `RuntimeError` raised when not installed
-- [x] Constants: `DEFAULT_AUDIO_DIR` (`NOMON_AUDIO_DIR` env), `DEFAULT_INPUT_DEVICE_INDEX`
-      (`NOMON_AUDIO_INPUT_INDEX` env, default 2)
+- [x] Constants: `DEFAULT_AUDIO_DIR` (`$NOMON_MEDIA_DIR/audio`, derived from `NOMON_MEDIA_DIR` env),
+      `DEFAULT_INPUT_DEVICE_INDEX` (`NOMON_AUDIO_INPUT_INDEX` env, default 2)
 - [x] Optional dependency group `[audio]` — `pyaudio>=0.2.14`
 
 #### 8.3 — REST Endpoints (`nomothetic.api`)
