@@ -58,9 +58,12 @@ class Camera:
         Video encoder to use: 'h264' or 'mjpeg'
         (default: 'h264')
     directory : str or Path, optional
-        Directory for saving images and videos.
+        Directory for saving video recordings.
         If not provided, files are saved to current
         directory (default: None)
+    photo_directory : str or Path, optional
+        Directory for saving still image captures.
+        Defaults to ``directory`` when not provided.
     """
 
     def __init__(
@@ -71,6 +74,7 @@ class Camera:
         fps: int = 30,
         encoder: str = "h264",
         directory: Optional[Union[str, Path]] = None,
+        photo_directory: Optional[Union[str, Path]] = None,
     ) -> None:
         """Initialize the camera.
 
@@ -88,8 +92,11 @@ class Camera:
             Video encoder: 'h264' or 'mjpeg'
             (default: 'h264')
         directory : str or Path, optional
-            Directory for saving files (default: None,
+            Directory for saving video recordings (default: None,
             saves to current directory)
+        photo_directory : str or Path, optional
+            Directory for saving still image captures.
+            Defaults to ``directory`` when not provided.
 
         Raises
         ------
@@ -114,6 +121,7 @@ class Camera:
         self.fps = fps
         self.encoder = encoder
         self.directory = Path(directory) if directory else Path.cwd()
+        self.photo_directory = Path(photo_directory) if photo_directory else self.directory
         self._camera = None
         self._is_recording = False
 
@@ -163,6 +171,11 @@ class Camera:
 
         return self.directory / filename
 
+    def _validate_in(self, directory: Path, filename: str) -> Path:
+        """Validate filename and resolve it against a given directory."""
+        self._validate_filename(filename)
+        return directory / filename
+
     def capture_image(self, filename: str) -> None:
         """Capture a still image and save to file.
 
@@ -170,7 +183,7 @@ class Camera:
         ----------
         filename : str
             Plain filename (without path separators).
-            File will be saved to the directory
+            File will be saved to the ``photo_directory``
             specified at initialization.
 
         Raises
@@ -185,8 +198,9 @@ class Camera:
         if self._camera is None:
             raise RuntimeError("Camera not initialized")
 
-        # Validate filename
-        path = self._validate_filename(filename)
+        self.photo_directory.mkdir(parents=True, exist_ok=True)
+        # Validate filename and resolve against photo directory
+        path = self._validate_in(self.photo_directory, filename)
 
         try:
             config = self._camera.create_still_configuration(
@@ -208,8 +222,8 @@ class Camera:
         ----------
         filename : str
             Plain filename (without path separators).
-            File will be saved to the directory
-            specified at initialization.
+            File will be saved to the ``directory``
+            (video directory) specified at initialization.
 
         Raises
         ------
@@ -226,8 +240,9 @@ class Camera:
         if self._is_recording:
             raise RuntimeError("Camera is already recording")
 
-        # Validate filename
-        path = self._validate_filename(filename)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        # Validate filename and resolve against video directory
+        path = self._validate_in(self.directory, filename)
 
         try:
             config = self._camera.create_video_configuration(

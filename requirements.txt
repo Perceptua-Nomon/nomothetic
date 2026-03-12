@@ -1,6 +1,0 @@
-gpiozero>=2.0
-pigpio>=1.78
-smbus2>=0.4.1
-pyserial>=3.5
-# spidev only works on Linux (Raspberry Pi)
-# Install separately on RPi: pip install spidev>=3.5

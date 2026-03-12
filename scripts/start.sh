@@ -91,7 +91,7 @@ if [[ -z "${CONFIG_FILE}" ]]; then
     CONFIG_FILE="${REPO_DIR}/config.toml"
   else
     echo "Error: config.toml not found." >&2
-    echo "  Create one from: ${REPO_DIR}/config.toml.example" >&2
+    echo "  Expected at: ${PWD}/config.toml or ${REPO_DIR}/config.toml" >&2
     exit 1
   fi
 fi
@@ -139,11 +139,22 @@ if server_type == "stream":
 else:
     a = cfg.get("api", {})
     h = cfg.get("hat", {})
-    print("NOM_API_HOST="     + repr(str(a.get("host",        "0.0.0.0"))))
-    print("NOM_API_PORT="     + str(int(a.get("port",         8443))))
-    print("NOM_API_USE_SSL="  + str(bool(a.get("use_ssl",     True))).lower())
-    print("NOM_API_CERT_DIR=" + repr(str(a.get("cert_dir",    ".certs"))))
-    print("NOM_HAT_SOCKET="   + repr(str(h.get("socket_path", ""))))
+    md = cfg.get("media", {})
+    au = cfg.get("audio", {})
+    mq = cfg.get("mqtt", {})
+    tl = cfg.get("telemetry", {})
+    print("NOM_API_HOST="             + repr(str(a.get("host",             "0.0.0.0"))))
+    print("NOM_API_PORT="             + str(int(a.get("port",              8443))))
+    print("NOM_API_USE_SSL="          + str(bool(a.get("use_ssl",          True))).lower())
+    print("NOM_API_CERT_DIR="         + repr(str(a.get("cert_dir",         ".certs"))))
+    print("NOM_HAT_SOCKET="           + repr(str(h.get("socket_path",      ""))))
+    print("NOMON_MEDIA_DIR="          + repr(str(md.get("dir",             "~/perceptua-nomon/media"))))
+    print("NOMON_AUDIO_INPUT_INDEX="  + str(int(au.get("input_device_index", 2))))
+    print("NOMON_MQTT_BROKER="        + repr(str(mq.get("broker",          ""))))
+    print("NOMON_MQTT_PORT="          + str(int(mq.get("port",             1883))))
+    print("NOMON_MQTT_TOPIC="         + repr(str(mq.get("topic",           "nomon/telemetry"))))
+    print("NOMON_MQTT_INTERVAL="      + str(float(mq.get("interval",       30.0))))
+    print("NOMON_DEVICE_ID="          + repr(str(tl.get("device_id",       ""))))
 PYEOF
 )
 eval "${_parsed_cfg}"
@@ -154,6 +165,11 @@ if [[ "${NOM_LOG_DIR}" != /* ]]; then
 fi
 mkdir -p "${NOM_LOG_DIR}"
 LOG_FILE="${NOM_LOG_DIR}/${SERVER_TYPE}.log"
+
+# ─── Expand ~ in NOMON_MEDIA_DIR ─────────────────────────────────────────────
+if [[ -n "${NOMON_MEDIA_DIR:-}" ]]; then
+  NOMON_MEDIA_DIR="${NOMON_MEDIA_DIR/#\~/$HOME}"
+fi
 
 # ─── Build server-specific launch snippet and display info ───────────────────
 if [[ "${SERVER_TYPE}" == "stream" ]]; then
@@ -179,6 +195,9 @@ else
     NOMON_HAT_SOCKET_PATH="${NOM_HAT_SOCKET}"
   fi
   export NOM_API_HOST NOM_API_PORT NOM_API_USE_SSL NOM_API_CERT_DIR NOMON_HAT_SOCKET_PATH
+  export NOMON_MEDIA_DIR NOMON_AUDIO_INPUT_INDEX
+  export NOMON_MQTT_BROKER NOMON_MQTT_PORT NOMON_MQTT_TOPIC NOMON_MQTT_INTERVAL
+  export NOMON_DEVICE_ID
   SCHEME="$([[ "${NOM_API_USE_SSL}" == "true" ]] && echo "https" || echo "http")"
   DISPLAY_URL="${SCHEME}://${NOM_API_HOST}:${NOM_API_PORT}"
   DISPLAY_EXTRA="  Docs: ${DISPLAY_URL}/docs"$'\n'

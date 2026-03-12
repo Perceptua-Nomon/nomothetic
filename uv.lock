@@ -1380,7 +1380,7 @@ wheels = [
 
 [[package]]
 name = "nomothetic"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "gpiozero", version = "2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -1402,6 +1402,9 @@ api = [
     { name = "python-multipart", version = "0.0.22", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "uvicorn", version = "0.39.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "uvicorn", version = "0.41.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+]
+audio = [
+    { name = "pyaudio", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
 ]
 dev = [
     { name = "black", version = "25.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -1446,6 +1449,7 @@ requires-dist = [
     { name = "paho-mqtt", marker = "extra == 'telemetry'", specifier = ">=2.0" },
     { name = "picamera2", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'pi'", specifier = ">=0.3.0" },
     { name = "pigpio", specifier = ">=1.78" },
+    { name = "pyaudio", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'audio'", specifier = ">=0.2.14" },
     { name = "pydantic", marker = "extra == 'api'", specifier = ">=2" },
     { name = "pyserial", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
@@ -1460,7 +1464,7 @@ requires-dist = [
     { name = "types-pyserial", marker = "extra == 'dev'", specifier = ">=3.5.0.11" },
     { name = "uvicorn", marker = "extra == 'api'", specifier = ">=0.24" },
 ]
-provides-extras = ["dev", "docs", "pi", "web", "api", "telemetry"]
+provides-extras = ["dev", "docs", "pi", "web", "api", "telemetry", "audio"]
 
 [[package]]
 name = "numpy"
@@ -1749,6 +1753,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
 ]
+
+[[package]]
+name = "pyaudio"
+version = "0.2.14"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/26/1d/8878c7752febb0f6716a7e1a52cb92ac98871c5aa522cba181878091607c/PyAudio-0.2.14.tar.gz", hash = "sha256:78dfff3879b4994d1f4fc6485646a57755c6ee3c19647a491f790a0895bd2f87", size = 47066, upload-time = "2023-11-07T07:11:48.806Z" }
 
 [[package]]
 name = "pycparser"

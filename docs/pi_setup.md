@@ -115,7 +115,7 @@ The binary lands at
 PI=nomon@<pi-hostname>
 
 scp target/aarch64-unknown-linux-gnu/release/nomopractic  $PI:/tmp/nomopractic
-scp config.toml.example                                    $PI:/tmp/nomopractic.config.toml
+scp config.toml                                            $PI:/tmp/nomopractic.config.toml
 scp systemd/nomopractic.service                            $PI:/tmp/nomopractic.service
 
 ssh $PI 'sudo mv /tmp/nomopractic /usr/local/bin/ && \
@@ -340,7 +340,7 @@ temporary socket path:
 
 ```bash
 # Terminal 1 — start the daemon (I2C calls will fail, but health works)
-NOMON_HAT_SOCKET_PATH=/tmp/nomopractic.sock cargo run -- --config config.toml.example
+NOMON_HAT_SOCKET_PATH=/tmp/nomopractic.sock cargo run -- --config config.toml
 
 # Terminal 2 — send a health check
 echo '{"id":"1","method":"health","params":{}}' \

@@ -20,6 +20,11 @@ except ImportError:
     Response = None  # type: ignore
     render_template_string = None  # type: ignore
 
+try:
+    from werkzeug.serving import BaseWSGIServer
+except ImportError:
+    BaseWSGIServer = None  # type: ignore
+
 from nomothetic.camera import Camera
 
 # HTML template for the viewer page
@@ -98,9 +103,10 @@ class StreamServer:
     MJPEG (Motion JPEG) protocol over HTTP. Works in any browser
     without plugins or external libraries.
 
-    The server creates a Camera instance internally and streams
-    frames via the `/stream` endpoint. The root `/` endpoint
-    serves an HTML viewer page.
+    The server can either create a ``Camera`` instance internally or accept
+    an existing one via the ``camera`` parameter.  When an existing camera is
+    provided the server does **not** close it on :meth:`close`, leaving
+    lifecycle management to the caller.
 
     Parameters
     ----------
@@ -109,15 +115,24 @@ class StreamServer:
     port : int, optional
         Port to bind to (default: 8000)
     camera_index : int, optional
-        Camera index to use (default: 0)
+        Camera index to use when creating a new camera (default: 0).
+        Ignored when ``camera`` is provided.
     width : int, optional
-        Capture width in pixels (default: 1280)
+        Capture width in pixels (default: 1280).
+        Ignored when ``camera`` is provided.
     height : int, optional
-        Capture height in pixels (default: 720)
+        Capture height in pixels (default: 720).
+        Ignored when ``camera`` is provided.
     fps : int, optional
-        Frames per second (default: 30)
+        Frames per second (default: 30).
+        Ignored when ``camera`` is provided.
     encoder : str, optional
-        Video encoder: 'h264' or 'mjpeg' (default: 'h264')
+        Video encoder: 'h264' or 'mjpeg' (default: 'h264').
+        Ignored when ``camera`` is provided.
+    camera : Camera, optional
+        Existing ``Camera`` instance to stream from.  When provided the
+        server does **not** own the camera and will not close it on
+        :meth:`close`.  All camera-related keyword arguments are ignored.
     """
 
     def __init__(
@@ -129,6 +144,7 @@ class StreamServer:
         height: int = 720,
         fps: int = 30,
         encoder: str = "h264",
+        camera: Optional[Camera] = None,
     ) -> None:
         """Initialize the streaming server.
 
@@ -139,15 +155,24 @@ class StreamServer:
         port : int, optional
             Port to bind to (default: 8000)
         camera_index : int, optional
-            Camera index to use (default: 0)
+            Camera index to use when creating a new camera (default: 0).
+            Ignored when ``camera`` is provided.
         width : int, optional
-            Capture width in pixels (default: 1280)
+            Capture width in pixels (default: 1280).
+            Ignored when ``camera`` is provided.
         height : int, optional
-            Capture height in pixels (default: 720)
+            Capture height in pixels (default: 720).
+            Ignored when ``camera`` is provided.
         fps : int, optional
-            Frames per second (default: 30)
+            Frames per second (default: 30).
+            Ignored when ``camera`` is provided.
         encoder : str, optional
-            Video encoder: 'h264' or 'mjpeg' (default: 'h264')
+            Video encoder: 'h264' or 'mjpeg' (default: 'h264').
+            Ignored when ``camera`` is provided.
+        camera : Camera, optional
+            Existing ``Camera`` instance to stream from.  When provided the
+            server does **not** own the camera and will not close it on
+            :meth:`close`.  All camera-related keyword arguments are ignored.
 
         Raises
         ------
@@ -166,23 +191,42 @@ class StreamServer:
 
         self.host = host
         self.port = port
-        self.width = width
-        self.height = height
-        self.fps = fps
-        self.encoder = encoder
 
-        # Create camera instance
-        self.camera = Camera(
-            camera_index=camera_index,
-            width=width,
-            height=height,
-            fps=fps,
-            encoder=encoder,
-        )
+        if camera is not None:
+            # Use the provided camera; caller retains ownership.
+            self.camera = camera
+            self._owns_camera = False
+            self.width = camera.width
+            self.height = camera.height
+            self.fps = camera.fps
+            self.encoder = camera.encoder
+        else:
+            self.width = width
+            self.height = height
+            self.fps = fps
+            self.encoder = encoder
+            self._owns_camera = True
+            # Create camera instance
+            self.camera = Camera(
+                camera_index=camera_index,
+                width=width,
+                height=height,
+                fps=fps,
+                encoder=encoder,
+            )
 
         # Thread synchronization for frame sharing
         self._frame_lock = threading.Lock()
         self._current_frame: Optional[bytes] = None
+
+        # Stop event — set to request server and streaming generators to halt
+        self._stop_event = threading.Event()
+
+        # Werkzeug BaseWSGIServer handle — populated by start()
+        self._httpd: Optional[BaseWSGIServer] = None
+
+        # Background thread handle — populated by start_background()
+        self._thread: Optional[threading.Thread] = None
 
         # Create Flask app
         self.app = Flask(__name__)
@@ -219,6 +263,8 @@ class StreamServer:
             """Generator that yields MJPEG boundary data."""
             try:
                 for jpeg_frame in self.camera.get_jpeg_frame_generator():
+                    if self._stop_event.is_set():
+                        break
                     # Wrap each frame in MJPEG boundary
                     boundary = b"--frame"
                     content_type = b"Content-Type: image/jpeg"
@@ -259,16 +305,17 @@ class StreamServer:
         to view the stream.
         """
         try:
-            self.app.run(
-                host=self.host,
-                port=self.port,
-                debug=debug,
-                use_reloader=False,
-            )
+            from werkzeug.serving import make_server
+
+            self._httpd = make_server(self.host, self.port, self.app)
+
+            if self._httpd:
+                self._httpd.serve_forever()
         except KeyboardInterrupt:
             # Handle Ctrl+C gracefully
             pass
         finally:
+            self._httpd = None
             self.close()
 
     def start_background(self) -> threading.Thread:
@@ -292,14 +339,26 @@ class StreamServer:
             daemon=True,
         )
         thread.start()
+        self._thread = thread
         return thread
 
     def close(self) -> None:
-        """Clean up and close the server.
+        """Shut down the server and clean up resources.
 
-        Closes the camera and releases resources.
+        Signals the MJPEG frame generators to stop, shuts down the Werkzeug
+        HTTP server (so the port is released and the background thread exits),
+        joins the background thread, and closes the camera only if this server
+        created it (i.e. no external ``camera`` was passed to :meth:`__init__`).
         """
-        self.camera.close()
+        self._stop_event.set()
+        if self._httpd is not None:
+            self._httpd.shutdown()
+            self._httpd = None
+        thread = getattr(self, "_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5.0)
+        if self._owns_camera:
+            self.camera.close()
 
     def __repr__(self) -> str:
         """Return string representation of server."""

@@ -137,6 +137,19 @@ class GrayscaleResult:
     values: list[int]
 
 
+@dataclass
+class UltrasonicResult:
+    """Result payload from the ``read_ultrasonic`` IPC method.
+
+    Attributes
+    ----------
+    distance_cm : float
+        Measured distance in centimetres (2–400 cm).
+    """
+
+    distance_cm: float
+
+
 class HatClient:
     """Client for the nomopractic Unix domain socket IPC daemon.
 
@@ -665,3 +678,56 @@ class HatClient:
             channels=list(result["channels"]),
             values=list(result["values"]),
         )
+
+    def read_ultrasonic(self) -> UltrasonicResult:
+        """Trigger the ultrasonic sensor and return the measured distance.
+
+        Sends a ``read_ultrasonic`` IPC request.  The daemon drives the TRIG
+        GPIO pin, measures the ECHO pulse width, and returns the computed
+        distance (2–400 cm range for HC-SR04-compatible sensors).
+
+        Returns
+        -------
+        UltrasonicResult
+            ``distance_cm``: distance in centimetres.
+
+        Raises
+        ------
+        HatError
+            On measurement timeout, no-echo (object out of range), or GPIO
+            failure.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("read_ultrasonic", {})
+        return UltrasonicResult(distance_cm=float(result["distance_cm"]))
+
+    def enable_speaker(self) -> None:
+        """Enable the on-board speaker amplifier.
+
+        Sends an ``enable_speaker`` IPC request to the daemon, which turns on
+        the amplifier so that audio playback is audible.
+
+        Raises
+        ------
+        HatError
+            If the daemon reports a failure enabling the speaker.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        self._request("enable_speaker", {})
+
+    def disable_speaker(self) -> None:
+        """Disable the on-board speaker amplifier.
+
+        Sends a ``disable_speaker`` IPC request to the daemon, which turns off
+        the amplifier after audio playback to save power.
+
+        Raises
+        ------
+        HatError
+            If the daemon reports a failure disabling the speaker.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        self._request("disable_speaker", {})

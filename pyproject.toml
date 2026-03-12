@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nomothetic"
-version = "0.2.0"
+version = "0.3.0"
 description = "Comms for the nomon fleet."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -66,6 +66,9 @@ api = [
 ]
 telemetry = [
     "paho-mqtt>=2.0",
+]
+audio = [
+    "pyaudio>=0.2.14; sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
 
 [project.urls]

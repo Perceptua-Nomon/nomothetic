@@ -18,6 +18,7 @@ create_self_signed_cert
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,8 +29,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from nomothetic.audio import AudioPlayer, AudioRecorder, list_audio_files
 from nomothetic.camera import Camera
 from nomothetic.hat import HatClient, HatConnectionError, HatError
+
+try:
+    from nomothetic.streaming import StreamServer
+except ImportError:
+
+    class StreamServer:  # type: ignore[no-redef]
+        """Placeholder StreamServer used when Flask/web streaming is unavailable.
+
+        This fallback ensures that the API module remains importable even if the
+        optional Flask-based streaming stack is not installed. Any attempt to
+        instantiate this class will raise a RuntimeError with guidance on how
+        to enable streaming support.
+        """
+
+        def __init__(self, *args, **kwargs) -> None:
+            raise RuntimeError(
+                "nomothetic.streaming.StreamServer requires Flask. "
+                "Install the 'nomothetic[web]' extra to enable streaming endpoints."
+            )
+
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +285,149 @@ class GrayscaleResponse(BaseModel):
     timestamp: str
 
 
+# ---------------------------------------------------------------------------
+# Ultrasonic sensor models
+# ---------------------------------------------------------------------------
+
+
+class UltrasonicResponse(BaseModel):
+    """Ultrasonic distance sensor reading."""
+
+    distance_cm: float
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Speaker models
+# ---------------------------------------------------------------------------
+
+
+class SpeakerRequest(BaseModel):
+    """Speaker amplifier enable/disable request."""
+
+    enabled: bool = Field(..., description="True to enable amplifier, False to disable")
+
+
+class SpeakerResponse(BaseModel):
+    """Speaker amplifier state response."""
+
+    enabled: bool
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Stream start/stop models
+# ---------------------------------------------------------------------------
+
+
+class StreamStartRequest(BaseModel):
+    """Stream server start request (all fields optional — defaults from config)."""
+
+    host: Optional[str] = Field(
+        default=None, description="Bind host (default: from config or 0.0.0.0)"
+    )
+    port: Optional[int] = Field(
+        default=None, ge=1, le=65535, description="Port (default: from config or 8000)"
+    )
+
+
+class StreamStartResponse(BaseModel):
+    """Stream server started successfully."""
+
+    url: str
+    host: str
+    port: int
+    timestamp: str
+
+
+class StreamStopResponse(BaseModel):
+    """Stream server stopped."""
+
+    success: bool
+    timestamp: str
+
+
+class StreamStatusResponse(BaseModel):
+    """Current stream server status."""
+
+    running: bool
+    url: Optional[str]
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Audio recording models
+# ---------------------------------------------------------------------------
+
+
+class AudioRecordStartRequest(BaseModel):
+    """Start audio recording request."""
+
+    filename: Optional[str] = Field(
+        default=None,
+        description="Output WAV filename (basename only). Auto-generated if absent.",
+    )
+
+
+class AudioRecordStartResponse(BaseModel):
+    """Audio recording started."""
+
+    recording: bool
+    filename: str
+    timestamp: str
+
+
+class AudioRecordStopResponse(BaseModel):
+    """Audio recording stopped."""
+
+    recording: bool
+    filename: Optional[str]
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Audio playback models
+# ---------------------------------------------------------------------------
+
+
+class AudioPlayRequest(BaseModel):
+    """Start audio playback request."""
+
+    filename: str = Field(..., description="WAV basename to play (no directory components)")
+
+
+class AudioPlayResponse(BaseModel):
+    """Playback started."""
+
+    playing: bool
+    filename: str
+    timestamp: str
+
+
+class AudioPlayStopResponse(BaseModel):
+    """Playback stopped."""
+
+    success: bool
+    timestamp: str
+
+
+class AudioFilesResponse(BaseModel):
+    """List of available audio files."""
+
+    files: list[str]
+    timestamp: str
+
+
+class AudioStatusResponse(BaseModel):
+    """Current audio recorder and player state."""
+
+    recording: bool
+    recording_file: Optional[str]
+    playing: bool
+    playback_file: Optional[str]
+    timestamp: str
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -367,24 +532,53 @@ def create_self_signed_cert(cert_path: Path, key_path: Path) -> None:
 
 _camera: Optional[Camera] = None
 _hat_client: Optional[HatClient] = None
+_stream_server: Optional[StreamServer] = None
+_stream_host: str = "0.0.0.0"
+_stream_port: int = 8000
+_audio_recorder: Optional[AudioRecorder] = None
+_audio_player: Optional[AudioPlayer] = None
+_media_dir: Path = Path("~/perceptua-nomon/media").expanduser()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage camera and HAT client initialization and cleanup."""
-    global _camera, _hat_client
+    """Manage camera, HAT client, and audio initialization and cleanup."""
+    global _camera, _hat_client, _audio_recorder, _audio_player, _media_dir
+    global _stream_host, _stream_port
+    # Resolve media directory from environment (set by start.sh from config.toml)
+    _media_dir = Path(os.environ.get("NOMON_MEDIA_DIR", "~/perceptua-nomon/media")).expanduser()
+    # Resolve stream defaults from environment (set by start.sh from [stream] config)
+    _stream_host = os.environ.get("NOM_STREAM_HOST", "0.0.0.0")
+    _stream_port = int(os.environ.get("NOM_STREAM_PORT", "8000"))
     # Startup: Initialize camera
     try:
-        _camera = Camera()
+        _camera = Camera(
+            directory=_media_dir / "videos",
+            photo_directory=_media_dir / "photos",
+        )
     except RuntimeError as e:
         logger.warning("Camera initialization failed; API will run without camera: %s", e)
 
     # Startup: Create HAT client (lazy connect — daemon may not be running yet)
     _hat_client = HatClient()
 
+    # Startup: Initialize audio recorder and player
+    _audio_recorder = AudioRecorder(audio_dir=_media_dir / "audio")
+    _audio_player = AudioPlayer(audio_dir=_media_dir / "audio")
+
     yield
 
-    # Shutdown: Cleanup
+    # Shutdown: stop any active audio sessions
+    if _audio_recorder and _audio_recorder.is_recording:
+        _audio_recorder.stop()
+    if _audio_player and _audio_player.is_playing:
+        _audio_player.stop()
+
+    # Shutdown: stop stream server if running
+    if _stream_server is not None:
+        _stream_server.close()
+
+    # Shutdown: Cleanup camera and HAT
     if _camera:
         _camera.close()
     if _hat_client:
@@ -428,10 +622,329 @@ def create_app() -> FastAPI:
     # Routes
     # ========================================================================
 
+    # ========================================================================
+    # Health
+    # ========================================================================
+
     @app.get("/", tags=["Health"])
     async def health():
         """Health check endpoint."""
         return {"status": "ok", "service": "nomon-camera-api", "version": "0.1.0"}
+
+    # ========================================================================
+    # Sensor Endpoints
+    # ========================================================================
+
+    @app.get("/api/sensor/grayscale", response_model=GrayscaleResponse, tags=["Sensor"])
+    async def get_grayscale():
+        """Read all three grayscale sensor ADC channels.
+
+        Returns raw 12-bit ADC values for the left, center, and right
+        grayscale sensors used for cliff and line detection.
+
+        Returns
+        -------
+        GrayscaleResponse
+            ADC channel numbers and raw readings (0–4095) per channel.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware read failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(_hat_client.read_grayscale)
+            return GrayscaleResponse(
+                channels=result.channels,
+                values=result.values,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.get("/api/sensor/ultrasonic", response_model=UltrasonicResponse, tags=["Sensor"])
+    async def get_ultrasonic():
+        """Trigger the ultrasonic sensor and return the measured distance.
+
+        The nomopractic daemon drives the ultrasonic trigger line for 10 µs and times
+        the echo pulse to compute the distance. GPIO mappings for trigger and echo
+        are defined in the nomopractic configuration and IPC schema
+        (see ``docs/hat_ipc_schema.md``). Valid range is 2–400 cm for
+        HC-SR04-compatible sensors.
+
+        Returns
+        -------
+        UltrasonicResponse
+            ``distance_cm``: distance in centimetres.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware error (timeout, no echo, GPIO failure).
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(_hat_client.read_ultrasonic)
+            return UltrasonicResponse(
+                distance_cm=result.distance_cm,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # ========================================================================
+    # Vehicle Endpoints (high-level convenience API)
+    # ========================================================================
+
+    @app.post("/api/drive", response_model=DriveResponse, tags=["Vehicle"])
+    async def drive(request: DriveRequest):
+        """Drive all configured DC motors at the same speed simultaneously.
+
+        Sends a single coordinated ``drive`` IPC command that sets all motors
+        in one atomic operation, ensuring synchronised wheel movement.
+
+        Parameters
+        ----------
+        request : DriveRequest
+            Signed speed (−100–100) and optional TTL lease.
+
+        Returns
+        -------
+        DriveResponse
+            Echoed speed, number of motors commanded, and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware write failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            motors = await asyncio.to_thread(_hat_client.drive, request.speed_pct, request.ttl_ms)
+            return DriveResponse(
+                speed_pct=request.speed_pct,
+                motors=motors,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/steer", response_model=SteerResponse, tags=["Vehicle"])
+    async def steer(request: SteerRequest):
+        """Set the steering servo angle.
+
+        Parameters
+        ----------
+        request : SteerRequest
+            Angle in degrees (0–180, 90 = straight ahead) and optional TTL.
+
+        Returns
+        -------
+        SteerResponse
+            Echoed angle and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware write failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.steer, request.angle_deg, request.ttl_ms)
+            return SteerResponse(
+                angle_deg=request.angle_deg,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/camera/pan", response_model=PanResponse, tags=["Vehicle"])
+    async def pan_camera(request: PanRequest):
+        """Set the camera pan (horizontal) servo angle.
+
+        Parameters
+        ----------
+        request : PanRequest
+            Angle in degrees (0–180, 90 = centre) and optional TTL.
+
+        Returns
+        -------
+        PanResponse
+            Echoed angle and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware write failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.pan_camera, request.angle_deg, request.ttl_ms)
+            return PanResponse(
+                angle_deg=request.angle_deg,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/camera/tilt", response_model=TiltResponse, tags=["Vehicle"])
+    async def tilt_camera(request: TiltRequest):
+        """Set the camera tilt (vertical) servo angle.
+
+        Parameters
+        ----------
+        request : TiltRequest
+            Angle in degrees (0–180, 90 = centre) and optional TTL.
+
+        Returns
+        -------
+        TiltResponse
+            Echoed angle and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware write failure.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.tilt_camera, request.angle_deg, request.ttl_ms)
+            return TiltResponse(
+                angle_deg=request.angle_deg,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # ========================================================================
+    # Stream Endpoints
+    # ========================================================================
+
+    @app.post("/api/stream/start", response_model=StreamStartResponse, tags=["Stream"])
+    async def start_stream(request: StreamStartRequest):
+        """Start the MJPEG stream server in the background.
+
+        Uses the host and port from the request (or defaults from the
+        ``NOM_STREAM_HOST`` / ``NOM_STREAM_PORT`` environment variables set
+        by ``start.sh`` from ``config.toml``) to start a Flask-based MJPEG
+        stream server.  The existing API camera instance is shared with the
+        stream server to avoid conflicting camera handles.  If a stream is
+        already running the existing URL is returned without restarting.
+
+        Returns
+        -------
+        StreamStartResponse
+            ``url``: base URL of the stream viewer (``http://host:port``).
+
+        Raises
+        ------
+        HTTPException
+            503 if the camera is not available.
+            500 if the stream server fails to start.
+        """
+        global _stream_server, _stream_host, _stream_port
+        if _camera is None:
+            raise HTTPException(status_code=503, detail="camera not available")
+
+        host = request.host or _stream_host
+        port = request.port or _stream_port
+
+        if _stream_server is not None:
+            url = f"http://{_stream_server.host}:{_stream_server.port}"
+            return StreamStartResponse(
+                url=url,
+                host=_stream_server.host,
+                port=_stream_server.port,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+
+        try:
+            server = StreamServer(host=host, port=port, camera=_camera)
+            server.start_background()
+            _stream_server = server
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to start stream: {e}") from e
+
+        url = f"http://{host}:{port}"
+        return StreamStartResponse(
+            url=url,
+            host=host,
+            port=port,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/stream/stop", response_model=StreamStopResponse, tags=["Stream"])
+    async def stop_stream():
+        """Stop the MJPEG stream server.
+
+        Stops the background stream server so that the camera is available
+        for capture and recording operations again.
+
+        Returns
+        -------
+        StreamStopResponse
+            ``success``: true if a running stream was stopped.
+        """
+        global _stream_server
+        if _stream_server is None:
+            return StreamStopResponse(
+                success=False,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        server = _stream_server
+        _stream_server = None
+        try:
+            await asyncio.to_thread(server.close)
+        except Exception:
+            pass
+        return StreamStopResponse(
+            success=True,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/stream/status", response_model=StreamStatusResponse, tags=["Stream"])
+    async def get_stream_status():
+        """Return the current stream server state."""
+        running = _stream_server is not None
+        url = (
+            f"http://{_stream_server.host}:{_stream_server.port}"
+            if _stream_server is not None
+            else None
+        )
+        return StreamStatusResponse(
+            running=running,
+            url=url,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    # ========================================================================
+    # Camera Endpoints
+    # ========================================================================
 
     @app.get("/api/camera/status", response_model=CameraStatus, tags=["Camera"])
     async def get_camera_status():
@@ -560,6 +1073,187 @@ def create_app() -> FastAPI:
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Recording stop failed: {str(e)}") from e
+
+    # ========================================================================
+    # Audio Endpoints
+    # ========================================================================
+
+    @app.post("/api/audio/record/start", response_model=AudioRecordStartResponse, tags=["Audio"])
+    async def start_audio_recording(request: AudioRecordStartRequest):
+        """Start recording audio from the USB microphone.
+
+        Records from the built-in USB microphone (PCM2902 codec) to a WAV
+        file in the configured audio directory.  Recording continues until
+        ``POST /api/audio/record/stop`` is called.
+
+        Parameters
+        ----------
+        request : AudioRecordStartRequest
+            Optional ``filename`` (basename only).  A timestamped name is
+            generated when absent.
+
+        Returns
+        -------
+        AudioRecordStartResponse
+            ``filename``: basename of the output WAV file.
+
+        Raises
+        ------
+        HTTPException
+            400 if ``filename`` contains path components.
+            409 if a recording is already in progress.
+            500 on hardware error.
+        """
+        if _audio_recorder is None:
+            raise HTTPException(status_code=503, detail="audio not available")
+        if _audio_recorder.is_recording:
+            raise HTTPException(status_code=409, detail="A recording is already in progress")
+        try:
+            recording_path = await asyncio.to_thread(_audio_recorder.start, request.filename)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return AudioRecordStartResponse(
+            recording=True,
+            filename=Path(recording_path).name,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/audio/record/stop", response_model=AudioRecordStopResponse, tags=["Audio"])
+    async def stop_audio_recording():
+        """Stop the active audio recording session.
+
+        Finalises and flushes the WAV file.
+
+        Returns
+        -------
+        AudioRecordStopResponse
+            ``filename``: basename of the completed recording, or null if no
+            recording was active.
+        """
+        if _audio_recorder is None:
+            raise HTTPException(status_code=503, detail="audio not available")
+        recording_path = await asyncio.to_thread(_audio_recorder.stop)
+        return AudioRecordStopResponse(
+            recording=False,
+            filename=Path(recording_path).name if recording_path else None,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/audio/play", response_model=AudioPlayResponse, tags=["Audio"])
+    async def play_audio(request: AudioPlayRequest):
+        """Play a WAV audio file over the speaker.
+
+        Enables the speaker amplifier via the nomopractic HAT daemon, then
+        starts playback of the specified WAV file through the HifiBerry DAC.
+
+        Parameters
+        ----------
+        request : AudioPlayRequest
+            ``filename``: basename of the WAV file to play (no path components).
+
+        Returns
+        -------
+        AudioPlayResponse
+            ``filename``: basename of the file being played.
+
+        Raises
+        ------
+        HTTPException
+            400 if the filename contains path components.
+            404 if the file does not exist.
+            409 if playback is already in progress.
+            500 on hardware error.
+        """
+        if _audio_player is None:
+            raise HTTPException(status_code=503, detail="audio not available")
+        if _audio_player.is_playing:
+            raise HTTPException(status_code=409, detail="Playback is already in progress")
+
+        # Enable speaker amplifier before playback (best-effort).
+        if _hat_client is not None:
+            try:
+                await asyncio.to_thread(_hat_client.enable_speaker)
+            except (HatError, HatConnectionError):
+                pass  # Continue without amplifier enable if daemon unavailable.
+
+        try:
+            await asyncio.to_thread(_audio_player.play, request.filename)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except RuntimeError as e:
+            message = str(e)
+            lower_message = message.lower()
+            if "pyaudio not installed" in lower_message or "pyaudio not available" in lower_message:
+                raise HTTPException(status_code=503, detail=message) from e
+            raise HTTPException(status_code=409, detail=message) from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+        current = _audio_player.current_file
+        return AudioPlayResponse(
+            playing=True,
+            filename=Path(current).name if current else request.filename,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/audio/play/stop", response_model=AudioPlayStopResponse, tags=["Audio"])
+    async def stop_audio_playback():
+        """Stop ongoing audio playback.
+
+        Stops the player and disables the speaker amplifier.
+
+        Returns
+        -------
+        AudioPlayStopResponse
+            ``success``: true.
+        """
+        if _audio_player is None:
+            raise HTTPException(status_code=503, detail="audio not available")
+        await asyncio.to_thread(_audio_player.stop)
+
+        # Disable speaker amplifier after playback (best-effort).
+        if _hat_client is not None:
+            try:
+                await asyncio.to_thread(_hat_client.disable_speaker)
+            except (HatError, HatConnectionError):
+                pass
+
+        return AudioPlayStopResponse(
+            success=True,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/audio/files", response_model=AudioFilesResponse, tags=["Audio"])
+    async def list_audio():
+        """List available WAV audio files in the configured audio directory.
+
+        Returns
+        -------
+        AudioFilesResponse
+            ``files``: sorted list of WAV file basenames.
+        """
+        files = await asyncio.to_thread(list_audio_files, _media_dir / "audio")
+        return AudioFilesResponse(
+            files=files,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/audio/status", response_model=AudioStatusResponse, tags=["Audio"])
+    async def get_audio_status():
+        """Return current audio recorder and player state."""
+        rec_file = _audio_recorder.current_file if _audio_recorder else None
+        play_file = _audio_player.current_file if _audio_player else None
+        return AudioStatusResponse(
+            recording=_audio_recorder.is_recording if _audio_recorder else False,
+            recording_file=Path(rec_file).name if rec_file else None,
+            playing=_audio_player.is_playing if _audio_player else False,
+            playback_file=Path(play_file).name if play_file else None,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     # ========================================================================
     # HAT Endpoints
@@ -826,171 +1520,38 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    # ========================================================================
-    # Vehicle Endpoints (high-level convenience API)
-    # ========================================================================
+    @app.post("/api/hat/speaker", response_model=SpeakerResponse, tags=["HAT"])
+    async def set_speaker(request: SpeakerRequest):
+        """Enable or disable the speaker amplifier on the Robot HAT V4.
 
-    @app.post("/api/drive", response_model=DriveResponse, tags=["Vehicle"])
-    async def drive(request: DriveRequest):
-        """Drive all configured DC motors at the same speed simultaneously.
-
-        Sends a single coordinated ``drive`` IPC command that sets all motors
-        in one atomic operation, ensuring synchronised wheel movement.
+        The request is forwarded to the nomopractic daemon, which controls
+        the underlying hardware signal used to power the amplifier on or off.
 
         Parameters
         ----------
-        request : DriveRequest
-            Signed speed (−100–100) and optional TTL lease.
+        request : SpeakerRequest
+            ``enabled``: true to power the amplifier on, false to power off.
 
         Returns
         -------
-        DriveResponse
-            Echoed speed, number of motors commanded, and UTC timestamp.
+        SpeakerResponse
+            Current ``enabled`` state.
 
         Raises
         ------
         HTTPException
             503 if the nomopractic daemon is unavailable.
-            500 on hardware write failure.
+            500 on hardware error.
         """
         if _hat_client is None:
             raise HTTPException(status_code=503, detail="nomopractic daemon not available")
         try:
-            motors = await asyncio.to_thread(_hat_client.drive, request.speed_pct, request.ttl_ms)
-            return DriveResponse(
-                speed_pct=request.speed_pct,
-                motors=motors,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
-
-    @app.post("/api/steer", response_model=SteerResponse, tags=["Vehicle"])
-    async def steer(request: SteerRequest):
-        """Set the steering servo angle.
-
-        Parameters
-        ----------
-        request : SteerRequest
-            Angle in degrees (0–180, 90 = straight ahead) and optional TTL.
-
-        Returns
-        -------
-        SteerResponse
-            Echoed angle and UTC timestamp.
-
-        Raises
-        ------
-        HTTPException
-            503 if the nomopractic daemon is unavailable.
-            500 on hardware write failure.
-        """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(_hat_client.steer, request.angle_deg, request.ttl_ms)
-            return SteerResponse(
-                angle_deg=request.angle_deg,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
-
-    @app.post("/api/camera/pan", response_model=PanResponse, tags=["Vehicle"])
-    async def pan_camera(request: PanRequest):
-        """Set the camera pan (horizontal) servo angle.
-
-        Parameters
-        ----------
-        request : PanRequest
-            Angle in degrees (0–180, 90 = centre) and optional TTL.
-
-        Returns
-        -------
-        PanResponse
-            Echoed angle and UTC timestamp.
-
-        Raises
-        ------
-        HTTPException
-            503 if the nomopractic daemon is unavailable.
-            500 on hardware write failure.
-        """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(_hat_client.pan_camera, request.angle_deg, request.ttl_ms)
-            return PanResponse(
-                angle_deg=request.angle_deg,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
-
-    @app.post("/api/camera/tilt", response_model=TiltResponse, tags=["Vehicle"])
-    async def tilt_camera(request: TiltRequest):
-        """Set the camera tilt (vertical) servo angle.
-
-        Parameters
-        ----------
-        request : TiltRequest
-            Angle in degrees (0–180, 90 = centre) and optional TTL.
-
-        Returns
-        -------
-        TiltResponse
-            Echoed angle and UTC timestamp.
-
-        Raises
-        ------
-        HTTPException
-            503 if the nomopractic daemon is unavailable.
-            500 on hardware write failure.
-        """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(_hat_client.tilt_camera, request.angle_deg, request.ttl_ms)
-            return TiltResponse(
-                angle_deg=request.angle_deg,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
-
-    @app.get("/api/sensor/grayscale", response_model=GrayscaleResponse, tags=["Vehicle"])
-    async def get_grayscale():
-        """Read all three grayscale sensor ADC channels.
-
-        Returns raw 12-bit ADC values for the left, center, and right
-        grayscale sensors used for cliff and line detection.
-
-        Returns
-        -------
-        GrayscaleResponse
-            ADC channel numbers and raw readings (0–4095) per channel.
-
-        Raises
-        ------
-        HTTPException
-            503 if the nomopractic daemon is unavailable.
-            500 on hardware read failure.
-        """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            result = await asyncio.to_thread(_hat_client.read_grayscale)
-            return GrayscaleResponse(
-                channels=result.channels,
-                values=result.values,
+            if request.enabled:
+                await asyncio.to_thread(_hat_client.enable_speaker)
+            else:
+                await asyncio.to_thread(_hat_client.disable_speaker)
+            return SpeakerResponse(
+                enabled=request.enabled,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
         except HatConnectionError as e:

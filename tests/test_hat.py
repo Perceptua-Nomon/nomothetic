@@ -25,6 +25,7 @@ from nomothetic.hat import (
     MotorStatusResult,
     ServoLeaseEntry,
     ServoStatusResult,
+    UltrasonicResult,
 )
 
 # ---------------------------------------------------------------------------
@@ -65,6 +66,9 @@ _DEFAULT_RESPONSES: dict[str, Any] = {
     "pan_camera": {"servo": "camera_pan", "channel": 0, "angle_deg": 45.0, "pulse_us": 1000},
     "tilt_camera": {"servo": "camera_tilt", "channel": 1, "angle_deg": 60.0, "pulse_us": 1167},
     "read_grayscale": {"channels": [0, 1, 2], "values": [1200, 3000, 800]},
+    "read_ultrasonic": {"distance_cm": 42.5},
+    "enable_speaker": {"enabled": True, "pin_bcm": 20},
+    "disable_speaker": {"enabled": False, "pin_bcm": 20},
 }
 
 
@@ -820,5 +824,95 @@ def test_read_grayscale_hardware_error(tmp_path):
     with HatClient(socket_path=sock_path) as hat:
         with pytest.raises(HatError):
             hat.read_grayscale()
+
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# read_ultrasonic()
+# ---------------------------------------------------------------------------
+
+
+def test_read_ultrasonic_returns_dataclass(mock_server):
+    """`read_ultrasonic()` returns a `UltrasonicResult`."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.read_ultrasonic()
+    assert isinstance(result, UltrasonicResult)
+    assert result.distance_cm == pytest.approx(42.5)
+
+
+def test_read_ultrasonic_hardware_error(tmp_path):
+    """`read_ultrasonic()` propagates `HatError` on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "read_ultrasonic", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.read_ultrasonic()
+
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# enable_speaker() / disable_speaker()
+# ---------------------------------------------------------------------------
+
+
+def test_enable_speaker_calls_ipc(mock_server):
+    """`enable_speaker()` succeeds without raising."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.enable_speaker()  # should not raise
+
+
+def test_disable_speaker_calls_ipc(mock_server):
+    """`disable_speaker()` succeeds without raising."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.disable_speaker()  # should not raise
+
+
+def test_enable_speaker_hardware_error(tmp_path):
+    """`enable_speaker()` propagates `HatError` on GPIO failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "enable_speaker", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.enable_speaker()
+
+    t.join(timeout=2.0)
+
+
+def test_disable_speaker_hardware_error(tmp_path):
+    """`disable_speaker()` propagates `HatError` on GPIO failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "disable_speaker", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.disable_speaker()
 
     t.join(timeout=2.0)

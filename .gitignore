@@ -144,6 +144,7 @@ ENV/
 env.bak/
 venv.bak/
 
+
 # TLS/SSL Certificates (auto-generated)
 # Self-signed certificates and keys are generated at runtime
 .certs/
