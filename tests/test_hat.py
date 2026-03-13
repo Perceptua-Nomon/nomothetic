@@ -15,14 +15,20 @@ from typing import Any
 import pytest
 
 from nomothetic.hat import (
+    CalibrationSnapshot,
+    GrayscaleCaptureResult,
     GrayscaleResult,
     HatClient,
     HatConnectionError,
     HatError,
     HatHealthResult,
     McuStatusResult,
+    MotorCalibrationEntry,
     MotorLeaseEntry,
     MotorStatusResult,
+    NormalizedGrayscaleResult,
+    SaveCalibrationResult,
+    ServoCalibrationEntry,
     ServoLeaseEntry,
     ServoStatusResult,
     UltrasonicResult,
@@ -73,6 +79,42 @@ _DEFAULT_RESPONSES: dict[str, Any] = {
     "get_volume": {"volume_pct": 80},
     "set_mic_gain": {"gain_pct": 50},
     "get_mic_gain": {"gain_pct": 50},
+    "get_calibration": {
+        "motors": [
+            {"channel": 0, "speed_scale": 1.0, "deadband_pct": 0.0, "reversed": False},
+            {"channel": 1, "speed_scale": 1.0, "deadband_pct": 0.0, "reversed": False},
+        ],
+        "servos": {
+            "steering": {"trim_us": 0},
+            "camera_pan": {"trim_us": 0},
+            "camera_tilt": {"trim_us": 0},
+        },
+        "grayscale": [
+            {"adc_channel": 0, "white_raw": 100, "black_raw": 3000},
+            {"adc_channel": 1, "white_raw": 100, "black_raw": 3000},
+            {"adc_channel": 2, "white_raw": 100, "black_raw": 3000},
+        ],
+    },
+    "set_motor_calibration": {
+        "channel": 0,
+        "speed_scale": 1.2,
+        "deadband_pct": 5.0,
+        "reversed": True,
+    },
+    "set_servo_calibration": {"servo": "steering", "trim_us": -50},
+    "calibrate_grayscale": {
+        "channel": 0,
+        "adc_channel": 0,
+        "surface": "white",
+        "raw_value": 142,
+        "stored": True,
+    },
+    "save_calibration": {"saved": True, "path": "/etc/nomopractic/calibration.toml"},
+    "reset_calibration": {"reset": True},
+    "read_grayscale_normalized": {
+        "channels": [0, 1, 2],
+        "normalized": [0.04, 0.87, 0.11],
+    },
 }
 
 
@@ -1069,4 +1111,166 @@ def test_get_mic_gain_hardware_error(tmp_path):
         with pytest.raises(HatError):
             hat.get_mic_gain()
 
+    t.join(timeout=2.0)
+
+
+# ===========================================================================
+# Calibration tests
+# ===========================================================================
+
+
+def test_get_calibration_returns_snapshot(mock_server):
+    """`get_calibration()` returns a full CalibrationSnapshot."""
+    with HatClient(socket_path=mock_server) as hat:
+        snap = hat.get_calibration()
+    assert isinstance(snap, CalibrationSnapshot)
+    assert len(snap.motors) == 2
+    assert snap.motors[0].channel == 0
+    assert snap.motors[0].speed_scale == 1.0
+    assert len(snap.grayscale) == 3
+    assert snap.grayscale[0].adc_channel == 0
+    assert "steering" in snap.servos
+    assert snap.servos["steering"].trim_us == 0
+
+
+def test_set_motor_calibration_returns_entry(mock_server):
+    """`set_motor_calibration()` returns updated MotorCalibrationEntry."""
+    with HatClient(socket_path=mock_server) as hat:
+        entry = hat.set_motor_calibration(0, speed_scale=1.2, deadband_pct=5.0, reversed=True)
+    assert isinstance(entry, MotorCalibrationEntry)
+    assert entry.channel == 0
+    assert entry.speed_scale == 1.2
+    assert entry.reversed is True
+
+
+def test_set_motor_calibration_partial_update(mock_server):
+    """`set_motor_calibration()` with only some fields set still returns an entry."""
+    with HatClient(socket_path=mock_server) as hat:
+        entry = hat.set_motor_calibration(0, speed_scale=1.5)
+    assert isinstance(entry, MotorCalibrationEntry)
+
+
+def test_set_motor_calibration_invalid_channel_raises(tmp_path):
+    """`set_motor_calibration()` propagates HatError on INVALID_PARAMS."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "set_motor_calibration", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.set_motor_calibration(99, speed_scale=1.0)
+    t.join(timeout=2.0)
+
+
+def test_set_servo_calibration_returns_entry(mock_server):
+    """`set_servo_calibration()` returns a ServoCalibrationEntry."""
+    with HatClient(socket_path=mock_server) as hat:
+        entry = hat.set_servo_calibration("steering", -50)
+    assert isinstance(entry, ServoCalibrationEntry)
+    assert entry.servo == "steering"
+    assert entry.trim_us == -50
+
+
+def test_set_servo_calibration_invalid_servo_raises(tmp_path):
+    """`set_servo_calibration()` propagates HatError for unrecognised servo."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "set_servo_calibration", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.set_servo_calibration("bad_servo", 0)
+    t.join(timeout=2.0)
+
+
+def test_calibrate_grayscale_returns_result(mock_server):
+    """`calibrate_grayscale()` returns a GrayscaleCaptureResult with adc_channel."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.calibrate_grayscale(0, "white")
+    assert isinstance(result, GrayscaleCaptureResult)
+    assert result.channel == 0
+    assert result.adc_channel == 0
+    assert result.surface == "white"
+    assert result.stored is True
+
+
+def test_calibrate_grayscale_constraint_violation_raises(tmp_path):
+    """`calibrate_grayscale()` propagates HatError on constraint violation."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "calibrate_grayscale", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.calibrate_grayscale(0, "black")
+    t.join(timeout=2.0)
+
+
+def test_save_calibration_returns_result(mock_server):
+    """`save_calibration()` returns a SaveCalibrationResult with path."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.save_calibration()
+    assert isinstance(result, SaveCalibrationResult)
+    assert result.saved is True
+    assert result.path == "/etc/nomopractic/calibration.toml"
+
+
+def test_reset_calibration_returns_true(mock_server):
+    """`reset_calibration()` returns True."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.reset_calibration()
+    assert result is True
+
+
+def test_read_grayscale_normalized_returns_result(mock_server):
+    """`read_grayscale_normalized()` returns a NormalizedGrayscaleResult."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.read_grayscale_normalized()
+    assert isinstance(result, NormalizedGrayscaleResult)
+    assert result.channels == [0, 1, 2]
+    assert len(result.normalized) == 3
+    assert all(0.0 <= v <= 1.0 for v in result.normalized)
+
+
+def test_get_calibration_connection_error_raises(tmp_path):
+    """`get_calibration()` raises HatConnectionError when daemon is down."""
+    sock_path = str(tmp_path / "nomopractic_missing.sock")
+    with pytest.raises(HatConnectionError):
+        with HatClient(socket_path=sock_path) as hat:
+            hat.get_calibration()
+
+
+def test_save_calibration_hardware_error_raises(tmp_path):
+    """`save_calibration()` propagates HatError on HARDWARE_ERROR."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "save_calibration", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.save_calibration()
     t.join(timeout=2.0)

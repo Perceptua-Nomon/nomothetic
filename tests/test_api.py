@@ -1987,3 +1987,334 @@ def test_parse_int_env_boundary_values_accepted(monkeypatch):
 
     monkeypatch.setenv("_TEST_INT_ENV", "100")
     assert nomothetic.api._parse_int_env("_TEST_INT_ENV", 50, lo=0, hi=100) == 100
+
+
+# ===========================================================================
+# Calibration API tests
+# ===========================================================================
+
+
+def test_get_calibration_success(client, mock_hat):
+    """GET /api/calibration returns full snapshot and timestamp."""
+    import nomothetic.api
+    from nomothetic.hat import (
+        CalibrationSnapshot,
+        GrayscaleCalibrationEntry,
+        MotorCalibrationEntry,
+        ServoCalibrationEntry,
+    )
+
+    snap = CalibrationSnapshot(
+        motors=[
+            MotorCalibrationEntry(channel=0, speed_scale=1.0, deadband_pct=0.0, reversed=False)
+        ],
+        servos={"steering": ServoCalibrationEntry(servo="steering", trim_us=0)},
+        grayscale=[GrayscaleCalibrationEntry(adc_channel=0, white_raw=100, black_raw=3000)],
+    )
+    mock_hat.get_calibration.return_value = snap
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/calibration")
+    assert response.status_code == 200
+    data = response.json()
+    assert "motors" in data
+    assert "servos" in data
+    assert "grayscale" in data
+    assert "timestamp" in data
+    mock_hat.get_calibration.assert_called_once()
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_calibration_no_client(client):
+    """GET /api/calibration returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/calibration")
+    assert response.status_code == 503
+
+
+def test_get_calibration_connection_error(client, mock_hat):
+    """GET /api/calibration returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.get_calibration.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/calibration")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_put_motor_calibration_success(client, mock_hat):
+    """PUT /api/calibration/motor/0 returns updated motor entry."""
+    import nomothetic.api
+    from nomothetic.hat import MotorCalibrationEntry
+
+    mock_hat.set_motor_calibration.return_value = MotorCalibrationEntry(
+        channel=0, speed_scale=1.2, deadband_pct=5.0, reversed=True
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.put(
+        "/api/calibration/motor/0",
+        json={"speed_scale": 1.2, "deadband_pct": 5.0, "reversed": True},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["channel"] == 0
+    assert data["speed_scale"] == 1.2
+    assert "timestamp" in data
+    mock_hat.set_motor_calibration.assert_called_once_with(0, 1.2, 5.0, True)
+
+    nomothetic.api._hat_client = None
+
+
+def test_put_motor_calibration_no_client(client):
+    """PUT /api/calibration/motor/0 returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.put("/api/calibration/motor/0", json={"speed_scale": 1.0})
+    assert response.status_code == 503
+
+
+def test_put_motor_calibration_invalid_channel(client, mock_hat):
+    """PUT /api/calibration/motor/99 returns 422 on INVALID_PARAMS."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.set_motor_calibration.side_effect = HatError("INVALID_PARAMS", "channel out of range")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.put("/api/calibration/motor/99", json={"speed_scale": 1.0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_put_motor_calibration_body_validation(client, mock_hat):
+    """PUT /api/calibration/motor/0 returns 422 on out-of-range speed_scale."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.put("/api/calibration/motor/0", json={"speed_scale": 99.9})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_put_servo_calibration_success(client, mock_hat):
+    """PUT /api/calibration/servo/steering returns updated servo entry."""
+    import nomothetic.api
+    from nomothetic.hat import ServoCalibrationEntry
+
+    mock_hat.set_servo_calibration.return_value = ServoCalibrationEntry(
+        servo="steering", trim_us=-50
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.put("/api/calibration/servo/steering", json={"trim_us": -50})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["servo"] == "steering"
+    assert data["trim_us"] == -50
+    assert "timestamp" in data
+    mock_hat.set_servo_calibration.assert_called_once_with("steering", -50)
+
+    nomothetic.api._hat_client = None
+
+
+def test_put_servo_calibration_no_client(client):
+    """PUT /api/calibration/servo/steering returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.put("/api/calibration/servo/steering", json={"trim_us": 0})
+    assert response.status_code == 503
+
+
+def test_put_servo_calibration_invalid_name(client, mock_hat):
+    """PUT /api/calibration/servo/bad returns 422 on INVALID_PARAMS."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.set_servo_calibration.side_effect = HatError("INVALID_PARAMS", "unrecognised servo")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.put("/api/calibration/servo/bad_servo", json={"trim_us": 0})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_calibrate_grayscale_success(client, mock_hat):
+    """POST /api/calibration/grayscale/0/capture returns capture result."""
+    import nomothetic.api
+    from nomothetic.hat import GrayscaleCaptureResult
+
+    mock_hat.calibrate_grayscale.return_value = GrayscaleCaptureResult(
+        channel=0, adc_channel=0, surface="white", raw_value=142, stored=True
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/calibration/grayscale/0/capture", json={"surface": "white"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["channel"] == 0
+    assert data["adc_channel"] == 0
+    assert data["surface"] == "white"
+    assert data["stored"] is True
+    assert "timestamp" in data
+    mock_hat.calibrate_grayscale.assert_called_once_with(0, "white")
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_calibrate_grayscale_no_client(client):
+    """POST /api/calibration/grayscale/0/capture returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/calibration/grayscale/0/capture", json={"surface": "white"})
+    assert response.status_code == 503
+
+
+def test_post_calibrate_grayscale_constraint_violation(client, mock_hat):
+    """POST /api/calibration/grayscale/0/capture returns 422 on constraint violation."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.calibrate_grayscale.side_effect = HatError("INVALID_PARAMS", "white_raw >= black_raw")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/calibration/grayscale/0/capture", json={"surface": "black"})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_calibrate_grayscale_invalid_surface(client, mock_hat):
+    """POST /api/calibration/grayscale/0/capture returns 422 on invalid surface."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = mock_hat
+    response = client.post("/api/calibration/grayscale/0/capture", json={"surface": "grey"})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_save_calibration_success(client, mock_hat):
+    """POST /api/calibration/save returns saved=true and path."""
+    import nomothetic.api
+    from nomothetic.hat import SaveCalibrationResult
+
+    mock_hat.save_calibration.return_value = SaveCalibrationResult(
+        saved=True, path="/etc/nomopractic/calibration.toml"
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/calibration/save")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["saved"] is True
+    assert data["path"] == "/etc/nomopractic/calibration.toml"
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_save_calibration_no_client(client):
+    """POST /api/calibration/save returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/calibration/save")
+    assert response.status_code == 503
+
+
+def test_post_save_calibration_connection_error(client, mock_hat):
+    """POST /api/calibration/save returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.save_calibration.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/calibration/save")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_reset_calibration_success(client, mock_hat):
+    """POST /api/calibration/reset returns reset=true."""
+    import nomothetic.api
+
+    mock_hat.reset_calibration.return_value = True
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/calibration/reset")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["reset"] is True
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_reset_calibration_no_client(client):
+    """POST /api/calibration/reset returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/calibration/reset")
+    assert response.status_code == 503
+
+
+def test_get_grayscale_normalized_success(client, mock_hat):
+    """GET /api/sensor/grayscale/normalized returns channels and normalized values."""
+    import nomothetic.api
+    from nomothetic.hat import NormalizedGrayscaleResult
+
+    mock_hat.read_grayscale_normalized.return_value = NormalizedGrayscaleResult(
+        channels=[0, 1, 2], normalized=[0.04, 0.87, 0.11]
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/sensor/grayscale/normalized")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["channels"] == [0, 1, 2]
+    assert len(data["normalized"]) == 3
+    assert "timestamp" in data
+    mock_hat.read_grayscale_normalized.assert_called_once()
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_grayscale_normalized_no_client(client):
+    """GET /api/sensor/grayscale/normalized returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/sensor/grayscale/normalized")
+    assert response.status_code == 503
+
+
+def test_get_grayscale_normalized_connection_error(client, mock_hat):
+    """GET /api/sensor/grayscale/normalized returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.read_grayscale_normalized.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/sensor/grayscale/normalized")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None

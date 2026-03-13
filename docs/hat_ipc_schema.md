@@ -772,6 +772,234 @@ Read the current microphone capture gain from the ALSA mixer.
 
 ---
 
+### `get_calibration`
+
+Return a full snapshot of the in-memory calibration store. Values are the
+current runtime calibration, which may differ from disk if `save_calibration`
+has not been called since the last `set_*_calibration` call.
+
+**Request:**
+```json
+{"id": "cal1", "method": "get_calibration", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{
+  "motors": [
+    {"channel": 0, "speed_scale": 1.0, "deadband_pct": 0.0, "reversed": false},
+    {"channel": 1, "speed_scale": 1.0, "deadband_pct": 0.0, "reversed": false}
+  ],
+  "servos": {
+    "steering":    {"trim_us": 0},
+    "camera_pan":  {"trim_us": 0},
+    "camera_tilt": {"trim_us": 0}
+  },
+  "grayscale": [
+    {"adc_channel": 0, "white_raw": 100, "black_raw": 3000},
+    {"adc_channel": 1, "white_raw": 100, "black_raw": 3000},
+    {"adc_channel": 2, "white_raw": 100, "black_raw": 3000}
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `motors[].channel` | integer | IPC motor index (0-based, corresponds to `config.motors` position) |
+| `motors[].speed_scale` | float | Multiplier on `speed_pct` before PWM write (0.5–2.0) |
+| `motors[].deadband_pct` | float | Minimum `speed_pct` magnitude below which motor stays stopped (0.0–20.0) |
+| `motors[].reversed` | boolean | Runtime direction flip (XOR with `MotorConfig.reversed`) |
+| `servos` | object | Keys: `"steering"`, `"camera_pan"`, `"camera_tilt"` |
+| `servos[].trim_us` | integer | Signed offset (µs) added to computed pulse before 500–2500 clamping |
+| `grayscale[].adc_channel` | integer | ADC bus channel number (from `config.sensors.grayscale`) |
+| `grayscale[].white_raw` | integer | Raw ADC value captured from a white/reflective surface |
+| `grayscale[].black_raw` | integer | Raw ADC value captured from a black/non-reflective surface |
+
+---
+
+### `set_motor_calibration`
+
+Adjust calibration values for one motor channel. Partial updates are accepted —
+unspecified fields are left unchanged.
+
+**Request:**
+```json
+{"id": "cal2", "method": "set_motor_calibration", "params": {"channel": 0, "speed_scale": 1.2, "reversed": true}}\n
+```
+
+| Param | Type | Required | Range | Description |
+|-------|------|----------|-------|-------------|
+| `channel` | integer | yes | 0 to N-1 | IPC motor index |
+| `speed_scale` | float | no | 0.5–2.0 | New speed scale multiplier |
+| `deadband_pct` | float | no | 0.0–20.0 | New deadband |
+| `reversed` | boolean | no | — | New runtime direction flip |
+
+**Response (`result`):**
+```json
+{"channel": 0, "speed_scale": 1.2, "deadband_pct": 0.0, "reversed": true}
+```
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_PARAMS` | `channel` absent, ≥ configured motor count, or any value out of range |
+
+---
+
+### `set_servo_calibration`
+
+Set the trim offset (µs) for a named servo. The trim is added to the computed
+pulse width before the 500–2500 µs clamp is applied. Calibration may be stored
+for a servo that is currently disabled (`None` in config) — it will take effect
+if the servo is later enabled.
+
+**Request:**
+```json
+{"id": "cal3", "method": "set_servo_calibration", "params": {"servo": "steering", "trim_us": -50}}\n
+```
+
+| Param | Type | Required | Range | Description |
+|-------|------|----------|-------|-------------|
+| `servo` | string | yes | `"steering"` \| `"camera_pan"` \| `"camera_tilt"` | Logical servo name |
+| `trim_us` | integer | yes | −500–+500 | Signed trim in microseconds |
+
+**Response (`result`):**
+```json
+{"servo": "steering", "trim_us": -50}
+```
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_PARAMS` | `servo` absent or not a recognised servo name; `trim_us` outside −500–+500 |
+
+---
+
+### `calibrate_grayscale`
+
+Read the live ADC value for one grayscale sensor and store it as the white or
+black surface reference for normalised readings. `channel` is the **sensor
+position index** (0 = left, 1 = center, 2 = right per `config.sensors.grayscale`),
+not the ADC bus channel number.
+
+**Request:**
+```json
+{"id": "cal4", "method": "calibrate_grayscale", "params": {"channel": 0, "surface": "white"}}\n
+```
+
+| Param | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `channel` | integer | yes | 0–2 (sensor position index) |
+| `surface` | string | yes | `"white"` or `"black"` |
+
+**Response (`result`):**
+```json
+{"channel": 0, "adc_channel": 0, "surface": "white", "raw_value": 142, "stored": true}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `channel` | integer | Sensor position index (echoed) |
+| `adc_channel` | integer | ADC bus channel actually read (from `config.sensors.grayscale[channel]`) |
+| `surface` | string | Surface name (echoed) |
+| `raw_value` | integer | Live ADC reading stored as the reference |
+| `stored` | boolean | `true` if the value was committed to the store; `false` if rejected |
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_PARAMS` | `channel` outside 0–2; `surface` unrecognised; or storing this value would violate `white_raw < black_raw` |
+| `HARDWARE_ERROR` | ADC read failure |
+
+---
+
+### `read_grayscale_normalized`
+
+Read all three grayscale sensors and return per-channel values normalised
+against the captured surface calibration. Requires `calibrate_grayscale` to
+have been called for both `"white"` and `"black"` surfaces; falls back to
+defaults (`white_raw=100`, `black_raw=3000`) if calibration is absent.
+
+**Normalisation formula per channel:**
+`normalized = clamp((raw − white_raw) / (black_raw − white_raw), 0.0, 1.0)`
+(0.0 = white/reflective, 1.0 = black/non-reflective)
+
+**Request:**
+```json
+{"id": "cal5", "method": "read_grayscale_normalized", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{
+  "channels": [0, 1, 2],
+  "normalized": [0.04, 0.87, 0.11]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `channels` | array[integer] | ADC channel numbers (from `config.sensors.grayscale`) |
+| `normalized` | array[float] | Per-channel normalised values 0.0–1.0 |
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `HARDWARE_ERROR` | ADC read failure |
+
+---
+
+### `save_calibration`
+
+Persist the current in-memory calibration store to disk at `calibration_path`
+(default: `/etc/nomopractic/calibration.toml`). Calibration survives daemon
+restarts after this call.
+
+**Request:**
+```json
+{"id": "cal6", "method": "save_calibration", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{"saved": true, "path": "/etc/nomopractic/calibration.toml"}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `saved` | boolean | Always `true` on success |
+| `path` | string | Filesystem path the calibration was written to |
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `HARDWARE_ERROR` | Filesystem write failure (permissions, disk full, etc.) |
+
+---
+
+### `reset_calibration`
+
+Revert the in-memory calibration store to factory defaults. The calibration
+file on disk is **not** overwritten; call `save_calibration` afterwards to
+make the reset permanent across restarts.
+
+**Request:**
+```json
+{"id": "cal7", "method": "reset_calibration", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{"reset": true}
+```
+
+---
+
 ## Safety: Servo & Motor TTL Lease
 
 Servos hold their last commanded position and draw stall current indefinitely

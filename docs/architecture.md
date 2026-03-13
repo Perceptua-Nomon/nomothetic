@@ -135,6 +135,17 @@ The primary remote control interface. Mobile app and management server talk to t
 | `POST` | `/api/audio/play/stop` | Audio | Stop audio playback |
 | `GET` | `/api/audio/files` | Audio | List available WAV files |
 | `GET` | `/api/audio/status` | Audio | Current recorder/player state |
+| `GET` | `/api/audio/volume` | Audio | Read current output volume (0–100) |
+| `POST` | `/api/audio/volume` | Audio | Set output volume (HifiBerry DAC) |
+| `GET` | `/api/audio/mic-gain` | Audio | Read current mic capture gain (0–100) |
+| `POST` | `/api/audio/mic-gain` | Audio | Set mic capture gain (USB mic PCM2902) |
+| `GET` | `/api/sensor/grayscale/normalized` | Sensor | Normalised grayscale sensor readings (0.0–1.0) |
+| `GET` | `/api/calibration` | Calibration | Full calibration snapshot |
+| `PUT` | `/api/calibration/motor/{channel}` | Calibration | Set motor calibration (speed_scale, deadband, reversed) |
+| `PUT` | `/api/calibration/servo/{servo_name}` | Calibration | Set servo trim offset (µs) |
+| `POST` | `/api/calibration/grayscale/{channel}/capture` | Calibration | Capture live ADC reading as white/black reference |
+| `POST` | `/api/calibration/save` | Calibration | Persist calibration to disk |
+| `POST` | `/api/calibration/reset` | Calibration | Revert in-memory calibration to defaults |
 | `GET` | `/docs` | — | Interactive Swagger UI |
 | `GET` | `/redoc` | — | ReDoc API docs |
 

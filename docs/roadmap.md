@@ -352,15 +352,24 @@ via the HTTPS API before engaging autonomous routines.
 #### 10.1 — HatClient Calibration Methods (`nomothetic.hat`)
 - [ ] `MotorCalibrationEntry` dataclass: `channel: int`, `speed_scale: float`, `deadband_pct: float`, `reversed: bool`
 - [ ] `ServoCalibrationEntry` dataclass: `servo: str`, `trim_us: int`
-- [ ] `GrayscaleCalibrationEntry` dataclass: `channel: int`, `white_raw: int`, `black_raw: int`
+- [ ] `GrayscaleCalibrationEntry` dataclass: `adc_channel: int`, `white_raw: int`, `black_raw: int`
 - [ ] `CalibrationSnapshot` dataclass: `motors: list[MotorCalibrationEntry]`, `servos: dict[str, ServoCalibrationEntry]`, `grayscale: list[GrayscaleCalibrationEntry]`
-- [ ] `GrayscaleCaptureResult` dataclass: `channel: int`, `surface: str`, `raw_value: int`, `stored: bool`
+- [ ] `GrayscaleCaptureResult` dataclass: `channel: int`, `adc_channel: int`, `surface: str`, `raw_value: int`, `stored: bool`
+- [ ] `NormalizedGrayscaleResult` dataclass: `channels: list[int]`, `normalized: list[float]`
+- [ ] `SaveCalibrationResult` dataclass: `saved: bool`, `path: str`
 - [ ] `get_calibration()` → `CalibrationSnapshot`
 - [ ] `set_motor_calibration(channel, speed_scale=None, deadband_pct=None, reversed=None)` → `MotorCalibrationEntry`
+  - Raises `HatError(code="INVALID_PARAMS")` on out-of-range channel
 - [ ] `set_servo_calibration(servo, trim_us)` → `ServoCalibrationEntry`
+  - `servo` is one of `"steering"`, `"camera_pan"`, `"camera_tilt"`; `HatError(code="INVALID_PARAMS")` otherwise
 - [ ] `calibrate_grayscale(channel, surface)` → `GrayscaleCaptureResult`
-- [ ] `save_calibration()` → `bool`
+  - `channel`: sensor position index (0 = left, 1 = center, 2 = right)
+  - `surface`: `"white"` or `"black"`
+- [ ] `save_calibration()` → `SaveCalibrationResult`
 - [ ] `reset_calibration()` → `bool`
+- [ ] `read_grayscale_normalized()` → `NormalizedGrayscaleResult`
+  - Sends `read_grayscale_normalized` IPC call
+  - Returns per-channel normalised values (0.0 = white/reflective, 1.0 = black/non-reflective)
 
 #### 10.2 — REST Endpoints (`nomothetic.api`)
 - [ ] `GET /api/calibration` → `{ motors, servos, grayscale, timestamp }` — full snapshot
@@ -372,19 +381,26 @@ via the HTTPS API before engaging autonomous routines.
   Response: `{ servo, trim_us, timestamp }`
 - [ ] `POST /api/calibration/grayscale/{channel}/capture` — live ADC capture for one surface
   Body: `{ surface: "white" | "black" }`
-  Response: `{ channel, surface, raw_value, stored, timestamp }`
+  Response: `{ channel, adc_channel, surface, raw_value, stored, timestamp }`
 - [ ] `POST /api/calibration/save` — persist calibration to file on device
-  Response: `{ saved: bool, timestamp }`
+  Response: `{ saved: bool, path: str, timestamp }`
 - [ ] `POST /api/calibration/reset` — revert in-memory calibration to defaults
   Response: `{ reset: bool, timestamp }`
-- [ ] All endpoints tagged `"Calibration"` in OpenAPI docs
+- [ ] `GET /api/sensor/grayscale/normalized` — per-channel normalised grayscale (requires calibration)
+  Response: `{ channels: list[int], normalized: list[float], timestamp }`
+- [ ] All calibration endpoints tagged `"Calibration"` in OpenAPI docs; normalised sensor endpoint tagged `"Sensor"`
 - [ ] `422` on invalid servo name or out-of-range values; `503` on daemon unavailable
-- [ ] Pydantic models: `MotorCalibrationRequest`, `ServoCalibrationRequest`, `GrayscaleCaptureRequest`, and matching response models
+- [ ] Pydantic models: `MotorCalibrationRequest`, `ServoCalibrationRequest`, `GrayscaleCaptureRequest`,
+  `NormalizedGrayscaleResponse`, `SaveCalibrationResponse`, and matching response models
 
 #### 10.3 — Tests
-- [ ] `tests/test_hat.py`: all six `HatClient` calibration methods — success and error cases (invalid motor channel, invalid servo name, white ≥ black rejection, connection error)
-- [ ] `tests/test_api.py`: all six REST endpoints — success, `422` validation, `503` no daemon
-- [ ] `uv run pytest tests/` — target ≥ 278 passing
+- [ ] `tests/test_hat.py`: all seven `HatClient` calibration methods — success and error cases
+  (`get_calibration` defaults, `set_motor_calibration` partial update, `set_motor_calibration` invalid channel,
+  `set_servo_calibration` valid, `set_servo_calibration` invalid servo name, `calibrate_grayscale` success,
+  `calibrate_grayscale` constraint violation, `save_calibration` success, `reset_calibration`,
+  `read_grayscale_normalized` success, connection error on each method — ~14 test cases)
+- [ ] `tests/test_api.py`: all seven REST endpoints (success, `422` validation, `503` no daemon) — ~21 test cases
+- [ ] `uv run pytest tests/` — target ≥ 327 passing
 - [ ] `uv run ruff check src/ tests/` — 0 errors
 - [ ] `uv run black --check src/ tests/` — clean
 - [ ] `uv run mypy src/ tests/` — 0 errors
@@ -394,7 +410,8 @@ via the HTTPS API before engaging autonomous routines.
 - [ ] `PUT /api/calibration/motor/0` with `{ "speed_scale": 1.2, "reversed": true }` affects subsequent `POST /api/drive` commands on the robot
 - [ ] `PUT /api/calibration/servo/steering` with `{ "trim_us": -50 }` shifts the physical steering centre
 - [ ] `POST /api/calibration/grayscale/0/capture` with `{ "surface": "white" }` stores the live ADC reading as the white reference
-- [ ] `POST /api/calibration/save` persists calibration across daemon restarts
+- [ ] `GET /api/sensor/grayscale/normalized` returns 0.0–1.0 per channel after surface calibration
+- [ ] `POST /api/calibration/save` persists calibration across daemon restarts; response includes `path`
 - [ ] All tests pass
 
 ---
