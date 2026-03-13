@@ -69,6 +69,10 @@ _DEFAULT_RESPONSES: dict[str, Any] = {
     "read_ultrasonic": {"distance_cm": 42.5},
     "enable_speaker": {"enabled": True, "pin_bcm": 20},
     "disable_speaker": {"enabled": False, "pin_bcm": 20},
+    "set_volume": {"volume_pct": 80},
+    "get_volume": {"volume_pct": 80},
+    "set_mic_gain": {"gain_pct": 50},
+    "get_mic_gain": {"gain_pct": 50},
 }
 
 
@@ -914,5 +918,155 @@ def test_disable_speaker_hardware_error(tmp_path):
     with HatClient(socket_path=sock_path) as hat:
         with pytest.raises(HatError):
             hat.disable_speaker()
+
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# set_volume() / get_volume()
+# ---------------------------------------------------------------------------
+
+
+def test_set_volume_succeeds(mock_server):
+    """`set_volume()` sends the IPC request without raising."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_volume(80)  # should not raise
+
+
+def test_set_volume_boundary_values(mock_server):
+    """`set_volume()` accepts 0 and 100 as boundary values."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_volume(0)
+        hat.set_volume(100)
+
+
+def test_set_volume_invalid_raises_value_error(mock_server):
+    """`set_volume()` raises `ValueError` if volume_pct is out of range."""
+    with HatClient(socket_path=mock_server) as hat:
+        with pytest.raises(ValueError):
+            hat.set_volume(101)
+        with pytest.raises(ValueError):
+            hat.set_volume(-1)
+
+
+def test_get_volume_returns_int(mock_server):
+    """`get_volume()` returns an int volume percentage."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.get_volume()
+    assert isinstance(result, int)
+    assert result == 80
+
+
+def test_set_volume_hardware_error(tmp_path):
+    """`set_volume()` propagates `HatError` on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "set_volume", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.set_volume(50)
+
+    t.join(timeout=2.0)
+
+
+def test_get_volume_hardware_error(tmp_path):
+    """`get_volume()` propagates `HatError` on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "get_volume", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.get_volume()
+
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# set_mic_gain() / get_mic_gain()
+# ---------------------------------------------------------------------------
+
+
+def test_set_mic_gain_succeeds(mock_server):
+    """`set_mic_gain()` sends the IPC request without raising."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_mic_gain(50)  # should not raise
+
+
+def test_set_mic_gain_boundary_values(mock_server):
+    """`set_mic_gain()` accepts 0 and 100 as boundary values."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_mic_gain(0)
+        hat.set_mic_gain(100)
+
+
+def test_set_mic_gain_invalid_raises_value_error(mock_server):
+    """`set_mic_gain()` raises `ValueError` if gain_pct is out of range."""
+    with HatClient(socket_path=mock_server) as hat:
+        with pytest.raises(ValueError):
+            hat.set_mic_gain(101)
+        with pytest.raises(ValueError):
+            hat.set_mic_gain(-1)
+
+
+def test_get_mic_gain_returns_int(mock_server):
+    """`get_mic_gain()` returns an int gain percentage."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.get_mic_gain()
+    assert isinstance(result, int)
+    assert result == 50
+
+
+def test_set_mic_gain_hardware_error(tmp_path):
+    """`set_mic_gain()` propagates `HatError` on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "set_mic_gain", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.set_mic_gain(50)
+
+    t.join(timeout=2.0)
+
+
+def test_get_mic_gain_hardware_error(tmp_path):
+    """`get_mic_gain()` propagates `HatError` on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "get_mic_gain", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.get_mic_gain()
 
     t.join(timeout=2.0)

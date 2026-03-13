@@ -731,3 +731,81 @@ class HatClient:
             If the socket connection is lost.
         """
         self._request("disable_speaker", {})
+
+    def set_volume(self, volume_pct: int) -> None:
+        """Set the output volume on the HifiBerry DAC via ALSA.
+
+        Parameters
+        ----------
+        volume_pct:
+            Target volume, 0–100 (%).
+
+        Raises
+        ------
+        ValueError
+            If *volume_pct* is outside 0–100.
+        HatError
+            If the daemon reports a hardware error setting volume.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        if not 0 <= volume_pct <= 100:
+            raise ValueError(f"volume_pct must be 0–100, got {volume_pct!r}")
+        self._request("set_volume", {"volume_pct": volume_pct})
+
+    def get_volume(self) -> int:
+        """Return the current output volume (0–100 %) from the ALSA mixer.
+
+        Returns
+        -------
+        int
+            Current output volume percentage.
+
+        Raises
+        ------
+        HatError
+            If the daemon reports a hardware error reading volume.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("get_volume", {})
+        return int(result["volume_pct"])
+
+    def set_mic_gain(self, gain_pct: int) -> None:
+        """Set the microphone capture gain on the USB mic via ALSA.
+
+        Parameters
+        ----------
+        gain_pct:
+            Target capture gain, 0–100 (%).
+
+        Raises
+        ------
+        ValueError
+            If *gain_pct* is outside 0–100.
+        HatError
+            If the daemon reports a hardware error setting mic gain.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        if not 0 <= gain_pct <= 100:
+            raise ValueError(f"gain_pct must be 0–100, got {gain_pct!r}")
+        self._request("set_mic_gain", {"gain_pct": gain_pct})
+
+    def get_mic_gain(self) -> int:
+        """Return the current microphone capture gain (0–100 %) from ALSA.
+
+        Returns
+        -------
+        int
+            Current mic capture gain percentage.
+
+        Raises
+        ------
+        HatError
+            If the daemon reports a hardware error reading mic gain.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("get_mic_gain", {})
+        return int(result["gain_pct"])

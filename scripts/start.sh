@@ -150,6 +150,8 @@ else:
     print("NOM_HAT_SOCKET="           + repr(str(h.get("socket_path",      ""))))
     print("NOMON_MEDIA_DIR="          + repr(str(md.get("dir",             "~/perceptua-nomon/media"))))
     print("NOMON_AUDIO_INPUT_INDEX="  + str(int(au.get("input_device_index", 2))))
+    print("NOMON_AUDIO_VOLUME="       + str(int(au.get("default_volume_pct",   80))))
+    print("NOMON_AUDIO_MIC_GAIN="     + str(int(au.get("default_mic_gain_pct", 50))))
     print("NOMON_MQTT_BROKER="        + repr(str(mq.get("broker",          ""))))
     print("NOMON_MQTT_PORT="          + str(int(mq.get("port",             1883))))
     print("NOMON_MQTT_TOPIC="         + repr(str(mq.get("topic",           "nomon/telemetry"))))
@@ -195,7 +197,7 @@ else
     NOMON_HAT_SOCKET_PATH="${NOM_HAT_SOCKET}"
   fi
   export NOM_API_HOST NOM_API_PORT NOM_API_USE_SSL NOM_API_CERT_DIR NOMON_HAT_SOCKET_PATH
-  export NOMON_MEDIA_DIR NOMON_AUDIO_INPUT_INDEX
+  export NOMON_MEDIA_DIR NOMON_AUDIO_INPUT_INDEX NOMON_AUDIO_VOLUME NOMON_AUDIO_MIC_GAIN
   export NOMON_MQTT_BROKER NOMON_MQTT_PORT NOMON_MQTT_TOPIC NOMON_MQTT_INTERVAL
   export NOMON_DEVICE_ID
   SCHEME="$([[ "${NOM_API_USE_SSL}" == "true" ]] && echo "https" || echo "http")"

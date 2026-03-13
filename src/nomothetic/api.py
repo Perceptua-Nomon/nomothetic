@@ -428,6 +428,33 @@ class AudioStatusResponse(BaseModel):
     timestamp: str
 
 
+# Audio level models
+class VolumeRequest(BaseModel):
+    """Request body for setting output volume."""
+
+    volume_pct: int = Field(..., ge=0, le=100, description="Output volume (0–100 %)")
+
+
+class VolumeResponse(BaseModel):
+    """Current or newly applied output volume."""
+
+    volume_pct: int
+    timestamp: str
+
+
+class MicGainRequest(BaseModel):
+    """Request body for setting microphone capture gain."""
+
+    gain_pct: int = Field(..., ge=0, le=100, description="Mic capture gain (0–100 %)")
+
+
+class MicGainResponse(BaseModel):
+    """Current or newly applied mic capture gain."""
+
+    gain_pct: int
+    timestamp: str
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -536,6 +563,42 @@ _stream_server: Optional[StreamServer] = None
 _stream_host: str = "0.0.0.0"
 _stream_port: int = 8000
 _audio_recorder: Optional[AudioRecorder] = None
+
+
+def _parse_int_env(name: str, default: int, lo: int = 0, hi: int = 100) -> int:
+    """Parse an integer environment variable, falling back to *default* on error.
+
+    Falls back and logs a warning when:
+    - the value is not a valid integer, or
+    - the value is outside the inclusive [lo, hi] range.
+    """
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Environment variable %s=%r is not a valid integer; using default %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+    if not lo <= value <= hi:
+        logger.warning(
+            "Environment variable %s=%r is outside allowed range %d–%d; using default %d",
+            name,
+            raw,
+            lo,
+            hi,
+            default,
+        )
+        return default
+    return value
+
+
+# Default audio levels read from env vars (set by start.sh from config.toml).
+_default_volume_pct: int = _parse_int_env("NOMON_AUDIO_VOLUME", 80)
+_default_mic_gain_pct: int = _parse_int_env("NOMON_AUDIO_MIC_GAIN", 50)
 _audio_player: Optional[AudioPlayer] = None
 _media_dir: Path = Path("~/perceptua-nomon/media").expanduser()
 
@@ -1108,6 +1171,14 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="audio not available")
         if _audio_recorder.is_recording:
             raise HTTPException(status_code=409, detail="A recording is already in progress")
+
+        # Apply default mic capture gain before recording (best-effort).
+        if _hat_client is not None:
+            try:
+                await asyncio.to_thread(_hat_client.set_mic_gain, _default_mic_gain_pct)
+            except (HatError, HatConnectionError):
+                pass  # Continue without gain set if daemon unavailable.
+
         try:
             recording_path = await asyncio.to_thread(_audio_recorder.start, request.filename)
         except ValueError as e:
@@ -1177,6 +1248,13 @@ def create_app() -> FastAPI:
                 await asyncio.to_thread(_hat_client.enable_speaker)
             except (HatError, HatConnectionError):
                 pass  # Continue without amplifier enable if daemon unavailable.
+
+        # Apply default output volume before playback (best-effort).
+        if _hat_client is not None:
+            try:
+                await asyncio.to_thread(_hat_client.set_volume, _default_volume_pct)
+            except (HatError, HatConnectionError):
+                pass  # Continue without volume set if daemon unavailable.
 
         try:
             await asyncio.to_thread(_audio_player.play, request.filename)
@@ -1252,6 +1330,128 @@ def create_app() -> FastAPI:
             recording_file=Path(rec_file).name if rec_file else None,
             playing=_audio_player.is_playing if _audio_player else False,
             playback_file=Path(play_file).name if play_file else None,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/audio/volume", response_model=VolumeResponse, tags=["Audio"])
+    async def set_volume(request: VolumeRequest):
+        """Set the output volume on the HifiBerry DAC via ALSA.
+
+        Parameters
+        ----------
+        request : VolumeRequest
+            ``volume_pct``: target output volume 0–100 (%).
+
+        Returns
+        -------
+        VolumeResponse
+            Applied volume percentage and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.set_volume, request.volume_pct)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return VolumeResponse(
+            volume_pct=request.volume_pct,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/audio/volume", response_model=VolumeResponse, tags=["Audio"])
+    async def get_volume():
+        """Read the current output volume from the ALSA HifiBerry DAC mixer.
+
+        Returns
+        -------
+        VolumeResponse
+            Current volume percentage and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            pct = await asyncio.to_thread(_hat_client.get_volume)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return VolumeResponse(
+            volume_pct=pct,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/audio/mic-gain", response_model=MicGainResponse, tags=["Audio"])
+    async def set_mic_gain(request: MicGainRequest):
+        """Set the microphone capture gain on the USB mic via ALSA.
+
+        Parameters
+        ----------
+        request : MicGainRequest
+            ``gain_pct``: target mic capture gain 0–100 (%).
+
+        Returns
+        -------
+        MicGainResponse
+            Applied gain percentage and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.set_mic_gain, request.gain_pct)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return MicGainResponse(
+            gain_pct=request.gain_pct,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/audio/mic-gain", response_model=MicGainResponse, tags=["Audio"])
+    async def get_mic_gain():
+        """Read the current microphone capture gain from the ALSA USB mic mixer.
+
+        Returns
+        -------
+        MicGainResponse
+            Current gain percentage and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            pct = await asyncio.to_thread(_hat_client.get_mic_gain)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return MicGainResponse(
+            gain_pct=pct,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 

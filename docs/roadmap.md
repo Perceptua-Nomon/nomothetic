@@ -316,28 +316,30 @@ confirm all new work passes checks before tagging.
 output volume (HifiBerry DAC) and input gain (USB microphone PCM2902). Requires
 corresponding IPC methods in `nomopractic` (see nomopractic Phase 9).
 
-**Candidate deliverables:**
-
 **Output Volume:**
-- [ ] `HatClient.set_volume(volume_pct: int)` — sends `set_volume` IPC call (0–100)
-- [ ] `HatClient.get_volume() -> int` — sends `get_volume` IPC call
-- [ ] `POST /api/audio/volume` request `{ volume_pct: 0–100 }` → response `{ volume_pct, timestamp }`
-- [ ] `GET /api/audio/volume` → response `{ volume_pct, timestamp }`
-- [ ] Pydantic models: `VolumeRequest`, `VolumeResponse`
-- [ ] Auto-apply configured default volume on `POST /api/audio/play` startup
+- [x] `HatClient.set_volume(volume_pct: int)` — sends `set_volume` IPC call (0–100)
+- [x] `HatClient.get_volume() -> int` — sends `get_volume` IPC call
+- [x] `POST /api/audio/volume` request `{ volume_pct: 0–100 }` → response `{ volume_pct, timestamp }`
+- [x] `GET /api/audio/volume` → response `{ volume_pct, timestamp }`
+- [x] Pydantic models: `VolumeRequest`, `VolumeResponse`
+- [x] Auto-apply configured default volume on `POST /api/audio/play` (best-effort, env `NOMON_AUDIO_VOLUME`)
 
 **Input Gain:**
-- [ ] `HatClient.set_mic_gain(gain_pct: int)` — sends `set_mic_gain` IPC call (0–100)
-- [ ] `HatClient.get_mic_gain() -> int` — sends `get_mic_gain` IPC call
-- [ ] `POST /api/audio/mic-gain` request `{ gain_pct: 0–100 }` → response `{ gain_pct, timestamp }`
-- [ ] `GET /api/audio/mic-gain` → response `{ gain_pct, timestamp }`
-- [ ] Pydantic models: `MicGainRequest`, `MicGainResponse`
-- [ ] Auto-apply configured default input gain on `POST /api/audio/record` startup
+- [x] `HatClient.set_mic_gain(gain_pct: int)` — sends `set_mic_gain` IPC call (0–100)
+- [x] `HatClient.get_mic_gain() -> int` — sends `get_mic_gain` IPC call
+- [x] `POST /api/audio/mic-gain` request `{ gain_pct: 0–100 }` → response `{ gain_pct, timestamp }`
+- [x] `GET /api/audio/mic-gain` → response `{ gain_pct, timestamp }`
+- [x] Pydantic models: `MicGainRequest`, `MicGainResponse`
+- [x] Auto-apply configured default input gain on `POST /api/audio/record/start` (best-effort, env `NOMON_AUDIO_MIC_GAIN`)
 
 **Testing & Integration:**
-- [ ] New tests in `test_hat.py` and `test_api.py` for volume and mic gain endpoints
+- [x] New tests in `test_hat.py` and `test_api.py` for volume and mic gain endpoints
+- [x] `pytest tests/` — 292 passing
+- [x] `black --check .` + `ruff check .` — clean
 
 ---
+
+## Upcoming
 
 ### Phase 10 — Calibration API (P1)
 

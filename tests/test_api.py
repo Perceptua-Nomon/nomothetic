@@ -1732,3 +1732,258 @@ def test_get_audio_status_active(client):
 
     nomothetic.api._audio_recorder = None
     nomothetic.api._audio_player = None
+
+
+# ============================================================================
+# Audio Level Endpoints (/api/audio/volume, /api/audio/mic-gain)
+# ============================================================================
+
+
+def test_set_volume_success(client, mock_hat):
+    """POST /api/audio/volume returns the applied volume_pct and timestamp."""
+    import nomothetic.api
+
+    mock_hat.set_volume.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/audio/volume", json={"volume_pct": 75})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["volume_pct"] == 75
+    assert "timestamp" in data
+    mock_hat.set_volume.assert_called_once_with(75)
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_volume_success(client, mock_hat):
+    """GET /api/audio/volume returns current volume_pct from the mixer."""
+    import nomothetic.api
+
+    mock_hat.get_volume.return_value = 65
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/audio/volume")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["volume_pct"] == 65
+    assert "timestamp" in data
+    mock_hat.get_volume.assert_called_once()
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_volume_no_client(client):
+    """POST /api/audio/volume returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/audio/volume", json={"volume_pct": 80})
+    assert response.status_code == 503
+
+
+def test_get_volume_no_client(client):
+    """GET /api/audio/volume returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/audio/volume")
+    assert response.status_code == 503
+
+
+def test_set_volume_connection_error(client, mock_hat):
+    """POST /api/audio/volume returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.set_volume.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/audio/volume", json={"volume_pct": 50})
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_volume_hardware_error(client, mock_hat):
+    """POST /api/audio/volume returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.set_volume.side_effect = HatError("HARDWARE_ERROR", "amixer failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/audio/volume", json={"volume_pct": 50})
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_volume_hardware_error(client, mock_hat):
+    """GET /api/audio/volume returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.get_volume.side_effect = HatError("HARDWARE_ERROR", "amixer failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/audio/volume")
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_mic_gain_success(client, mock_hat):
+    """POST /api/audio/mic-gain returns the applied gain_pct and timestamp."""
+    import nomothetic.api
+
+    mock_hat.set_mic_gain.return_value = None
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/audio/mic-gain", json={"gain_pct": 60})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["gain_pct"] == 60
+    assert "timestamp" in data
+    mock_hat.set_mic_gain.assert_called_once_with(60)
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_mic_gain_success(client, mock_hat):
+    """GET /api/audio/mic-gain returns current gain_pct from the mixer."""
+    import nomothetic.api
+
+    mock_hat.get_mic_gain.return_value = 45
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/audio/mic-gain")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["gain_pct"] == 45
+    assert "timestamp" in data
+    mock_hat.get_mic_gain.assert_called_once()
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_mic_gain_no_client(client):
+    """POST /api/audio/mic-gain returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/audio/mic-gain", json={"gain_pct": 50})
+    assert response.status_code == 503
+
+
+def test_get_mic_gain_no_client(client):
+    """GET /api/audio/mic-gain returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/audio/mic-gain")
+    assert response.status_code == 503
+
+
+def test_set_mic_gain_connection_error(client, mock_hat):
+    """POST /api/audio/mic-gain returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.set_mic_gain.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/audio/mic-gain", json={"gain_pct": 50})
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_set_mic_gain_hardware_error(client, mock_hat):
+    """POST /api/audio/mic-gain returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.set_mic_gain.side_effect = HatError("HARDWARE_ERROR", "amixer failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/audio/mic-gain", json={"gain_pct": 50})
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_mic_gain_hardware_error(client, mock_hat):
+    """GET /api/audio/mic-gain returns 500 on HatError."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.get_mic_gain.side_effect = HatError("HARDWARE_ERROR", "amixer failed")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/audio/mic-gain")
+    assert response.status_code == 500
+
+    nomothetic.api._hat_client = None
+
+
+# ===========================================================================
+# _parse_int_env helper
+# ===========================================================================
+
+
+def test_parse_int_env_valid_string_is_parsed(monkeypatch):
+    """A valid integer string is parsed and returned unchanged."""
+    import nomothetic.api
+
+    monkeypatch.setenv("_TEST_INT_ENV", "42")
+    result = nomothetic.api._parse_int_env("_TEST_INT_ENV", 10, lo=0, hi=100)
+    assert result == 42
+
+
+def test_parse_int_env_missing_env_returns_default(monkeypatch):
+    """When the env var is absent, the default is returned."""
+    import nomothetic.api
+
+    monkeypatch.delenv("_TEST_INT_ENV", raising=False)
+    result = nomothetic.api._parse_int_env("_TEST_INT_ENV", 77, lo=0, hi=100)
+    assert result == 77
+
+
+def test_parse_int_env_non_integer_falls_back_to_default(monkeypatch, caplog):
+    """A non-integer value falls back to the default and emits a WARNING."""
+    import logging
+
+    import nomothetic.api
+
+    monkeypatch.setenv("_TEST_INT_ENV", "not_a_number")
+    with caplog.at_level(logging.WARNING, logger="nomothetic.api"):
+        result = nomothetic.api._parse_int_env("_TEST_INT_ENV", 80, lo=0, hi=100)
+    assert result == 80
+    assert any("_TEST_INT_ENV" in r.message for r in caplog.records)
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_parse_int_env_out_of_range_falls_back_to_default(monkeypatch, caplog):
+    """An integer outside the allowed range falls back to the default with a WARNING."""
+    import logging
+
+    import nomothetic.api
+
+    monkeypatch.setenv("_TEST_INT_ENV", "150")
+    with caplog.at_level(logging.WARNING, logger="nomothetic.api"):
+        result = nomothetic.api._parse_int_env("_TEST_INT_ENV", 80, lo=0, hi=100)
+    assert result == 80
+    assert any("_TEST_INT_ENV" in r.message for r in caplog.records)
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_parse_int_env_boundary_values_accepted(monkeypatch):
+    """Values at exactly 0 and 100 are accepted (inclusive bounds)."""
+    import nomothetic.api
+
+    monkeypatch.setenv("_TEST_INT_ENV", "0")
+    assert nomothetic.api._parse_int_env("_TEST_INT_ENV", 50, lo=0, hi=100) == 0
+
+    monkeypatch.setenv("_TEST_INT_ENV", "100")
+    assert nomothetic.api._parse_int_env("_TEST_INT_ENV", 50, lo=0, hi=100) == 100

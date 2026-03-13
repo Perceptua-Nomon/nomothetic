@@ -162,6 +162,42 @@ byte, then reads back 2 bytes. Raw ADC value is scaled: `battery_v = raw_v × 3`
 
 ---
 
+### `read_adc`
+
+Read a raw 16-bit value from one of the eight ADC channels on the Robot HAT V4
+(ADS7830-compatible command protocol via I2C).
+
+**Hardware detail:** Command byte is `(7 - channel) | 0x10`; two bytes are
+read back and combined as a big-endian 16-bit value.
+
+**Request:**
+```json
+{"id": "a1", "method": "read_adc", "params": {"channel": 3}}\n
+```
+
+| Param | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `channel` | integer | yes | 0–7 |
+
+**Response (`result`):**
+```json
+{"channel": 3, "raw_value": 14823}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `channel` | integer | ADC channel (echoed) |
+| `raw_value` | integer | Raw 16-bit ADC reading |
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_PARAMS` | `channel` absent or outside 0–7 |
+| `HARDWARE_ERROR` | I2C read failure |
+
+---
+
 ### `set_servo_pulse_us`
 
 Sets a PWM channel to a specific pulse width in microseconds.
@@ -211,6 +247,72 @@ Mapping: `pulse_us = 500 + (angle / 180.0) × 2000`
 ```json
 {"channel": 0, "angle_deg": 90.0, "pulse_us": 1611}
 ```
+
+---
+
+### `read_gpio`
+
+Read the current logical level of a named GPIO pin.
+
+**Available pins:** `D2`, `D3`, `D4`, `D5`, `MCURST`, `SW`, `LED`, `SPEAKER_EN`.
+All pins are readable; `SW` (BCM 19) is the user push-button (input-only).
+
+**Request:**
+```json
+{"id": "g1", "method": "read_gpio", "params": {"pin": "SW"}}\n
+```
+
+| Param | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `pin` | string | yes | One of the pin names listed above |
+
+**Response (`result`):**
+```json
+{"pin": "SW", "high": false}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pin` | string | Pin name (echoed) |
+| `high` | boolean | `true` if the pin is currently driven high |
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_PARAMS` | `pin` absent or not a recognised pin name |
+| `HARDWARE_ERROR` | GPIO read failure |
+
+---
+
+### `write_gpio`
+
+Drive a named GPIO output pin high or low.
+
+**Writable pins:** `D2`, `D4`, `D5`, `MCURST`, `LED`, `SPEAKER_EN`.
+`D3` and `SW` are input-only and will return `INVALID_PARAMS`.
+
+**Request:**
+```json
+{"id": "g2", "method": "write_gpio", "params": {"pin": "LED", "high": true}}\n
+```
+
+| Param | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `pin` | string | yes | One of the writable pin names listed above |
+| `high` | boolean | yes | `true` = drive high, `false` = drive low |
+
+**Response (`result`):**
+```json
+{"pin": "LED", "high": true}
+```
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_PARAMS` | `pin` or `high` absent, unknown pin name, or pin is input-only |
+| `HARDWARE_ERROR` | GPIO write failure |
 
 ---
 
@@ -315,6 +417,54 @@ microcontroller.
 | Field | Type | Description |
 |-------|------|-------------|
 | `reset_ms` | integer | Duration the reset line was held low (milliseconds) |
+
+---
+
+### `get_servo_status`
+
+Return all currently active servo TTL leases.
+
+**Request:**
+```json
+{"id": "ss1", "method": "get_servo_status", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{
+  "active_leases": [
+    {"channel": 0, "ttl_remaining_ms": 412, "conn_id": 3}
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `active_leases` | array | Per-channel lease entries (empty if none) |
+| `active_leases[].channel` | integer | PWM channel number |
+| `active_leases[].ttl_remaining_ms` | integer | Milliseconds until auto-idle |
+| `active_leases[].conn_id` | integer | Connection that holds the lease |
+
+---
+
+### `get_mcu_status`
+
+Return MCU reset statistics since daemon start.
+
+**Request:**
+```json
+{"id": "ms1", "method": "get_mcu_status", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{"resets_since_start": 2, "last_reset_s_ago": 47}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `resets_since_start` | integer | Total `reset_mcu` calls since daemon start |
+| `last_reset_s_ago` | integer \| null | Seconds since the last reset; `null` if never reset |
 
 ---
 
@@ -513,6 +663,112 @@ playback completes to conserve power.
 ```json
 { "enabled": false, "pin_bcm": 20 }
 ```
+
+---
+
+### `set_volume`
+
+Set the output volume on the HifiBerry DAC via the ALSA mixer (`amixer sset`).
+The daemon maps `volume_pct` directly to the configured ALSA control
+(default: `"Digital"` on card 1).
+
+**Request:**
+```json
+{"id": "av1", "method": "set_volume", "params": {"volume_pct": 80}}\n
+```
+
+| Param | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `volume_pct` | u8 | yes | 0–100 |
+
+**Response (`result`):**
+```json
+{ "volume_pct": 80 }
+```
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_PARAMS` | `volume_pct` absent or > 100 |
+| `HARDWARE_ERROR` | `amixer` command failed or I/O error |
+| `INTERNAL_ERROR` | Failed to parse `amixer` output |
+
+---
+
+### `get_volume`
+
+Read the current output volume from the ALSA mixer.
+
+**Request:**
+```json
+{"id": "av2", "method": "get_volume", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{ "volume_pct": 80 }
+```
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `HARDWARE_ERROR` | `amixer` command failed or I/O error |
+| `INTERNAL_ERROR` | Failed to parse `amixer` output |
+
+---
+
+### `set_mic_gain`
+
+Set the USB microphone capture gain via the ALSA mixer (`amixer sset`).
+The daemon maps `gain_pct` to the configured input ALSA control
+(default: `"Mic Capture"` on card 2 — PCM2902 USB mic).
+
+**Request:**
+```json
+{"id": "mg1", "method": "set_mic_gain", "params": {"gain_pct": 50}}\n
+```
+
+| Param | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `gain_pct` | u8 | yes | 0–100 |
+
+**Response (`result`):**
+```json
+{ "gain_pct": 50 }
+```
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `INVALID_PARAMS` | `gain_pct` absent or > 100 |
+| `HARDWARE_ERROR` | `amixer` command failed or I/O error |
+| `INTERNAL_ERROR` | Failed to parse `amixer` output |
+
+---
+
+### `get_mic_gain`
+
+Read the current microphone capture gain from the ALSA mixer.
+
+**Request:**
+```json
+{"id": "mg2", "method": "get_mic_gain", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{ "gain_pct": 50 }
+```
+
+**Errors:**
+
+| Code | Condition |
+|------|-----------|
+| `HARDWARE_ERROR` | `amixer` command failed or I/O error |
+| `INTERNAL_ERROR` | Failed to parse `amixer` output |
 
 ---
 
