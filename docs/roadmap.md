@@ -13,6 +13,10 @@
 | 6 | Motor API Endpoints | ✅ Complete |
 | 7 | Vehicle Convenience API | ✅ Complete |
 | 8 | Audio & Peripheral Expansion | ✅ Complete |
+| 9 | Audio Levels Control | 🔲 Planned |
+| 10 | Calibration API | 🔲 Planned |
+| 11 | Routine API | 🔲 Planned |
+| 12 | Line-Following Routine API | 🔲 Planned |
 
 **Test totals (current): 262 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio)
 
@@ -332,6 +336,131 @@ corresponding IPC methods in `nomopractic` (see nomopractic Phase 9).
 
 **Testing & Integration:**
 - [ ] New tests in `test_hat.py` and `test_api.py` for volume and mic gain endpoints
+
+---
+
+### Phase 10 — Calibration API (P1)
+
+**Goal**: Expose the nomopractic Calibration & Configuration layer (Phase 10) as
+`HatClient` methods and REST endpoints. Operators tune and calibrate the robot
+via the HTTPS API before engaging autonomous routines.
+
+**Dependency**: Requires nomopractic Phase 10 (Calibration & Configuration).
+
+#### 10.1 — HatClient Calibration Methods (`nomothetic.hat`)
+- [ ] `MotorCalibrationEntry` dataclass: `channel: int`, `speed_scale: float`, `deadband_pct: float`, `reversed: bool`
+- [ ] `ServoCalibrationEntry` dataclass: `servo: str`, `trim_us: int`
+- [ ] `GrayscaleCalibrationEntry` dataclass: `channel: int`, `white_raw: int`, `black_raw: int`
+- [ ] `CalibrationSnapshot` dataclass: `motors: list[MotorCalibrationEntry]`, `servos: dict[str, ServoCalibrationEntry]`, `grayscale: list[GrayscaleCalibrationEntry]`
+- [ ] `GrayscaleCaptureResult` dataclass: `channel: int`, `surface: str`, `raw_value: int`, `stored: bool`
+- [ ] `get_calibration()` → `CalibrationSnapshot`
+- [ ] `set_motor_calibration(channel, speed_scale=None, deadband_pct=None, reversed=None)` → `MotorCalibrationEntry`
+- [ ] `set_servo_calibration(servo, trim_us)` → `ServoCalibrationEntry`
+- [ ] `calibrate_grayscale(channel, surface)` → `GrayscaleCaptureResult`
+- [ ] `save_calibration()` → `bool`
+- [ ] `reset_calibration()` → `bool`
+
+#### 10.2 — REST Endpoints (`nomothetic.api`)
+- [ ] `GET /api/calibration` → `{ motors, servos, grayscale, timestamp }` — full snapshot
+- [ ] `PUT /api/calibration/motor/{channel}` — set motor calibration
+  Body: `{ speed_scale?: float, deadband_pct?: float, reversed?: bool }`
+  Response: `{ channel, speed_scale, deadband_pct, reversed, timestamp }`
+- [ ] `PUT /api/calibration/servo/{servo_name}` — set servo trim
+  Body: `{ trim_us: int }`
+  Response: `{ servo, trim_us, timestamp }`
+- [ ] `POST /api/calibration/grayscale/{channel}/capture` — live ADC capture for one surface
+  Body: `{ surface: "white" | "black" }`
+  Response: `{ channel, surface, raw_value, stored, timestamp }`
+- [ ] `POST /api/calibration/save` — persist calibration to file on device
+  Response: `{ saved: bool, timestamp }`
+- [ ] `POST /api/calibration/reset` — revert in-memory calibration to defaults
+  Response: `{ reset: bool, timestamp }`
+- [ ] All endpoints tagged `"Calibration"` in OpenAPI docs
+- [ ] `422` on invalid servo name or out-of-range values; `503` on daemon unavailable
+- [ ] Pydantic models: `MotorCalibrationRequest`, `ServoCalibrationRequest`, `GrayscaleCaptureRequest`, and matching response models
+
+#### 10.3 — Tests
+- [ ] `tests/test_hat.py`: all six `HatClient` calibration methods — success and error cases (invalid motor channel, invalid servo name, white ≥ black rejection, connection error)
+- [ ] `tests/test_api.py`: all six REST endpoints — success, `422` validation, `503` no daemon
+- [ ] `uv run pytest tests/` — target ≥ 278 passing
+- [ ] `uv run ruff check src/ tests/` — 0 errors
+- [ ] `uv run black --check src/ tests/` — clean
+- [ ] `uv run mypy src/ tests/` — 0 errors
+
+#### Phase 10 Exit Criteria
+- [ ] `GET /api/calibration` returns all current calibration values for motors, servos, and grayscale sensors
+- [ ] `PUT /api/calibration/motor/0` with `{ "speed_scale": 1.2, "reversed": true }` affects subsequent `POST /api/drive` commands on the robot
+- [ ] `PUT /api/calibration/servo/steering` with `{ "trim_us": -50 }` shifts the physical steering centre
+- [ ] `POST /api/calibration/grayscale/0/capture` with `{ "surface": "white" }` stores the live ADC reading as the white reference
+- [ ] `POST /api/calibration/save` persists calibration across daemon restarts
+- [ ] All tests pass
+
+---
+
+### Phase 11 — Routine API (P1)
+
+**Goal**: Expose the nomopractic Routine Engine (Phase 11) as `HatClient`
+methods and REST API endpoints. Remote clients can start, stop, and monitor
+self-contained on-robot routines via HTTPS.
+
+**Architecture note**: Routine *execution* lives entirely in nomopractic (Rust).
+nomothetic is a thin façade — it calls three IPC methods and maps results onto
+Pydantic models and HTTP status codes, exactly as the motor and vehicle APIs do.
+The `feature/routines` branch is the target for Phases 11 and 12.
+
+#### 11.1 — HatClient Routine Methods (`nomothetic.hat`)
+- [ ] `RoutineStartResult` dataclass: `name: str`, `started_at_uptime_s: int`
+- [ ] `RoutineStatusResult` dataclass: `running: bool`, `name: str | None`, `elapsed_s: int | None`, `obstacles_avoided: int | None`, `cliffs_avoided: int | None`
+- [ ] `RoutineStopResult` dataclass: `name: str`, `ran_for_s: int`, `obstacles_avoided: int`, `cliffs_avoided: int`, `stop_reason: str`
+- [ ] `start_routine(name, speed_pct?, obstacle_threshold_cm?, cliff_threshold_raw?, max_duration_s?)` → `RoutineStartResult`
+  - Raises `HatError(code="ALREADY_RUNNING", ...)` when a routine is already active
+  - Raises `HatError(code="INVALID_PARAMS", ...)` for unknown routine name
+- [ ] `stop_routine()` → `RoutineStopResult`
+  - Raises `HatError(code="INVALID_PARAMS", ...)` if no routine is running
+- [ ] `get_routine_status()` → `RoutineStatusResult`
+
+#### 11.2 — REST Endpoints (`nomothetic.api`)
+- [ ] `POST /api/routine/start` — start a named routine  
+  Request: `{ name: str, speed_pct?: float, obstacle_threshold_cm?: float, cliff_threshold_raw?: int, max_duration_s?: int }`  
+  Response: `{ name, started_at_uptime_s, timestamp }`  
+  Errors: `422` on invalid/unknown name; `409 Conflict` on `ALREADY_RUNNING`; `503` when daemon unavailable
+- [ ] `POST /api/routine/stop` — stop the active routine  
+  Response: `{ name, ran_for_s, obstacles_avoided, cliffs_avoided, stop_reason, timestamp }`  
+  Errors: `422` if no routine is running; `503` when daemon unavailable
+- [ ] `GET /api/routine/status` — query active routine  
+  Response: `{ running, name, elapsed_s, obstacles_avoided, cliffs_avoided, timestamp }`  
+  Errors: `503` when daemon unavailable
+- [ ] Pydantic models: `RoutineStartRequest`, `RoutineStartResponse`, `RoutineStopResponse`, `RoutineStatusResponse`
+- [ ] All endpoints tagged `"Routine"` in OpenAPI docs
+- [ ] `409 Conflict` (not `422`) mapped from `HatError(code="ALREADY_RUNNING")`
+
+#### 11.3 — Tests
+- [ ] `tests/test_hat.py`: `start_routine` success, `start_routine` ALREADY_RUNNING, `start_routine` unknown name, `stop_routine` success, `stop_routine` not-running, `get_routine_status` idle, `get_routine_status` running, connection error
+- [ ] `tests/test_api.py`: `POST /api/routine/start` success, 409 ALREADY_RUNNING, 422 unknown name, 503 no daemon; `POST /api/routine/stop` success, 422 not running, 503; `GET /api/routine/status` idle, running, 503
+- [ ] `uv run pytest tests/` — target ≥ 294 passing
+- [ ] `uv run ruff check src/ tests/` — 0 errors
+- [ ] `uv run black --check src/ tests/` — clean
+- [ ] `uv run mypy src/ tests/` — 0 errors
+
+#### Phase 11 Exit Criteria
+- [ ] `POST /api/routine/start` with `{ "name": "explore" }` causes the robot to drive autonomously
+- [ ] `POST /api/routine/stop` halts all motors and returns telemetry stats
+- [ ] `GET /api/routine/status` shows live progress (elapsed time, avoidance counts)
+- [ ] Routine continues after REST client disconnects; stops only on explicit stop or max_duration timeout
+- [ ] All tests pass
+
+---
+
+### Phase 12 — Line-Following Routine API (P2)
+
+**Goal**: Expose the `follow_line` routine (nomopractic Phase 12) via the REST
+API, matching the pattern established in Phase 11.
+
+- [ ] `FollowLineStartRequest` Pydantic model: `name="follow_line"`, `speed_pct?`, `kp?`, `kd?`, `line_lost_cycles?`
+- [ ] `RoutineStartRequest` extended (or existing model reused — `start_routine` uses generic pass-through params)
+- [ ] `POST /api/routine/start` already supports `follow_line` via generic param forwarding — verify acceptance
+- [ ] `tests/test_hat.py` + `tests/test_api.py`: `follow_line` start/stop/status tests
+- [ ] `uv run pytest tests/` — target ≥ 302 passing
 
 ---
 
