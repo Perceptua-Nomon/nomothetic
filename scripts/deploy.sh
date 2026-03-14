@@ -99,10 +99,10 @@ if [[ -n "${PI_HOST}" ]]; then
         SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
     fi
     echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} → ${PI_HOST}"
-    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" 'bash -s "$@"' --)
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" 'bash -ls "$@"' --)
 else
     echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} locally"
-    RUN_CMD=(bash -s --)
+    RUN_CMD=(bash -ls --)
 fi
 
 # ── Deployment ─────────────────────────────────────────────────────────────────

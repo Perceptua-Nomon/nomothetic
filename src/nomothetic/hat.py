@@ -731,3 +731,441 @@ class HatClient:
             If the socket connection is lost.
         """
         self._request("disable_speaker", {})
+
+    def set_volume(self, volume_pct: int) -> None:
+        """Set the output volume on the HifiBerry DAC via ALSA.
+
+        Parameters
+        ----------
+        volume_pct:
+            Target volume, 0–100 (%).
+
+        Raises
+        ------
+        ValueError
+            If *volume_pct* is outside 0–100.
+        HatError
+            If the daemon reports a hardware error setting volume.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        if not 0 <= volume_pct <= 100:
+            raise ValueError(f"volume_pct must be 0–100, got {volume_pct!r}")
+        self._request("set_volume", {"volume_pct": volume_pct})
+
+    def get_volume(self) -> int:
+        """Return the current output volume (0–100 %) from the ALSA mixer.
+
+        Returns
+        -------
+        int
+            Current output volume percentage.
+
+        Raises
+        ------
+        HatError
+            If the daemon reports a hardware error reading volume.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("get_volume", {})
+        return int(result["volume_pct"])
+
+    def set_mic_gain(self, gain_pct: int) -> None:
+        """Set the microphone capture gain on the USB mic via ALSA.
+
+        Parameters
+        ----------
+        gain_pct:
+            Target capture gain, 0–100 (%).
+
+        Raises
+        ------
+        ValueError
+            If *gain_pct* is outside 0–100.
+        HatError
+            If the daemon reports a hardware error setting mic gain.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        if not 0 <= gain_pct <= 100:
+            raise ValueError(f"gain_pct must be 0–100, got {gain_pct!r}")
+        self._request("set_mic_gain", {"gain_pct": gain_pct})
+
+    def get_mic_gain(self) -> int:
+        """Return the current microphone capture gain (0–100 %) from ALSA.
+
+        Returns
+        -------
+        int
+            Current mic capture gain percentage.
+
+        Raises
+        ------
+        HatError
+            If the daemon reports a hardware error reading mic gain.
+        HatConnectionError
+            If the socket connection is lost.
+        """
+        result = self._request("get_mic_gain", {})
+        return int(result["gain_pct"])
+
+    # -----------------------------------------------------------------------
+    # Calibration methods
+    # -----------------------------------------------------------------------
+
+    def get_calibration(self) -> CalibrationSnapshot:
+        """Return a full snapshot of the daemon's in-memory calibration store.
+
+        Returns
+        -------
+        CalibrationSnapshot
+
+        Raises
+        ------
+        HatError
+            On daemon error.
+        HatConnectionError
+            If the socket is unavailable.
+        """
+        result = self._request("get_calibration", {})
+        motors = [
+            MotorCalibrationEntry(
+                channel=m["channel"],
+                speed_scale=float(m["speed_scale"]),
+                deadband_pct=float(m["deadband_pct"]),
+                reversed=bool(m["reversed"]),
+            )
+            for m in result["motors"]
+        ]
+        servos = {
+            name: ServoCalibrationEntry(servo=name, trim_us=int(v["trim_us"]))
+            for name, v in result["servos"].items()
+        }
+        grayscale = [
+            GrayscaleCalibrationEntry(
+                adc_channel=int(g["adc_channel"]),
+                white_raw=int(g["white_raw"]),
+                black_raw=int(g["black_raw"]),
+            )
+            for g in result["grayscale"]
+        ]
+        return CalibrationSnapshot(motors=motors, servos=servos, grayscale=grayscale)
+
+    def set_motor_calibration(
+        self,
+        channel: int,
+        speed_scale: float | None = None,
+        deadband_pct: float | None = None,
+        reversed: bool | None = None,
+    ) -> MotorCalibrationEntry:
+        """Adjust calibration values for one motor channel (partial update).
+
+        Parameters
+        ----------
+        channel:
+            Motor index (0-based).
+        speed_scale:
+            New speed scale multiplier (0.5–2.0). Omit to leave unchanged.
+        deadband_pct:
+            New deadband percentage (0.0–20.0). Omit to leave unchanged.
+        reversed:
+            New direction flip flag. Omit to leave unchanged.
+
+        Raises
+        ------
+        HatError
+            ``INVALID_PARAMS`` if channel is out of range or a value is invalid.
+        """
+        params: dict = {"channel": channel}
+        if speed_scale is not None:
+            params["speed_scale"] = speed_scale
+        if deadband_pct is not None:
+            params["deadband_pct"] = deadband_pct
+        if reversed is not None:
+            params["reversed"] = reversed
+        result = self._request("set_motor_calibration", params)
+        return MotorCalibrationEntry(
+            channel=int(result["channel"]),
+            speed_scale=float(result["speed_scale"]),
+            deadband_pct=float(result["deadband_pct"]),
+            reversed=bool(result["reversed"]),
+        )
+
+    def set_servo_calibration(self, servo: str, trim_us: int) -> ServoCalibrationEntry:
+        """Set the trim offset (µs) for a named servo.
+
+        Parameters
+        ----------
+        servo:
+            Logical servo name: ``"steering"``, ``"camera_pan"``, or ``"camera_tilt"``.
+        trim_us:
+            Signed trim in microseconds (−500–+500).
+
+        Raises
+        ------
+        HatError
+            ``INVALID_PARAMS`` if *servo* is unrecognised or *trim_us* out of range.
+        """
+        result = self._request("set_servo_calibration", {"servo": servo, "trim_us": trim_us})
+        return ServoCalibrationEntry(servo=str(result["servo"]), trim_us=int(result["trim_us"]))
+
+    def calibrate_grayscale(self, channel: int, surface: str) -> GrayscaleCaptureResult:
+        """Capture a live ADC reading and store it as the white or black reference.
+
+        Parameters
+        ----------
+        channel:
+            Sensor position index: 0 = left, 1 = center, 2 = right.
+        surface:
+            ``"white"`` or ``"black"``.
+
+        Raises
+        ------
+        HatError
+            ``INVALID_PARAMS`` if the capture would violate ``white_raw < black_raw``.
+            ``HARDWARE_ERROR`` on ADC read failure.
+        """
+        result = self._request("calibrate_grayscale", {"channel": channel, "surface": surface})
+        return GrayscaleCaptureResult(
+            channel=int(result["channel"]),
+            adc_channel=int(result["adc_channel"]),
+            surface=str(result["surface"]),
+            raw_value=int(result["raw_value"]),
+            stored=bool(result["stored"]),
+        )
+
+    def save_calibration(self) -> SaveCalibrationResult:
+        """Persist the current in-memory calibration store to disk.
+
+        Raises
+        ------
+        HatError
+            ``HARDWARE_ERROR`` on filesystem write failure.
+        """
+        result = self._request("save_calibration", {})
+        return SaveCalibrationResult(saved=bool(result["saved"]), path=str(result["path"]))
+
+    def reset_calibration(self) -> bool:
+        """Revert the in-memory calibration store to factory defaults.
+
+        The file on disk is NOT overwritten; call ``save_calibration`` afterwards
+        to make the reset permanent.
+
+        Returns
+        -------
+        bool
+            Always ``True`` on success.
+        """
+        result = self._request("reset_calibration", {})
+        return bool(result["reset"])
+
+    def read_grayscale_normalized(self) -> NormalizedGrayscaleResult:
+        """Read all three grayscale sensors and return normalised values.
+
+        Values are normalised against the captured surface calibration:
+        0.0 = white/reflective, 1.0 = black/non-reflective.
+
+        Raises
+        ------
+        HatError
+            ``HARDWARE_ERROR`` on ADC read failure.
+        """
+        result = self._request("read_grayscale_normalized", {})
+        return NormalizedGrayscaleResult(
+            channels=[int(c) for c in result["channels"]],
+            normalized=[float(v) for v in result["normalized"]],
+        )
+
+    # -----------------------------------------------------------------------
+    # Routine methods
+    # -----------------------------------------------------------------------
+
+    def start_routine(
+        self,
+        name: str,
+        speed_pct: float | None = None,
+        obstacle_threshold_cm: float | None = None,
+        cliff_threshold_normalized: float | None = None,
+        max_duration_s: int | None = None,
+    ) -> RoutineStartResult:
+        """Start an autonomous routine by *name*.
+
+        Parameters
+        ----------
+        name:
+            Routine identifier.  Currently only ``"explore"`` is supported.
+        speed_pct:
+            Forward drive speed override (1–100 %).
+        obstacle_threshold_cm:
+            Distance at which an obstacle triggers avoidance (cm).
+        cliff_threshold_normalized:
+            Normalised grayscale value above which a cliff is detected (0–1).
+        max_duration_s:
+            Maximum run time in seconds.
+
+        Raises
+        ------
+        HatError
+            ``ALREADY_RUNNING`` if a routine is already active.
+            ``INVALID_PARAMS`` if *name* is unknown or a parameter is out of range.
+        """
+        params: dict = {"name": name}
+        if speed_pct is not None:
+            params["speed_pct"] = speed_pct
+        if obstacle_threshold_cm is not None:
+            params["obstacle_threshold_cm"] = obstacle_threshold_cm
+        if cliff_threshold_normalized is not None:
+            params["cliff_threshold_normalized"] = cliff_threshold_normalized
+        if max_duration_s is not None:
+            params["max_duration_s"] = max_duration_s
+        result = self._request("start_routine", params)
+        return RoutineStartResult(
+            name=result["name"],
+            started_at_uptime_s=int(result["started_at_uptime_s"]),
+        )
+
+    def stop_routine(self) -> RoutineStopResult:
+        """Stop the currently running routine and return final statistics.
+
+        Raises
+        ------
+        HatError
+            ``INVALID_PARAMS`` if no routine is running.
+        """
+        result = self._request("stop_routine", {})
+        return RoutineStopResult(
+            name=result["name"],
+            ran_for_s=int(result["ran_for_s"]),
+            obstacles_avoided=int(result["obstacles_avoided"]),
+            cliffs_avoided=int(result["cliffs_avoided"]),
+            stop_reason=result["stop_reason"],
+        )
+
+    def get_routine_status(self) -> RoutineStatusResult:
+        """Return the current routine status snapshot.
+
+        When no routine is running, ``running`` is ``False`` and all other
+        fields are ``None``.
+        """
+        result = self._request("get_routine_status", {})
+        return RoutineStatusResult(
+            running=bool(result["running"]),
+            name=result.get("name"),
+            elapsed_s=result.get("elapsed_s"),
+            obstacles_avoided=result.get("obstacles_avoided"),
+            cliffs_avoided=result.get("cliffs_avoided"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Calibration dataclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MotorCalibrationEntry:
+    """Per-motor calibration entry."""
+
+    channel: int
+    speed_scale: float
+    deadband_pct: float
+    reversed: bool
+
+
+@dataclass
+class ServoCalibrationEntry:
+    """Per-servo calibration entry."""
+
+    servo: str
+    trim_us: int
+
+
+@dataclass
+class GrayscaleCalibrationEntry:
+    """Per-sensor grayscale calibration entry.
+
+    Attributes
+    ----------
+    adc_channel : int
+        ADC bus channel number (from ``config.sensors.grayscale``).
+    white_raw : int
+        Raw ADC value captured from a white/reflective surface.
+    black_raw : int
+        Raw ADC value captured from a black/non-reflective surface.
+    """
+
+    adc_channel: int
+    white_raw: int
+    black_raw: int
+
+
+@dataclass
+class CalibrationSnapshot:
+    """Full calibration snapshot from ``get_calibration``."""
+
+    motors: list[MotorCalibrationEntry]
+    servos: dict[str, ServoCalibrationEntry]
+    grayscale: list[GrayscaleCalibrationEntry]
+
+
+@dataclass
+class GrayscaleCaptureResult:
+    """Result from ``calibrate_grayscale``."""
+
+    channel: int
+    adc_channel: int
+    surface: str
+    raw_value: int
+    stored: bool
+
+
+@dataclass
+class NormalizedGrayscaleResult:
+    """Result from ``read_grayscale_normalized``."""
+
+    channels: list[int]
+    normalized: list[float]
+
+
+@dataclass
+class SaveCalibrationResult:
+    """Result from ``save_calibration``."""
+
+    saved: bool
+    path: str
+
+
+# ---------------------------------------------------------------------------
+# Routine dataclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RoutineStartResult:
+    """Result from ``start_routine``."""
+
+    name: str
+    started_at_uptime_s: int
+
+
+@dataclass
+class RoutineStatusResult:
+    """Result from ``get_routine_status``."""
+
+    running: bool
+    name: str | None
+    elapsed_s: int | None
+    obstacles_avoided: int | None
+    cliffs_avoided: int | None
+
+
+@dataclass
+class RoutineStopResult:
+    """Result from ``stop_routine``."""
+
+    name: str
+    ran_for_s: int
+    obstacles_avoided: int
+    cliffs_avoided: int
+    stop_reason: str

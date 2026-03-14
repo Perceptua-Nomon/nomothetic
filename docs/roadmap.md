@@ -13,8 +13,12 @@
 | 6 | Motor API Endpoints | ✅ Complete |
 | 7 | Vehicle Convenience API | ✅ Complete |
 | 8 | Audio & Peripheral Expansion | ✅ Complete |
+| 9 | Audio Levels Control | ✅ Complete |
+| 10 | Calibration API | ✅ Complete |
+| 11 | Routine API | ✅ Complete |
+| 12 | Line-Following Routine API | 🔲 Planned |
 
-**Test totals (current): 262 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio)
+**Test totals (current): 352 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine)
 
 ---
 
@@ -312,26 +316,170 @@ confirm all new work passes checks before tagging.
 output volume (HifiBerry DAC) and input gain (USB microphone PCM2902). Requires
 corresponding IPC methods in `nomopractic` (see nomopractic Phase 9).
 
-**Candidate deliverables:**
-
 **Output Volume:**
-- [ ] `HatClient.set_volume(volume_pct: int)` — sends `set_volume` IPC call (0–100)
-- [ ] `HatClient.get_volume() -> int` — sends `get_volume` IPC call
-- [ ] `POST /api/audio/volume` request `{ volume_pct: 0–100 }` → response `{ volume_pct, timestamp }`
-- [ ] `GET /api/audio/volume` → response `{ volume_pct, timestamp }`
-- [ ] Pydantic models: `VolumeRequest`, `VolumeResponse`
-- [ ] Auto-apply configured default volume on `POST /api/audio/play` startup
+- [x] `HatClient.set_volume(volume_pct: int)` — sends `set_volume` IPC call (0–100)
+- [x] `HatClient.get_volume() -> int` — sends `get_volume` IPC call
+- [x] `POST /api/audio/volume` request `{ volume_pct: 0–100 }` → response `{ volume_pct, timestamp }`
+- [x] `GET /api/audio/volume` → response `{ volume_pct, timestamp }`
+- [x] Pydantic models: `VolumeRequest`, `VolumeResponse`
+- [x] Auto-apply configured default volume on `POST /api/audio/play` (best-effort, env `NOMON_AUDIO_VOLUME`)
 
 **Input Gain:**
-- [ ] `HatClient.set_mic_gain(gain_pct: int)` — sends `set_mic_gain` IPC call (0–100)
-- [ ] `HatClient.get_mic_gain() -> int` — sends `get_mic_gain` IPC call
-- [ ] `POST /api/audio/mic-gain` request `{ gain_pct: 0–100 }` → response `{ gain_pct, timestamp }`
-- [ ] `GET /api/audio/mic-gain` → response `{ gain_pct, timestamp }`
-- [ ] Pydantic models: `MicGainRequest`, `MicGainResponse`
-- [ ] Auto-apply configured default input gain on `POST /api/audio/record` startup
+- [x] `HatClient.set_mic_gain(gain_pct: int)` — sends `set_mic_gain` IPC call (0–100)
+- [x] `HatClient.get_mic_gain() -> int` — sends `get_mic_gain` IPC call
+- [x] `POST /api/audio/mic-gain` request `{ gain_pct: 0–100 }` → response `{ gain_pct, timestamp }`
+- [x] `GET /api/audio/mic-gain` → response `{ gain_pct, timestamp }`
+- [x] Pydantic models: `MicGainRequest`, `MicGainResponse`
+- [x] Auto-apply configured default input gain on `POST /api/audio/record/start` (best-effort, env `NOMON_AUDIO_MIC_GAIN`)
 
 **Testing & Integration:**
-- [ ] New tests in `test_hat.py` and `test_api.py` for volume and mic gain endpoints
+- [x] New tests in `test_hat.py` and `test_api.py` for volume and mic gain endpoints
+- [x] `pytest tests/` — 292 passing (at time of phase completion)
+- [x] `black --check .` + `ruff check .` — clean
+
+---
+
+## Upcoming
+
+### Phase 10 — Calibration API (P1)
+
+**Goal**: Expose the nomopractic Calibration & Configuration layer (Phase 10) as
+`HatClient` methods and REST endpoints. Operators tune and calibrate the robot
+via the HTTPS API before engaging autonomous routines.
+
+**Dependency**: Requires nomopractic Phase 10 (Calibration & Configuration).
+
+#### 10.1 — HatClient Calibration Methods (`nomothetic.hat`)
+- [x] `MotorCalibrationEntry` dataclass: `channel: int`, `speed_scale: float`, `deadband_pct: float`, `reversed: bool`
+- [x] `ServoCalibrationEntry` dataclass: `servo: str`, `trim_us: int`
+- [x] `GrayscaleCalibrationEntry` dataclass: `adc_channel: int`, `white_raw: int`, `black_raw: int`
+- [x] `CalibrationSnapshot` dataclass: `motors: list[MotorCalibrationEntry]`, `servos: dict[str, ServoCalibrationEntry]`, `grayscale: list[GrayscaleCalibrationEntry]`
+- [x] `GrayscaleCaptureResult` dataclass: `channel: int`, `adc_channel: int`, `surface: str`, `raw_value: int`, `stored: bool`
+- [x] `NormalizedGrayscaleResult` dataclass: `channels: list[int]`, `normalized: list[float]`
+- [x] `SaveCalibrationResult` dataclass: `saved: bool`, `path: str`
+- [x] `get_calibration()` → `CalibrationSnapshot`
+- [x] `set_motor_calibration(channel, speed_scale=None, deadband_pct=None, reversed=None)` → `MotorCalibrationEntry`
+  - Raises `HatError(code="INVALID_PARAMS")` on out-of-range channel
+- [x] `set_servo_calibration(servo, trim_us)` → `ServoCalibrationEntry`
+  - `servo` is one of `"steering"`, `"camera_pan"`, `"camera_tilt"`; `HatError(code="INVALID_PARAMS")` otherwise
+- [x] `calibrate_grayscale(channel, surface)` → `GrayscaleCaptureResult`
+  - `channel`: sensor position index (0 = left, 1 = center, 2 = right)
+  - `surface`: `"white"` or `"black"`
+- [x] `save_calibration()` → `SaveCalibrationResult`
+- [x] `reset_calibration()` → `bool`
+- [x] `read_grayscale_normalized()` → `NormalizedGrayscaleResult`
+  - Sends `read_grayscale_normalized` IPC call
+  - Returns per-channel normalised values (0.0 = white/reflective, 1.0 = black/non-reflective)
+
+#### 10.2 — REST Endpoints (`nomothetic.api`)
+- [x] `GET /api/calibration` → `{ motors, servos, grayscale, timestamp }` — full snapshot
+- [x] `PUT /api/calibration/motor/{channel}` — set motor calibration
+  Body: `{ speed_scale?: float, deadband_pct?: float, reversed?: bool }`
+  Response: `{ channel, speed_scale, deadband_pct, reversed, timestamp }`
+- [x] `PUT /api/calibration/servo/{servo_name}` — set servo trim
+  Body: `{ trim_us: int }`
+  Response: `{ servo, trim_us, timestamp }`
+- [x] `POST /api/calibration/grayscale/{channel}/capture` — live ADC capture for one surface
+  Body: `{ surface: "white" | "black" }`
+  Response: `{ channel, adc_channel, surface, raw_value, stored, timestamp }`
+- [x] `POST /api/calibration/save` — persist calibration to file on device
+  Response: `{ saved: bool, path: str, timestamp }`
+- [x] `POST /api/calibration/reset` — revert in-memory calibration to defaults
+  Response: `{ reset: bool, timestamp }`
+- [x] `GET /api/sensor/grayscale/normalized` — per-channel normalised grayscale (requires calibration)
+  Response: `{ channels: list[int], normalized: list[float], timestamp }`
+- [x] All calibration endpoints tagged `"Calibration"` in OpenAPI docs; normalised sensor endpoint tagged `"Sensor"`
+- [x] `422` on invalid servo name or out-of-range values; `503` on daemon unavailable
+- [x] Pydantic models: `MotorCalibrationRequest`, `ServoCalibrationRequest`, `GrayscaleCaptureRequest`,
+  `NormalizedGrayscaleResponse`, `SaveCalibrationResponse`, and matching response models
+
+#### 10.3 — Tests
+- [x] `tests/test_hat.py`: all seven `HatClient` calibration methods — success and error cases
+  (`get_calibration` defaults, `set_motor_calibration` partial update, `set_motor_calibration` invalid channel,
+  `set_servo_calibration` valid, `set_servo_calibration` invalid servo name, `calibrate_grayscale` success,
+  `calibrate_grayscale` constraint violation, `save_calibration` success, `reset_calibration`,
+  `read_grayscale_normalized` success, connection error on each method — ~14 test cases)
+- [x] `tests/test_api.py`: all seven REST endpoints (success, `422` validation, `503` no daemon) — ~21 test cases
+- [x] `uv run pytest tests/` — 332 passing
+- [x] `uv run ruff check src/ tests/` — 0 errors
+- [x] `uv run black --check src/ tests/` — clean
+- [x] `uv run mypy src/ tests/` — 0 errors
+
+#### Phase 10 Exit Criteria
+- [x] `GET /api/calibration` returns all current calibration values for motors, servos, and grayscale sensors
+- [x] `PUT /api/calibration/motor/0` with `{ "speed_scale": 1.2, "reversed": true }` affects subsequent `POST /api/drive` commands on the robot
+- [x] `PUT /api/calibration/servo/steering` with `{ "trim_us": -50 }` shifts the physical steering centre
+- [x] `POST /api/calibration/grayscale/0/capture` with `{ "surface": "white" }` stores the live ADC reading as the white reference
+- [x] `GET /api/sensor/grayscale/normalized` returns 0.0–1.0 per channel after surface calibration
+- [x] `POST /api/calibration/save` persists calibration across daemon restarts; response includes `path`
+- [x] All tests pass
+
+---
+
+### Phase 11 — Routine API (P1)
+
+**Goal**: Expose the nomopractic Routine Engine (Phase 11) as `HatClient`
+methods and REST API endpoints. Remote clients can start, stop, and monitor
+self-contained on-robot routines via HTTPS.
+
+**Architecture note**: Routine *execution* lives entirely in nomopractic (Rust).
+nomothetic is a thin façade — it calls three IPC methods and maps results onto
+Pydantic models and HTTP status codes, exactly as the motor and vehicle APIs do.
+The `feature/routines` branch is the target for Phases 11 and 12.
+
+#### 11.1 — HatClient Routine Methods (`nomothetic.hat`)
+- [x] `RoutineStartResult` dataclass: `name: str`, `started_at_uptime_s: int`
+- [x] `RoutineStatusResult` dataclass: `running: bool`, `name: str | None`, `elapsed_s: int | None`, `obstacles_avoided: int | None`, `cliffs_avoided: int | None`
+- [x] `RoutineStopResult` dataclass: `name: str`, `ran_for_s: int`, `obstacles_avoided: int`, `cliffs_avoided: int`, `stop_reason: str`
+- [x] `start_routine(name, speed_pct?, obstacle_threshold_cm?, cliff_threshold_normalized?, max_duration_s?)` → `RoutineStartResult`
+  - Raises `HatError(code="ALREADY_RUNNING", ...)` when a routine is already active
+  - Raises `HatError(code="INVALID_PARAMS", ...)` for unknown routine name
+- [x] `stop_routine()` → `RoutineStopResult`
+  - Raises `HatError(code="INVALID_PARAMS", ...)` if no routine is running
+- [x] `get_routine_status()` → `RoutineStatusResult`
+
+#### 11.2 — REST Endpoints (`nomothetic.api`)
+- [x] `POST /api/routine/start` — start a named routine  
+  Request: `{ name: str, speed_pct?: float, obstacle_threshold_cm?: float, cliff_threshold_normalized?: float, max_duration_s?: int }`  
+  Response: `{ name, started_at_uptime_s, timestamp }`  
+  Errors: `422` on invalid/unknown name; `409 Conflict` on `ALREADY_RUNNING`; `503` when daemon unavailable
+- [x] `POST /api/routine/stop` — stop the active routine  
+  Response: `{ name, ran_for_s, obstacles_avoided, cliffs_avoided, stop_reason, timestamp }`  
+  Errors: `409 Conflict` if no routine is running; `503` when daemon unavailable
+- [x] `GET /api/routine/status` — query active routine  
+  Response: `{ running, name, elapsed_s, obstacles_avoided, cliffs_avoided, timestamp }`  
+  Errors: `503` when daemon unavailable
+- [x] Pydantic models: `RoutineStartRequest`, `RoutineStartResponse`, `RoutineStopResponse`, `RoutineStatusResponse`
+- [x] All endpoints tagged `"Routine"` in OpenAPI docs
+- [x] `409 Conflict` (not `422`) mapped from `HatError(code="ALREADY_RUNNING")`
+
+#### 11.3 — Tests
+- [x] `tests/test_hat.py`: `start_routine` success, `start_routine` ALREADY_RUNNING, `start_routine` unknown name, `stop_routine` success, `stop_routine` not-running, `get_routine_status` idle, `get_routine_status` running, connection error
+- [x] `tests/test_api.py`: `POST /api/routine/start` success, 409 ALREADY_RUNNING, 422 unknown name, 503 no daemon; `POST /api/routine/stop` success, 409 not running, 503; `GET /api/routine/status` idle, running, 503
+- [x] `uv run pytest tests/` — 352 passing
+- [x] `uv run ruff check src/ tests/` — 0 errors
+- [x] `uv run black --check src/ tests/` — clean
+- [x] `uv run mypy src/ tests/` — 0 errors
+
+#### Phase 11 Exit Criteria
+- [x] `POST /api/routine/start` with `{ "name": "explore" }` causes the robot to drive autonomously
+- [x] `POST /api/routine/stop` halts all motors and returns telemetry stats
+- [x] `GET /api/routine/status` shows live progress (elapsed time, avoidance counts)
+- [x] Routine continues after REST client disconnects; stops only on explicit stop or max_duration timeout
+- [x] All tests pass
+
+---
+
+### Phase 12 — Line-Following Routine API (P2)
+
+**Goal**: Expose the `follow_line` routine (nomopractic Phase 12) via the REST
+API, matching the pattern established in Phase 11.
+
+- [ ] `FollowLineStartRequest` Pydantic model: `name="follow_line"`, `speed_pct?`, `kp?`, `kd?`, `line_lost_cycles?`
+- [ ] `RoutineStartRequest` extended (or existing model reused — `start_routine` uses generic pass-through params)
+- [ ] `POST /api/routine/start` already supports `follow_line` via generic param forwarding — verify acceptance
+- [ ] `tests/test_hat.py` + `tests/test_api.py`: `follow_line` start/stop/status tests
+- [ ] `uv run pytest tests/` — no regressions from current total (≥ 352 passing)
 
 ---
 

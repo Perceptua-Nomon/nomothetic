@@ -22,7 +22,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,7 +31,11 @@ from pydantic import BaseModel, Field
 
 from nomothetic.audio import AudioPlayer, AudioRecorder, list_audio_files
 from nomothetic.camera import Camera
-from nomothetic.hat import HatClient, HatConnectionError, HatError
+from nomothetic.hat import (
+    HatClient,
+    HatConnectionError,
+    HatError,
+)
 
 try:
     from nomothetic.streaming import StreamServer
@@ -428,6 +432,194 @@ class AudioStatusResponse(BaseModel):
     timestamp: str
 
 
+# Audio level models
+class VolumeRequest(BaseModel):
+    """Request body for setting output volume."""
+
+    volume_pct: int = Field(..., ge=0, le=100, description="Output volume (0–100 %)")
+
+
+class VolumeResponse(BaseModel):
+    """Current or newly applied output volume."""
+
+    volume_pct: int
+    timestamp: str
+
+
+class MicGainRequest(BaseModel):
+    """Request body for setting microphone capture gain."""
+
+    gain_pct: int = Field(..., ge=0, le=100, description="Mic capture gain (0–100 %)")
+
+
+class MicGainResponse(BaseModel):
+    """Current or newly applied mic capture gain."""
+
+    gain_pct: int
+    timestamp: str
+
+
+# Calibration models
+
+
+class MotorCalibrationRequest(BaseModel):
+    """Request body for setting motor calibration (all fields optional)."""
+
+    speed_scale: Optional[float] = Field(default=None, ge=0.5, le=2.0)
+    deadband_pct: Optional[float] = Field(default=None, ge=0.0, le=20.0)
+    reversed: Optional[bool] = None
+
+
+class MotorCalibrationResponse(BaseModel):
+    """Motor calibration entry after update."""
+
+    channel: int
+    speed_scale: float
+    deadband_pct: float
+    reversed: bool
+    timestamp: str
+
+
+class ServoCalibrationRequest(BaseModel):
+    """Request body for setting servo trim offset."""
+
+    trim_us: int = Field(..., ge=-500, le=500)
+
+
+class ServoCalibrationResponse(BaseModel):
+    """Servo calibration entry after update."""
+
+    servo: str
+    trim_us: int
+    timestamp: str
+
+
+class GrayscaleCaptureRequest(BaseModel):
+    """Request body for capturing a grayscale surface reference."""
+
+    surface: Literal["white", "black"]
+
+
+class GrayscaleCaptureResponse(BaseModel):
+    """Result of a grayscale surface capture."""
+
+    channel: int
+    adc_channel: int
+    surface: str
+    raw_value: int
+    stored: bool
+    timestamp: str
+
+
+class NormalizedGrayscaleResponse(BaseModel):
+    """Per-channel normalised grayscale sensor readings."""
+
+    channels: list[int]
+    normalized: list[float]
+    timestamp: str
+
+
+class SaveCalibrationResponse(BaseModel):
+    """Result of persisting calibration to disk."""
+
+    saved: bool
+    path: str
+    timestamp: str
+
+
+class ResetCalibrationResponse(BaseModel):
+    """Result of resetting calibration to defaults."""
+
+    reset: bool
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Routine models
+# ---------------------------------------------------------------------------
+
+
+class RoutineStartRequest(BaseModel):
+    """Body for ``POST /api/routine/start``."""
+
+    name: str = Field(description="Routine name.  Currently only 'explore' is supported.")
+    speed_pct: Optional[float] = Field(
+        default=None, ge=1.0, le=100.0, description="Forward speed override (1–100 %)."
+    )
+    obstacle_threshold_cm: Optional[float] = Field(
+        default=None, gt=0.0, description="Obstacle detection distance in cm."
+    )
+    cliff_threshold_normalized: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, description="Normalised grayscale cliff threshold (0–1)."
+    )
+    max_duration_s: Optional[int] = Field(
+        default=None, ge=1, description="Maximum run time in seconds."
+    )
+
+
+class RoutineStartResponse(BaseModel):
+    """Result of starting a routine."""
+
+    name: str
+    started_at_uptime_s: int
+    timestamp: str
+
+
+class RoutineStopResponse(BaseModel):
+    """Result of stopping a routine."""
+
+    name: str
+    ran_for_s: int
+    obstacles_avoided: int
+    cliffs_avoided: int
+    stop_reason: str
+    timestamp: str
+
+
+class RoutineStatusResponse(BaseModel):
+    """Current routine status."""
+
+    running: bool
+    name: Optional[str] = None
+    elapsed_s: Optional[int] = None
+    obstacles_avoided: Optional[int] = None
+    cliffs_avoided: Optional[int] = None
+    timestamp: str
+
+
+class MotorCalibrationItem(BaseModel):
+    """Per-channel motor calibration entry in a calibration snapshot."""
+
+    channel: int
+    speed_scale: float
+    deadband_pct: float
+    reversed: bool
+
+
+class ServoCalibrationItem(BaseModel):
+    """Per-servo calibration entry in a calibration snapshot."""
+
+    trim_us: int
+
+
+class GrayscaleCalibrationItem(BaseModel):
+    """Per-sensor grayscale calibration entry in a calibration snapshot."""
+
+    channel: int
+    adc_channel: int
+    white_raw: int
+    black_raw: int
+
+
+class CalibrationSnapshotResponse(BaseModel):
+    """Full calibration snapshot returned by GET /api/calibration."""
+
+    motors: list[MotorCalibrationItem]
+    servos: dict[str, ServoCalibrationItem]
+    grayscale: list[GrayscaleCalibrationItem]
+    timestamp: str
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -536,6 +728,42 @@ _stream_server: Optional[StreamServer] = None
 _stream_host: str = "0.0.0.0"
 _stream_port: int = 8000
 _audio_recorder: Optional[AudioRecorder] = None
+
+
+def _parse_int_env(name: str, default: int, lo: int = 0, hi: int = 100) -> int:
+    """Parse an integer environment variable, falling back to *default* on error.
+
+    Falls back and logs a warning when:
+    - the value is not a valid integer, or
+    - the value is outside the inclusive [lo, hi] range.
+    """
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Environment variable %s=%r is not a valid integer; using default %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+    if not lo <= value <= hi:
+        logger.warning(
+            "Environment variable %s=%r is outside allowed range %d–%d; using default %d",
+            name,
+            raw,
+            lo,
+            hi,
+            default,
+        )
+        return default
+    return value
+
+
+# Default audio levels read from env vars (set by start.sh from config.toml).
+_default_volume_pct: int = _parse_int_env("NOMON_AUDIO_VOLUME", 80)
+_default_mic_gain_pct: int = _parse_int_env("NOMON_AUDIO_MIC_GAIN", 50)
 _audio_player: Optional[AudioPlayer] = None
 _media_dir: Path = Path("~/perceptua-nomon/media").expanduser()
 
@@ -1108,6 +1336,14 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="audio not available")
         if _audio_recorder.is_recording:
             raise HTTPException(status_code=409, detail="A recording is already in progress")
+
+        # Apply default mic capture gain before recording (best-effort).
+        if _hat_client is not None:
+            try:
+                await asyncio.to_thread(_hat_client.set_mic_gain, _default_mic_gain_pct)
+            except (HatError, HatConnectionError):
+                pass  # Continue without gain set if daemon unavailable.
+
         try:
             recording_path = await asyncio.to_thread(_audio_recorder.start, request.filename)
         except ValueError as e:
@@ -1177,6 +1413,13 @@ def create_app() -> FastAPI:
                 await asyncio.to_thread(_hat_client.enable_speaker)
             except (HatError, HatConnectionError):
                 pass  # Continue without amplifier enable if daemon unavailable.
+
+        # Apply default output volume before playback (best-effort).
+        if _hat_client is not None:
+            try:
+                await asyncio.to_thread(_hat_client.set_volume, _default_volume_pct)
+            except (HatError, HatConnectionError):
+                pass  # Continue without volume set if daemon unavailable.
 
         try:
             await asyncio.to_thread(_audio_player.play, request.filename)
@@ -1252,6 +1495,305 @@ def create_app() -> FastAPI:
             recording_file=Path(rec_file).name if rec_file else None,
             playing=_audio_player.is_playing if _audio_player else False,
             playback_file=Path(play_file).name if play_file else None,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/audio/volume", response_model=VolumeResponse, tags=["Audio"])
+    async def set_volume(request: VolumeRequest):
+        """Set the output volume on the HifiBerry DAC via ALSA.
+
+        Parameters
+        ----------
+        request : VolumeRequest
+            ``volume_pct``: target output volume 0–100 (%).
+
+        Returns
+        -------
+        VolumeResponse
+            Applied volume percentage and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.set_volume, request.volume_pct)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return VolumeResponse(
+            volume_pct=request.volume_pct,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/audio/volume", response_model=VolumeResponse, tags=["Audio"])
+    async def get_volume():
+        """Read the current output volume from the ALSA HifiBerry DAC mixer.
+
+        Returns
+        -------
+        VolumeResponse
+            Current volume percentage and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            pct = await asyncio.to_thread(_hat_client.get_volume)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return VolumeResponse(
+            volume_pct=pct,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/audio/mic-gain", response_model=MicGainResponse, tags=["Audio"])
+    async def set_mic_gain(request: MicGainRequest):
+        """Set the microphone capture gain on the USB mic via ALSA.
+
+        Parameters
+        ----------
+        request : MicGainRequest
+            ``gain_pct``: target mic capture gain 0–100 (%).
+
+        Returns
+        -------
+        MicGainResponse
+            Applied gain percentage and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            await asyncio.to_thread(_hat_client.set_mic_gain, request.gain_pct)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return MicGainResponse(
+            gain_pct=request.gain_pct,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/audio/mic-gain", response_model=MicGainResponse, tags=["Audio"])
+    async def get_mic_gain():
+        """Read the current microphone capture gain from the ALSA USB mic mixer.
+
+        Returns
+        -------
+        MicGainResponse
+            Current gain percentage and UTC timestamp.
+
+        Raises
+        ------
+        HTTPException
+            503 if the nomopractic daemon is unavailable.
+            500 on hardware error.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            pct = await asyncio.to_thread(_hat_client.get_mic_gain)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return MicGainResponse(
+            gain_pct=pct,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    # ========================================================================
+    # Calibration Endpoints
+    # ========================================================================
+
+    @app.get("/api/calibration", response_model=CalibrationSnapshotResponse, tags=["Calibration"])
+    async def get_calibration():
+        """Return a full snapshot of the current runtime calibration."""
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            snap = await asyncio.to_thread(_hat_client.get_calibration)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return CalibrationSnapshotResponse(
+            motors=[
+                MotorCalibrationItem(
+                    channel=m.channel,
+                    speed_scale=m.speed_scale,
+                    deadband_pct=m.deadband_pct,
+                    reversed=m.reversed,
+                )
+                for m in snap.motors
+            ],
+            servos={
+                name: ServoCalibrationItem(trim_us=v.trim_us) for name, v in snap.servos.items()
+            },
+            grayscale=[
+                GrayscaleCalibrationItem(
+                    channel=i,
+                    adc_channel=g.adc_channel,
+                    white_raw=g.white_raw,
+                    black_raw=g.black_raw,
+                )
+                for i, g in enumerate(snap.grayscale)
+            ],
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.put(
+        "/api/calibration/motor/{channel}",
+        response_model=MotorCalibrationResponse,
+        tags=["Calibration"],
+    )
+    async def put_motor_calibration(channel: int, request: MotorCalibrationRequest):
+        """Partially update motor calibration for one channel."""
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            entry = await asyncio.to_thread(
+                _hat_client.set_motor_calibration,
+                channel,
+                request.speed_scale,
+                request.deadband_pct,
+                request.reversed,
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            status = 422 if e.code == "INVALID_PARAMS" else 500
+            raise HTTPException(status_code=status, detail=str(e)) from e
+        return MotorCalibrationResponse(
+            channel=entry.channel,
+            speed_scale=entry.speed_scale,
+            deadband_pct=entry.deadband_pct,
+            reversed=entry.reversed,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.put(
+        "/api/calibration/servo/{servo_name}",
+        response_model=ServoCalibrationResponse,
+        tags=["Calibration"],
+    )
+    async def put_servo_calibration(servo_name: str, request: ServoCalibrationRequest):
+        """Set the trim offset (µs) for a named servo."""
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            entry = await asyncio.to_thread(
+                _hat_client.set_servo_calibration, servo_name, request.trim_us
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            status = 422 if e.code == "INVALID_PARAMS" else 500
+            raise HTTPException(status_code=status, detail=str(e)) from e
+        return ServoCalibrationResponse(
+            servo=entry.servo,
+            trim_us=entry.trim_us,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post(
+        "/api/calibration/grayscale/{channel}/capture",
+        response_model=GrayscaleCaptureResponse,
+        tags=["Calibration"],
+    )
+    async def post_calibrate_grayscale(channel: int, request: GrayscaleCaptureRequest):
+        """Capture a live ADC reading as the white or black surface reference."""
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(
+                _hat_client.calibrate_grayscale, channel, request.surface
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            status = 422 if e.code == "INVALID_PARAMS" else 500
+            raise HTTPException(status_code=status, detail=str(e)) from e
+        return GrayscaleCaptureResponse(
+            channel=result.channel,
+            adc_channel=result.adc_channel,
+            surface=result.surface,
+            raw_value=result.raw_value,
+            stored=result.stored,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/calibration/save", response_model=SaveCalibrationResponse, tags=["Calibration"])
+    async def post_save_calibration():
+        """Persist the current in-memory calibration store to disk."""
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(_hat_client.save_calibration)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return SaveCalibrationResponse(
+            saved=result.saved,
+            path=result.path,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post(
+        "/api/calibration/reset", response_model=ResetCalibrationResponse, tags=["Calibration"]
+    )
+    async def post_reset_calibration():
+        """Revert the in-memory calibration store to factory defaults."""
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            reset = await asyncio.to_thread(_hat_client.reset_calibration)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return ResetCalibrationResponse(
+            reset=reset,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get(
+        "/api/sensor/grayscale/normalized",
+        response_model=NormalizedGrayscaleResponse,
+        tags=["Sensor"],
+    )
+    async def get_grayscale_normalized():
+        """Return per-channel normalised grayscale sensor readings (0.0–1.0)."""
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(_hat_client.read_grayscale_normalized)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return NormalizedGrayscaleResponse(
+            channels=result.channels,
+            normalized=result.normalized,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -1558,6 +2100,87 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail=str(e)) from e
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # ========================================================================
+    # Routine Endpoints
+    # ========================================================================
+
+    @app.post("/api/routine/start", response_model=RoutineStartResponse, tags=["Routine"])
+    async def start_routine(request: RoutineStartRequest):
+        """Start an autonomous routine.
+
+        Returns 409 if a routine is already running.
+        Returns 422 if the routine name is unknown or a parameter is out of range.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(
+                _hat_client.start_routine,
+                request.name,
+                request.speed_pct,
+                request.obstacle_threshold_cm,
+                request.cliff_threshold_normalized,
+                request.max_duration_s,
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            if e.code == "ALREADY_RUNNING":
+                raise HTTPException(status_code=409, detail=str(e)) from e
+            if e.code == "INVALID_PARAMS":
+                raise HTTPException(status_code=422, detail=str(e)) from e
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return RoutineStartResponse(
+            name=result.name,
+            started_at_uptime_s=result.started_at_uptime_s,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/routine/stop", response_model=RoutineStopResponse, tags=["Routine"])
+    async def stop_routine():
+        """Stop the currently running routine.
+
+        Returns 409 if no routine is running.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(_hat_client.stop_routine)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            if e.code == "INVALID_PARAMS":
+                raise HTTPException(status_code=409, detail=str(e)) from e
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return RoutineStopResponse(
+            name=result.name,
+            ran_for_s=result.ran_for_s,
+            obstacles_avoided=result.obstacles_avoided,
+            cliffs_avoided=result.cliffs_avoided,
+            stop_reason=result.stop_reason,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/routine/status", response_model=RoutineStatusResponse, tags=["Routine"])
+    async def get_routine_status():
+        """Return the current routine status snapshot."""
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(_hat_client.get_routine_status)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return RoutineStatusResponse(
+            running=result.running,
+            name=result.name,
+            elapsed_s=result.elapsed_s,
+            obstacles_avoided=result.obstacles_avoided,
+            cliffs_avoided=result.cliffs_avoided,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     # Global exception handler
     @app.exception_handler(HTTPException)

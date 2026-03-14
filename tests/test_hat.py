@@ -15,14 +15,23 @@ from typing import Any
 import pytest
 
 from nomothetic.hat import (
+    CalibrationSnapshot,
+    GrayscaleCaptureResult,
     GrayscaleResult,
     HatClient,
     HatConnectionError,
     HatError,
     HatHealthResult,
     McuStatusResult,
+    MotorCalibrationEntry,
     MotorLeaseEntry,
     MotorStatusResult,
+    NormalizedGrayscaleResult,
+    RoutineStartResult,
+    RoutineStatusResult,
+    RoutineStopResult,
+    SaveCalibrationResult,
+    ServoCalibrationEntry,
     ServoLeaseEntry,
     ServoStatusResult,
     UltrasonicResult,
@@ -69,6 +78,61 @@ _DEFAULT_RESPONSES: dict[str, Any] = {
     "read_ultrasonic": {"distance_cm": 42.5},
     "enable_speaker": {"enabled": True, "pin_bcm": 20},
     "disable_speaker": {"enabled": False, "pin_bcm": 20},
+    "set_volume": {"volume_pct": 80},
+    "get_volume": {"volume_pct": 80},
+    "set_mic_gain": {"gain_pct": 50},
+    "get_mic_gain": {"gain_pct": 50},
+    "get_calibration": {
+        "motors": [
+            {"channel": 0, "speed_scale": 1.0, "deadband_pct": 0.0, "reversed": False},
+            {"channel": 1, "speed_scale": 1.0, "deadband_pct": 0.0, "reversed": False},
+        ],
+        "servos": {
+            "steering": {"trim_us": 0},
+            "camera_pan": {"trim_us": 0},
+            "camera_tilt": {"trim_us": 0},
+        },
+        "grayscale": [
+            {"adc_channel": 0, "white_raw": 100, "black_raw": 3000},
+            {"adc_channel": 1, "white_raw": 100, "black_raw": 3000},
+            {"adc_channel": 2, "white_raw": 100, "black_raw": 3000},
+        ],
+    },
+    "set_motor_calibration": {
+        "channel": 0,
+        "speed_scale": 1.2,
+        "deadband_pct": 5.0,
+        "reversed": True,
+    },
+    "set_servo_calibration": {"servo": "steering", "trim_us": -50},
+    "calibrate_grayscale": {
+        "channel": 0,
+        "adc_channel": 0,
+        "surface": "white",
+        "raw_value": 142,
+        "stored": True,
+    },
+    "save_calibration": {"saved": True, "path": "/etc/nomopractic/calibration.toml"},
+    "reset_calibration": {"reset": True},
+    "read_grayscale_normalized": {
+        "channels": [0, 1, 2],
+        "normalized": [0.04, 0.87, 0.11],
+    },
+    "start_routine": {"name": "explore", "started_at_uptime_s": 1000},
+    "stop_routine": {
+        "name": "explore",
+        "ran_for_s": 30,
+        "obstacles_avoided": 2,
+        "cliffs_avoided": 1,
+        "stop_reason": "commanded",
+    },
+    "get_routine_status": {
+        "running": True,
+        "name": "explore",
+        "elapsed_s": 10,
+        "obstacles_avoided": 0,
+        "cliffs_avoided": 0,
+    },
 }
 
 
@@ -916,3 +980,454 @@ def test_disable_speaker_hardware_error(tmp_path):
             hat.disable_speaker()
 
     t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# set_volume() / get_volume()
+# ---------------------------------------------------------------------------
+
+
+def test_set_volume_succeeds(mock_server):
+    """`set_volume()` sends the IPC request without raising."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_volume(80)  # should not raise
+
+
+def test_set_volume_boundary_values(mock_server):
+    """`set_volume()` accepts 0 and 100 as boundary values."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_volume(0)
+        hat.set_volume(100)
+
+
+def test_set_volume_invalid_raises_value_error(mock_server):
+    """`set_volume()` raises `ValueError` if volume_pct is out of range."""
+    with HatClient(socket_path=mock_server) as hat:
+        with pytest.raises(ValueError):
+            hat.set_volume(101)
+        with pytest.raises(ValueError):
+            hat.set_volume(-1)
+
+
+def test_get_volume_returns_int(mock_server):
+    """`get_volume()` returns an int volume percentage."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.get_volume()
+    assert isinstance(result, int)
+    assert result == 80
+
+
+def test_set_volume_hardware_error(tmp_path):
+    """`set_volume()` propagates `HatError` on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "set_volume", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.set_volume(50)
+
+    t.join(timeout=2.0)
+
+
+def test_get_volume_hardware_error(tmp_path):
+    """`get_volume()` propagates `HatError` on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "get_volume", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.get_volume()
+
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# set_mic_gain() / get_mic_gain()
+# ---------------------------------------------------------------------------
+
+
+def test_set_mic_gain_succeeds(mock_server):
+    """`set_mic_gain()` sends the IPC request without raising."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_mic_gain(50)  # should not raise
+
+
+def test_set_mic_gain_boundary_values(mock_server):
+    """`set_mic_gain()` accepts 0 and 100 as boundary values."""
+    with HatClient(socket_path=mock_server) as hat:
+        hat.set_mic_gain(0)
+        hat.set_mic_gain(100)
+
+
+def test_set_mic_gain_invalid_raises_value_error(mock_server):
+    """`set_mic_gain()` raises `ValueError` if gain_pct is out of range."""
+    with HatClient(socket_path=mock_server) as hat:
+        with pytest.raises(ValueError):
+            hat.set_mic_gain(101)
+        with pytest.raises(ValueError):
+            hat.set_mic_gain(-1)
+
+
+def test_get_mic_gain_returns_int(mock_server):
+    """`get_mic_gain()` returns an int gain percentage."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.get_mic_gain()
+    assert isinstance(result, int)
+    assert result == 50
+
+
+def test_set_mic_gain_hardware_error(tmp_path):
+    """`set_mic_gain()` propagates `HatError` on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "set_mic_gain", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.set_mic_gain(50)
+
+    t.join(timeout=2.0)
+
+
+def test_get_mic_gain_hardware_error(tmp_path):
+    """`get_mic_gain()` propagates `HatError` on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "get_mic_gain", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.get_mic_gain()
+
+    t.join(timeout=2.0)
+
+
+# ===========================================================================
+# Calibration tests
+# ===========================================================================
+
+
+def test_get_calibration_returns_snapshot(mock_server):
+    """`get_calibration()` returns a full CalibrationSnapshot."""
+    with HatClient(socket_path=mock_server) as hat:
+        snap = hat.get_calibration()
+    assert isinstance(snap, CalibrationSnapshot)
+    assert len(snap.motors) == 2
+    assert snap.motors[0].channel == 0
+    assert snap.motors[0].speed_scale == 1.0
+    assert len(snap.grayscale) == 3
+    assert snap.grayscale[0].adc_channel == 0
+    assert "steering" in snap.servos
+    assert snap.servos["steering"].trim_us == 0
+
+
+def test_set_motor_calibration_returns_entry(mock_server):
+    """`set_motor_calibration()` returns updated MotorCalibrationEntry."""
+    with HatClient(socket_path=mock_server) as hat:
+        entry = hat.set_motor_calibration(0, speed_scale=1.2, deadband_pct=5.0, reversed=True)
+    assert isinstance(entry, MotorCalibrationEntry)
+    assert entry.channel == 0
+    assert entry.speed_scale == 1.2
+    assert entry.reversed is True
+
+
+def test_set_motor_calibration_partial_update(mock_server):
+    """`set_motor_calibration()` with only some fields set still returns an entry."""
+    with HatClient(socket_path=mock_server) as hat:
+        entry = hat.set_motor_calibration(0, speed_scale=1.5)
+    assert isinstance(entry, MotorCalibrationEntry)
+
+
+def test_set_motor_calibration_invalid_channel_raises(tmp_path):
+    """`set_motor_calibration()` propagates HatError on INVALID_PARAMS."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "set_motor_calibration", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.set_motor_calibration(99, speed_scale=1.0)
+    t.join(timeout=2.0)
+
+
+def test_set_servo_calibration_returns_entry(mock_server):
+    """`set_servo_calibration()` returns a ServoCalibrationEntry."""
+    with HatClient(socket_path=mock_server) as hat:
+        entry = hat.set_servo_calibration("steering", -50)
+    assert isinstance(entry, ServoCalibrationEntry)
+    assert entry.servo == "steering"
+    assert entry.trim_us == -50
+
+
+def test_set_servo_calibration_invalid_servo_raises(tmp_path):
+    """`set_servo_calibration()` propagates HatError for unrecognised servo."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "set_servo_calibration", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.set_servo_calibration("bad_servo", 0)
+    t.join(timeout=2.0)
+
+
+def test_calibrate_grayscale_returns_result(mock_server):
+    """`calibrate_grayscale()` returns a GrayscaleCaptureResult with adc_channel."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.calibrate_grayscale(0, "white")
+    assert isinstance(result, GrayscaleCaptureResult)
+    assert result.channel == 0
+    assert result.adc_channel == 0
+    assert result.surface == "white"
+    assert result.stored is True
+
+
+def test_calibrate_grayscale_constraint_violation_raises(tmp_path):
+    """`calibrate_grayscale()` propagates HatError on constraint violation."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "calibrate_grayscale", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.calibrate_grayscale(0, "black")
+    t.join(timeout=2.0)
+
+
+def test_save_calibration_returns_result(mock_server):
+    """`save_calibration()` returns a SaveCalibrationResult with path."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.save_calibration()
+    assert isinstance(result, SaveCalibrationResult)
+    assert result.saved is True
+    assert result.path == "/etc/nomopractic/calibration.toml"
+
+
+def test_reset_calibration_returns_true(mock_server):
+    """`reset_calibration()` returns True."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.reset_calibration()
+    assert result is True
+
+
+def test_read_grayscale_normalized_returns_result(mock_server):
+    """`read_grayscale_normalized()` returns a NormalizedGrayscaleResult."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.read_grayscale_normalized()
+    assert isinstance(result, NormalizedGrayscaleResult)
+    assert result.channels == [0, 1, 2]
+    assert len(result.normalized) == 3
+    assert all(0.0 <= v <= 1.0 for v in result.normalized)
+
+
+def test_get_calibration_connection_error_raises(tmp_path):
+    """`get_calibration()` raises HatConnectionError when daemon is down."""
+    sock_path = str(tmp_path / "nomopractic_missing.sock")
+    with pytest.raises(HatConnectionError):
+        with HatClient(socket_path=sock_path) as hat:
+            hat.get_calibration()
+
+
+def test_save_calibration_hardware_error_raises(tmp_path):
+    """`save_calibration()` propagates HatError on HARDWARE_ERROR."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "save_calibration", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.save_calibration()
+    t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# Routine tests
+# ---------------------------------------------------------------------------
+
+
+def test_start_routine_returns_result(mock_server):
+    """`start_routine()` returns a RoutineStartResult."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.start_routine("explore")
+    assert isinstance(result, RoutineStartResult)
+    assert result.name == "explore"
+    assert isinstance(result.started_at_uptime_s, int)
+
+
+def test_start_routine_with_overrides(mock_server):
+    """`start_routine()` accepts optional override parameters."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.start_routine(
+            "explore",
+            speed_pct=50.0,
+            obstacle_threshold_cm=30.0,
+            cliff_threshold_normalized=0.8,
+            max_duration_s=60,
+        )
+    assert result.name == "explore"
+
+
+def test_start_routine_error_raises(tmp_path):
+    """`start_routine()` raises HatError on ALREADY_RUNNING."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "start_routine", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.start_routine("explore")
+    t.join(timeout=2.0)
+
+
+def test_stop_routine_returns_result(mock_server):
+    """`stop_routine()` returns a RoutineStopResult."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.stop_routine()
+    assert isinstance(result, RoutineStopResult)
+    assert result.name == "explore"
+    assert result.ran_for_s == 30
+    assert result.obstacles_avoided == 2
+    assert result.cliffs_avoided == 1
+    assert result.stop_reason == "commanded"
+
+
+def test_stop_routine_error_raises(tmp_path):
+    """`stop_routine()` raises HatError when not running."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "stop_routine", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.stop_routine()
+    t.join(timeout=2.0)
+
+
+def test_get_routine_status_returns_result(mock_server):
+    """`get_routine_status()` returns a RoutineStatusResult."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.get_routine_status()
+    assert isinstance(result, RoutineStatusResult)
+    assert result.running is True
+    assert result.name == "explore"
+    assert result.elapsed_s == 10
+
+
+def test_get_routine_status_idle(tmp_path):
+    """`get_routine_status()` handles idle (not-running) state."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    idle_responses = dict(_DEFAULT_RESPONSES)
+    idle_responses["get_routine_status"] = {
+        "running": False,
+        "name": None,
+        "elapsed_s": None,
+        "obstacles_avoided": None,
+        "cliffs_avoided": None,
+    }
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, idle_responses),
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        result = hat.get_routine_status()
+    assert result.running is False
+    assert result.name is None
+    assert result.elapsed_s is None
+    t.join(timeout=2.0)
+
+
+def test_get_routine_status_error_raises(tmp_path):
+    """`get_routine_status()` raises HatError on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "get_routine_status", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.get_routine_status()
+    t.join(timeout=2.0)
+
+
+def test_stop_routine_connection_error(tmp_path):
+    """`stop_routine()` raises HatConnectionError when daemon is down."""
+    sock_path = str(tmp_path / "nomopractic_missing.sock")
+    with pytest.raises(HatConnectionError):
+        with HatClient(socket_path=sock_path) as hat:
+            hat.stop_routine()

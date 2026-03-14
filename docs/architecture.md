@@ -135,6 +135,20 @@ The primary remote control interface. Mobile app and management server talk to t
 | `POST` | `/api/audio/play/stop` | Audio | Stop audio playback |
 | `GET` | `/api/audio/files` | Audio | List available WAV files |
 | `GET` | `/api/audio/status` | Audio | Current recorder/player state |
+| `GET` | `/api/audio/volume` | Audio | Read current output volume (0–100) |
+| `POST` | `/api/audio/volume` | Audio | Set output volume (HifiBerry DAC) |
+| `GET` | `/api/audio/mic-gain` | Audio | Read current mic capture gain (0–100) |
+| `POST` | `/api/audio/mic-gain` | Audio | Set mic capture gain (USB mic PCM2902) |
+| `GET` | `/api/sensor/grayscale/normalized` | Sensor | Normalised grayscale sensor readings (0.0–1.0) |
+| `GET` | `/api/calibration` | Calibration | Full calibration snapshot |
+| `PUT` | `/api/calibration/motor/{channel}` | Calibration | Set motor calibration (speed_scale, deadband, reversed) |
+| `PUT` | `/api/calibration/servo/{servo_name}` | Calibration | Set servo trim offset (µs) |
+| `POST` | `/api/calibration/grayscale/{channel}/capture` | Calibration | Capture live ADC reading as white/black reference |
+| `POST` | `/api/calibration/save` | Calibration | Persist calibration to disk |
+| `POST` | `/api/calibration/reset` | Calibration | Revert in-memory calibration to defaults |
+| `POST` | `/api/routine/start` | Routine | Start a named autonomous routine (currently: `explore`) |
+| `POST` | `/api/routine/stop` | Routine | Stop the active routine; returns run statistics |
+| `GET` | `/api/routine/status` | Routine | Query active routine state: running, elapsed time, avoidance counts |
 | `GET` | `/docs` | — | Interactive Swagger UI |
 | `GET` | `/redoc` | — | ReDoc API docs |
 
@@ -144,7 +158,8 @@ The primary remote control interface. Mobile app and management server talk to t
 |------|---------|
 | `200` | Success |
 | `400` | Bad request (invalid filename, bad parameters) |
-| `409` | Conflict (recording already in/not in progress) |
+| `409` | Conflict (recording already in/not in progress; routine ALREADY_RUNNING or not running) |
+| `422` | Unprocessable Entity (Pydantic validation failure — invalid param type or range) |
 | `500` | Server/hardware error |
 | `503` | HAT daemon unavailable (nomopractic not running) |
 

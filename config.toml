@@ -47,6 +47,12 @@ dir = "~/perceptua-nomon/media"
 [audio]
 # ALSA device index for the USB microphone (PCM2902 = card 2 on Robot HAT V4).
 input_device_index = 2
+# Default output volume applied automatically before audio playback (0–100).
+# Exported as NOMON_AUDIO_VOLUME and read by the nomopractic IPC set_volume call.
+default_volume_pct = 80
+# Default microphone capture gain applied automatically before recording (0–100).
+# Exported as NOMON_AUDIO_MIC_GAIN and read by the nomopractic IPC set_mic_gain call.
+default_mic_gain_pct = 50
 
 # ─── Telemetry ───────────────────────────────────────────────────────────────
 [telemetry]
