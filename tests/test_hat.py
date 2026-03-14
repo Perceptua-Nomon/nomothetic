@@ -27,6 +27,9 @@ from nomothetic.hat import (
     MotorLeaseEntry,
     MotorStatusResult,
     NormalizedGrayscaleResult,
+    RoutineStartResult,
+    RoutineStatusResult,
+    RoutineStopResult,
     SaveCalibrationResult,
     ServoCalibrationEntry,
     ServoLeaseEntry,
@@ -114,6 +117,21 @@ _DEFAULT_RESPONSES: dict[str, Any] = {
     "read_grayscale_normalized": {
         "channels": [0, 1, 2],
         "normalized": [0.04, 0.87, 0.11],
+    },
+    "start_routine": {"name": "explore", "started_at_uptime_s": 1000},
+    "stop_routine": {
+        "name": "explore",
+        "ran_for_s": 30,
+        "obstacles_avoided": 2,
+        "cliffs_avoided": 1,
+        "stop_reason": "commanded",
+    },
+    "get_routine_status": {
+        "running": True,
+        "name": "explore",
+        "elapsed_s": 10,
+        "obstacles_avoided": 0,
+        "cliffs_avoided": 0,
     },
 }
 
@@ -1274,3 +1292,142 @@ def test_save_calibration_hardware_error_raises(tmp_path):
         with pytest.raises(HatError):
             hat.save_calibration()
     t.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# Routine tests
+# ---------------------------------------------------------------------------
+
+
+def test_start_routine_returns_result(mock_server):
+    """`start_routine()` returns a RoutineStartResult."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.start_routine("explore")
+    assert isinstance(result, RoutineStartResult)
+    assert result.name == "explore"
+    assert isinstance(result.started_at_uptime_s, int)
+
+
+def test_start_routine_with_overrides(mock_server):
+    """`start_routine()` accepts optional override parameters."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.start_routine(
+            "explore",
+            speed_pct=50.0,
+            obstacle_threshold_cm=30.0,
+            cliff_threshold_normalized=0.8,
+            max_duration_s=60,
+        )
+    assert result.name == "explore"
+
+
+def test_start_routine_error_raises(tmp_path):
+    """`start_routine()` raises HatError on ALREADY_RUNNING."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "start_routine", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.start_routine("explore")
+    t.join(timeout=2.0)
+
+
+def test_stop_routine_returns_result(mock_server):
+    """`stop_routine()` returns a RoutineStopResult."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.stop_routine()
+    assert isinstance(result, RoutineStopResult)
+    assert result.name == "explore"
+    assert result.ran_for_s == 30
+    assert result.obstacles_avoided == 2
+    assert result.cliffs_avoided == 1
+    assert result.stop_reason == "commanded"
+
+
+def test_stop_routine_error_raises(tmp_path):
+    """`stop_routine()` raises HatError when not running."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "stop_routine", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.stop_routine()
+    t.join(timeout=2.0)
+
+
+def test_get_routine_status_returns_result(mock_server):
+    """`get_routine_status()` returns a RoutineStatusResult."""
+    with HatClient(socket_path=mock_server) as hat:
+        result = hat.get_routine_status()
+    assert isinstance(result, RoutineStatusResult)
+    assert result.running is True
+    assert result.name == "explore"
+    assert result.elapsed_s == 10
+
+
+def test_get_routine_status_idle(tmp_path):
+    """`get_routine_status()` handles idle (not-running) state."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    idle_responses = dict(_DEFAULT_RESPONSES)
+    idle_responses["get_routine_status"] = {
+        "running": False,
+        "name": None,
+        "elapsed_s": None,
+        "obstacles_avoided": None,
+        "cliffs_avoided": None,
+    }
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, idle_responses),
+        kwargs={"ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        result = hat.get_routine_status()
+    assert result.running is False
+    assert result.name is None
+    assert result.elapsed_s is None
+    t.join(timeout=2.0)
+
+
+def test_get_routine_status_error_raises(tmp_path):
+    """`get_routine_status()` raises HatError on hardware failure."""
+    sock_path = str(tmp_path / "nomopractic.sock")
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_run_mock_server,
+        args=(sock_path, _DEFAULT_RESPONSES),
+        kwargs={"error_method": "get_routine_status", "ready_event": ready},
+        daemon=True,
+    )
+    t.start()
+    ready.wait(timeout=2.0)
+    with HatClient(socket_path=sock_path) as hat:
+        with pytest.raises(HatError):
+            hat.get_routine_status()
+    t.join(timeout=2.0)
+
+
+def test_stop_routine_connection_error(tmp_path):
+    """`stop_routine()` raises HatConnectionError when daemon is down."""
+    sock_path = str(tmp_path / "nomopractic_missing.sock")
+    with pytest.raises(HatConnectionError):
+        with HatClient(socket_path=sock_path) as hat:
+            hat.stop_routine()

@@ -2318,3 +2318,181 @@ def test_get_grayscale_normalized_connection_error(client, mock_hat):
     assert response.status_code == 503
 
     nomothetic.api._hat_client = None
+
+
+# ---------------------------------------------------------------------------
+# Routine endpoint tests
+# ---------------------------------------------------------------------------
+
+
+def test_post_start_routine_success(client, mock_hat):
+    """POST /api/routine/start returns started routine info."""
+    import nomothetic.api
+    from nomothetic.hat import RoutineStartResult
+
+    mock_hat.start_routine.return_value = RoutineStartResult(
+        name="explore", started_at_uptime_s=1000
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/routine/start", json={"name": "explore"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "explore"
+    assert data["started_at_uptime_s"] == 1000
+    assert "timestamp" in data
+    mock_hat.start_routine.assert_called_once_with("explore", None, None, None, None)
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_start_routine_no_client(client):
+    """POST /api/routine/start returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.post("/api/routine/start", json={"name": "explore"})
+    assert response.status_code == 503
+
+
+def test_post_start_routine_already_running(client, mock_hat):
+    """POST /api/routine/start returns 409 when ALREADY_RUNNING."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.start_routine.side_effect = HatError("ALREADY_RUNNING", "routine already running")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/routine/start", json={"name": "explore"})
+    assert response.status_code == 409
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_start_routine_invalid_params(client, mock_hat):
+    """POST /api/routine/start returns 422 when INVALID_PARAMS."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.start_routine.side_effect = HatError("INVALID_PARAMS", "unknown routine")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/routine/start", json={"name": "fly"})
+    assert response.status_code == 422
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_stop_routine_success(client, mock_hat):
+    """POST /api/routine/stop returns final stats."""
+    import nomothetic.api
+    from nomothetic.hat import RoutineStopResult
+
+    mock_hat.stop_routine.return_value = RoutineStopResult(
+        name="explore",
+        ran_for_s=30,
+        obstacles_avoided=2,
+        cliffs_avoided=1,
+        stop_reason="commanded",
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/routine/stop")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "explore"
+    assert data["ran_for_s"] == 30
+    assert data["obstacles_avoided"] == 2
+    assert data["cliffs_avoided"] == 1
+    assert data["stop_reason"] == "commanded"
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_stop_routine_not_running(client, mock_hat):
+    """POST /api/routine/stop returns 409 when no routine is running."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.stop_routine.side_effect = HatError("INVALID_PARAMS", "no routine running")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.post("/api/routine/stop")
+    assert response.status_code == 409
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_routine_status_running(client, mock_hat):
+    """GET /api/routine/status returns running status."""
+    import nomothetic.api
+    from nomothetic.hat import RoutineStatusResult
+
+    mock_hat.get_routine_status.return_value = RoutineStatusResult(
+        running=True,
+        name="explore",
+        elapsed_s=10,
+        obstacles_avoided=0,
+        cliffs_avoided=0,
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/routine/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["running"] is True
+    assert data["name"] == "explore"
+    assert data["elapsed_s"] == 10
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_routine_status_idle(client, mock_hat):
+    """GET /api/routine/status returns idle state correctly."""
+    import nomothetic.api
+    from nomothetic.hat import RoutineStatusResult
+
+    mock_hat.get_routine_status.return_value = RoutineStatusResult(
+        running=False, name=None, elapsed_s=None, obstacles_avoided=None, cliffs_avoided=None
+    )
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/routine/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["running"] is False
+    assert data["name"] is None
+    assert data["elapsed_s"] is None
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_routine_status_no_client(client):
+    """GET /api/routine/status returns 503 when daemon unavailable."""
+    import nomothetic.api
+
+    nomothetic.api._hat_client = None
+    response = client.get("/api/routine/status")
+    assert response.status_code == 503
+
+
+def test_get_routine_status_connection_error(client, mock_hat):
+    """GET /api/routine/status returns 503 on HatConnectionError."""
+    import nomothetic.api
+    from nomothetic.hat import HatConnectionError
+
+    mock_hat.get_routine_status.side_effect = HatConnectionError("daemon gone")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/routine/status")
+    assert response.status_code == 503
+
+    nomothetic.api._hat_client = None
+
+
+def test_post_start_routine_speed_out_of_range(client):
+    """POST /api/routine/start returns 422 when speed_pct is out of valid range."""
+    response = client.post("/api/routine/start", json={"name": "explore", "speed_pct": 150})
+    assert response.status_code == 422

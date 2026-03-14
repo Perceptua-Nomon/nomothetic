@@ -97,6 +97,7 @@ short UUID prefix).
 | `HARDWARE_ERROR` | I2C/SPI/GPIO operation failed at the OS level |
 | `NOT_READY` | Daemon is initialising; retry after a short delay |
 | `SERVO_LEASE_EXPIRED` | Servo lease TTL elapsed — servo channel idled (pulse_us=0) until a new command is issued |
+| `ALREADY_RUNNING` | A routine is already active; call `stop_routine` before starting a new one |
 | `INTERNAL_ERROR` | Unexpected daemon error (bug) |
 
 ---
@@ -997,6 +998,122 @@ make the reset permanent across restarts.
 ```json
 {"reset": true}
 ```
+
+---
+
+### `start_routine`
+
+Start a named self-contained hardware routine. The routine runs inside the
+daemon as an independent Tokio task and continues after the calling IPC client
+disconnects. Motor leases held by the routine are renewed automatically; if the
+task stops for any reason, the watchdog idles all motors within `ttl_ms`
+milliseconds.
+
+**Currently supported routine names:** `"explore"` — drives forward while
+avoiding obstacles (ultrasonic) and cliffs (normalised grayscale sensor).
+
+**Request:**
+```json
+{"id": "r1", "method": "start_routine", "params": {"name": "explore", "speed_pct": 35.0, "max_duration_s": 120}}\n
+```
+
+| Param | Type | Required | Range / Values | Description |
+|-------|------|----------|----------------|-------------|
+| `name` | string | yes | `"explore"` | Routine to run |
+| `speed_pct` | float | no | 1.0–100.0 | Forward drive speed (overrides config default 30.0) |
+| `obstacle_threshold_cm` | float | no | > 0 | Ultrasonic distance below which obstacle avoidance triggers (overrides config default 25.0 cm) |
+| `cliff_threshold_normalized` | float | no | 0.0–1.0 | Normalised grayscale value at or above which cliff avoidance triggers (overrides config default 0.7) |
+| `max_duration_s` | integer | no | > 0 | Auto-stop after this many seconds (overrides config default 300 s) |
+
+Per-call params override `config.toml` defaults for this run only; they are not persisted.
+
+**Response (`result`):**
+```json
+{"name": "explore", "started_at_uptime_s": 3742}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Routine name (echoed) |
+| `started_at_uptime_s` | integer | Daemon uptime in seconds at the moment the routine task was spawned |
+
+**Errors:**
+
+| Code | Condition |
+|------|----------|
+| `INVALID_PARAMS` | `name` is absent or not a recognised routine name |
+| `ALREADY_RUNNING` | A routine is already active; stop it first with `stop_routine` |
+
+---
+
+### `stop_routine`
+
+Stop the currently active routine. Immediately commands all motors to stop.
+Returns telemetry statistics for the completed run.
+
+**Request:**
+```json
+{"id": "r2", "method": "stop_routine", "params": {}}\n
+```
+
+**Response (`result`):**
+```json
+{
+  "name": "explore",
+  "ran_for_s": 47,
+  "obstacles_avoided": 3,
+  "cliffs_avoided": 1,
+  "stop_reason": "commanded"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Name of the routine that was stopped |
+| `ran_for_s` | integer | Seconds elapsed from start to stop |
+| `obstacles_avoided` | integer | Number of obstacle avoidance manoeuvres completed |
+| `cliffs_avoided` | integer | Number of cliff avoidance manoeuvres completed |
+| `stop_reason` | string | `"commanded"` — explicit IPC stop; `"timeout"` — `max_duration_s` elapsed; `"error"` — task panicked |
+
+**Errors:**
+
+| Code | Condition |
+|------|----------|
+| `INVALID_PARAMS` | No routine is currently running |
+
+---
+
+### `get_routine_status`
+
+Query the current state of the routine engine without affecting it.
+
+**Request:**
+```json
+{"id": "r3", "method": "get_routine_status", "params": {}}\n
+```
+
+**Response (`result`) — idle:**
+```json
+{"running": false, "name": null, "elapsed_s": null, "obstacles_avoided": null, "cliffs_avoided": null}
+```
+
+**Response (`result`) — running:**
+```json
+{"running": true, "name": "explore", "elapsed_s": 23, "obstacles_avoided": null, "cliffs_avoided": null}
+```
+
+> **Phase 11 note:** `obstacles_avoided` and `cliffs_avoided` are always `null`
+> while a routine is running in Phase 11. They will become live counters
+> (updated each loop iteration) in Phase 12 once task-internal state sharing
+> is implemented.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `running` | boolean | `true` if a routine task is active |
+| `name` | string \| null | Active routine name; `null` when idle |
+| `elapsed_s` | integer \| null | Seconds since the routine started; `null` when idle |
+| `obstacles_avoided` | integer \| null | Running avoidance count; `null` while running in Phase 11, `null` when idle |
+| `cliffs_avoided` | integer \| null | Running cliff avoidance count; `null` while running in Phase 11, `null` when idle |
 
 ---
 

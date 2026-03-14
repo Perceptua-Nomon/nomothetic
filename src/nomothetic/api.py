@@ -534,6 +534,59 @@ class ResetCalibrationResponse(BaseModel):
     timestamp: str
 
 
+# ---------------------------------------------------------------------------
+# Routine models
+# ---------------------------------------------------------------------------
+
+
+class RoutineStartRequest(BaseModel):
+    """Body for ``POST /api/routine/start``."""
+
+    name: str = Field(description="Routine name.  Currently only 'explore' is supported.")
+    speed_pct: Optional[float] = Field(
+        default=None, ge=1.0, le=100.0, description="Forward speed override (1–100 %)."
+    )
+    obstacle_threshold_cm: Optional[float] = Field(
+        default=None, gt=0.0, description="Obstacle detection distance in cm."
+    )
+    cliff_threshold_normalized: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, description="Normalised grayscale cliff threshold (0–1)."
+    )
+    max_duration_s: Optional[int] = Field(
+        default=None, ge=1, description="Maximum run time in seconds."
+    )
+
+
+class RoutineStartResponse(BaseModel):
+    """Result of starting a routine."""
+
+    name: str
+    started_at_uptime_s: int
+    timestamp: str
+
+
+class RoutineStopResponse(BaseModel):
+    """Result of stopping a routine."""
+
+    name: str
+    ran_for_s: int
+    obstacles_avoided: int
+    cliffs_avoided: int
+    stop_reason: str
+    timestamp: str
+
+
+class RoutineStatusResponse(BaseModel):
+    """Current routine status."""
+
+    running: bool
+    name: Optional[str] = None
+    elapsed_s: Optional[int] = None
+    obstacles_avoided: Optional[int] = None
+    cliffs_avoided: Optional[int] = None
+    timestamp: str
+
+
 class MotorCalibrationItem(BaseModel):
     """Per-channel motor calibration entry in a calibration snapshot."""
 
@@ -2053,6 +2106,87 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail=str(e)) from e
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # ========================================================================
+    # Routine Endpoints
+    # ========================================================================
+
+    @app.post("/api/routine/start", response_model=RoutineStartResponse, tags=["Routine"])
+    async def start_routine(request: RoutineStartRequest):
+        """Start an autonomous routine.
+
+        Returns 409 if a routine is already running.
+        Returns 422 if the routine name is unknown or a parameter is out of range.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(
+                _hat_client.start_routine,
+                request.name,
+                request.speed_pct,
+                request.obstacle_threshold_cm,
+                request.cliff_threshold_normalized,
+                request.max_duration_s,
+            )
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            if e.code == "ALREADY_RUNNING":
+                raise HTTPException(status_code=409, detail=str(e)) from e
+            if e.code == "INVALID_PARAMS":
+                raise HTTPException(status_code=422, detail=str(e)) from e
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return RoutineStartResponse(
+            name=result.name,
+            started_at_uptime_s=result.started_at_uptime_s,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.post("/api/routine/stop", response_model=RoutineStopResponse, tags=["Routine"])
+    async def stop_routine():
+        """Stop the currently running routine.
+
+        Returns 409 if no routine is running.
+        """
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(_hat_client.stop_routine)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            if e.code == "INVALID_PARAMS":
+                raise HTTPException(status_code=409, detail=str(e)) from e
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return RoutineStopResponse(
+            name=result.name,
+            ran_for_s=result.ran_for_s,
+            obstacles_avoided=result.obstacles_avoided,
+            cliffs_avoided=result.cliffs_avoided,
+            stop_reason=result.stop_reason,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @app.get("/api/routine/status", response_model=RoutineStatusResponse, tags=["Routine"])
+    async def get_routine_status():
+        """Return the current routine status snapshot."""
+        if _hat_client is None:
+            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        try:
+            result = await asyncio.to_thread(_hat_client.get_routine_status)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return RoutineStatusResponse(
+            running=result.running,
+            name=result.name,
+            elapsed_s=result.elapsed_s,
+            obstacles_avoided=result.obstacles_avoided,
+            cliffs_avoided=result.cliffs_avoided,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     # Global exception handler
     @app.exception_handler(HTTPException)

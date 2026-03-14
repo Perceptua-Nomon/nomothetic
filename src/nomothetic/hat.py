@@ -977,6 +977,86 @@ class HatClient:
             normalized=[float(v) for v in result["normalized"]],
         )
 
+    # -----------------------------------------------------------------------
+    # Routine methods
+    # -----------------------------------------------------------------------
+
+    def start_routine(
+        self,
+        name: str,
+        speed_pct: float | None = None,
+        obstacle_threshold_cm: float | None = None,
+        cliff_threshold_normalized: float | None = None,
+        max_duration_s: int | None = None,
+    ) -> RoutineStartResult:
+        """Start an autonomous routine by *name*.
+
+        Parameters
+        ----------
+        name:
+            Routine identifier.  Currently only ``"explore"`` is supported.
+        speed_pct:
+            Forward drive speed override (1–100 %).
+        obstacle_threshold_cm:
+            Distance at which an obstacle triggers avoidance (cm).
+        cliff_threshold_normalized:
+            Normalised grayscale value above which a cliff is detected (0–1).
+        max_duration_s:
+            Maximum run time in seconds.
+
+        Raises
+        ------
+        HatError
+            ``ALREADY_RUNNING`` if a routine is already active.
+            ``INVALID_PARAMS`` if *name* is unknown or a parameter is out of range.
+        """
+        params: dict = {"name": name}
+        if speed_pct is not None:
+            params["speed_pct"] = speed_pct
+        if obstacle_threshold_cm is not None:
+            params["obstacle_threshold_cm"] = obstacle_threshold_cm
+        if cliff_threshold_normalized is not None:
+            params["cliff_threshold_normalized"] = cliff_threshold_normalized
+        if max_duration_s is not None:
+            params["max_duration_s"] = max_duration_s
+        result = self._request("start_routine", params)
+        return RoutineStartResult(
+            name=result["name"],
+            started_at_uptime_s=int(result["started_at_uptime_s"]),
+        )
+
+    def stop_routine(self) -> RoutineStopResult:
+        """Stop the currently running routine and return final statistics.
+
+        Raises
+        ------
+        HatError
+            ``INVALID_PARAMS`` if no routine is running.
+        """
+        result = self._request("stop_routine", {})
+        return RoutineStopResult(
+            name=result["name"],
+            ran_for_s=int(result["ran_for_s"]),
+            obstacles_avoided=int(result["obstacles_avoided"]),
+            cliffs_avoided=int(result["cliffs_avoided"]),
+            stop_reason=result["stop_reason"],
+        )
+
+    def get_routine_status(self) -> RoutineStatusResult:
+        """Return the current routine status snapshot.
+
+        When no routine is running, ``running`` is ``False`` and all other
+        fields are ``None``.
+        """
+        result = self._request("get_routine_status", {})
+        return RoutineStatusResult(
+            running=bool(result["running"]),
+            name=result.get("name"),
+            elapsed_s=result.get("elapsed_s"),
+            obstacles_avoided=result.get("obstacles_avoided"),
+            cliffs_avoided=result.get("cliffs_avoided"),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Calibration dataclasses
@@ -1054,3 +1134,38 @@ class SaveCalibrationResult:
 
     saved: bool
     path: str
+
+
+# ---------------------------------------------------------------------------
+# Routine dataclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RoutineStartResult:
+    """Result from ``start_routine``."""
+
+    name: str
+    started_at_uptime_s: int
+
+
+@dataclass
+class RoutineStatusResult:
+    """Result from ``get_routine_status``."""
+
+    running: bool
+    name: str | None
+    elapsed_s: int | None
+    obstacles_avoided: int | None
+    cliffs_avoided: int | None
+
+
+@dataclass
+class RoutineStopResult:
+    """Result from ``stop_routine``."""
+
+    name: str
+    ran_for_s: int
+    obstacles_avoided: int
+    cliffs_avoided: int
+    stop_reason: str

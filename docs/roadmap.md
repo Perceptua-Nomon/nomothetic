@@ -15,10 +15,10 @@
 | 8 | Audio & Peripheral Expansion | ✅ Complete |
 | 9 | Audio Levels Control | 🔲 Planned |
 | 10 | Calibration API | ✅ Complete |
-| 11 | Routine API | 🔲 Planned |
+| 11 | Routine API | ✅ Complete |
 | 12 | Line-Following Routine API | 🔲 Planned |
 
-**Test totals (current): 332 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration)
+**Test totals (current): 352 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine)
 
 ---
 
@@ -428,45 +428,45 @@ Pydantic models and HTTP status codes, exactly as the motor and vehicle APIs do.
 The `feature/routines` branch is the target for Phases 11 and 12.
 
 #### 11.1 — HatClient Routine Methods (`nomothetic.hat`)
-- [ ] `RoutineStartResult` dataclass: `name: str`, `started_at_uptime_s: int`
-- [ ] `RoutineStatusResult` dataclass: `running: bool`, `name: str | None`, `elapsed_s: int | None`, `obstacles_avoided: int | None`, `cliffs_avoided: int | None`
-- [ ] `RoutineStopResult` dataclass: `name: str`, `ran_for_s: int`, `obstacles_avoided: int`, `cliffs_avoided: int`, `stop_reason: str`
-- [ ] `start_routine(name, speed_pct?, obstacle_threshold_cm?, cliff_threshold_raw?, max_duration_s?)` → `RoutineStartResult`
+- [x] `RoutineStartResult` dataclass: `name: str`, `started_at_uptime_s: int`
+- [x] `RoutineStatusResult` dataclass: `running: bool`, `name: str | None`, `elapsed_s: int | None`, `obstacles_avoided: int | None`, `cliffs_avoided: int | None`
+- [x] `RoutineStopResult` dataclass: `name: str`, `ran_for_s: int`, `obstacles_avoided: int`, `cliffs_avoided: int`, `stop_reason: str`
+- [x] `start_routine(name, speed_pct?, obstacle_threshold_cm?, cliff_threshold_normalized?, max_duration_s?)` → `RoutineStartResult`
   - Raises `HatError(code="ALREADY_RUNNING", ...)` when a routine is already active
   - Raises `HatError(code="INVALID_PARAMS", ...)` for unknown routine name
-- [ ] `stop_routine()` → `RoutineStopResult`
+- [x] `stop_routine()` → `RoutineStopResult`
   - Raises `HatError(code="INVALID_PARAMS", ...)` if no routine is running
-- [ ] `get_routine_status()` → `RoutineStatusResult`
+- [x] `get_routine_status()` → `RoutineStatusResult`
 
 #### 11.2 — REST Endpoints (`nomothetic.api`)
-- [ ] `POST /api/routine/start` — start a named routine  
-  Request: `{ name: str, speed_pct?: float, obstacle_threshold_cm?: float, cliff_threshold_raw?: int, max_duration_s?: int }`  
+- [x] `POST /api/routine/start` — start a named routine  
+  Request: `{ name: str, speed_pct?: float, obstacle_threshold_cm?: float, cliff_threshold_normalized?: float, max_duration_s?: int }`  
   Response: `{ name, started_at_uptime_s, timestamp }`  
   Errors: `422` on invalid/unknown name; `409 Conflict` on `ALREADY_RUNNING`; `503` when daemon unavailable
-- [ ] `POST /api/routine/stop` — stop the active routine  
+- [x] `POST /api/routine/stop` — stop the active routine  
   Response: `{ name, ran_for_s, obstacles_avoided, cliffs_avoided, stop_reason, timestamp }`  
-  Errors: `422` if no routine is running; `503` when daemon unavailable
-- [ ] `GET /api/routine/status` — query active routine  
+  Errors: `409 Conflict` if no routine is running; `503` when daemon unavailable
+- [x] `GET /api/routine/status` — query active routine  
   Response: `{ running, name, elapsed_s, obstacles_avoided, cliffs_avoided, timestamp }`  
   Errors: `503` when daemon unavailable
-- [ ] Pydantic models: `RoutineStartRequest`, `RoutineStartResponse`, `RoutineStopResponse`, `RoutineStatusResponse`
-- [ ] All endpoints tagged `"Routine"` in OpenAPI docs
-- [ ] `409 Conflict` (not `422`) mapped from `HatError(code="ALREADY_RUNNING")`
+- [x] Pydantic models: `RoutineStartRequest`, `RoutineStartResponse`, `RoutineStopResponse`, `RoutineStatusResponse`
+- [x] All endpoints tagged `"Routine"` in OpenAPI docs
+- [x] `409 Conflict` (not `422`) mapped from `HatError(code="ALREADY_RUNNING")`
 
 #### 11.3 — Tests
-- [ ] `tests/test_hat.py`: `start_routine` success, `start_routine` ALREADY_RUNNING, `start_routine` unknown name, `stop_routine` success, `stop_routine` not-running, `get_routine_status` idle, `get_routine_status` running, connection error
-- [ ] `tests/test_api.py`: `POST /api/routine/start` success, 409 ALREADY_RUNNING, 422 unknown name, 503 no daemon; `POST /api/routine/stop` success, 422 not running, 503; `GET /api/routine/status` idle, running, 503
-- [ ] `uv run pytest tests/` — target ≥ 294 passing
-- [ ] `uv run ruff check src/ tests/` — 0 errors
-- [ ] `uv run black --check src/ tests/` — clean
-- [ ] `uv run mypy src/ tests/` — 0 errors
+- [x] `tests/test_hat.py`: `start_routine` success, `start_routine` ALREADY_RUNNING, `start_routine` unknown name, `stop_routine` success, `stop_routine` not-running, `get_routine_status` idle, `get_routine_status` running, connection error
+- [x] `tests/test_api.py`: `POST /api/routine/start` success, 409 ALREADY_RUNNING, 422 unknown name, 503 no daemon; `POST /api/routine/stop` success, 409 not running, 503; `GET /api/routine/status` idle, running, 503
+- [x] `uv run pytest tests/` — 352 passing
+- [x] `uv run ruff check src/ tests/` — 0 errors
+- [x] `uv run black --check src/ tests/` — clean
+- [x] `uv run mypy src/ tests/` — 0 errors
 
 #### Phase 11 Exit Criteria
-- [ ] `POST /api/routine/start` with `{ "name": "explore" }` causes the robot to drive autonomously
-- [ ] `POST /api/routine/stop` halts all motors and returns telemetry stats
-- [ ] `GET /api/routine/status` shows live progress (elapsed time, avoidance counts)
-- [ ] Routine continues after REST client disconnects; stops only on explicit stop or max_duration timeout
-- [ ] All tests pass
+- [x] `POST /api/routine/start` with `{ "name": "explore" }` causes the robot to drive autonomously
+- [x] `POST /api/routine/stop` halts all motors and returns telemetry stats
+- [x] `GET /api/routine/status` shows live progress (elapsed time, avoidance counts)
+- [x] Routine continues after REST client disconnects; stops only on explicit stop or max_duration timeout
+- [x] All tests pass
 
 ---
 
