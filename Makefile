@@ -1,7 +1,7 @@
 VERSION ?=
 PI_HOST ?=
 
-.PHONY: install install-dev install-pi test lint format type-check check clean start-stream start-api stop-stream stop-api stop deploy coverage
+.PHONY: install install-dev install-pi test lint format type-check check clean start-stream start-api stop-stream stop-api stop deploy deploy-local coverage
 
 install:
 	uv sync
@@ -53,6 +53,9 @@ stop:
 
 deploy:
 	./scripts/deploy.sh $(VERSION) $(PI_HOST)
+
+deploy-local:
+	./scripts/deploy.sh --local $(PI_HOST)
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
