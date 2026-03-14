@@ -168,12 +168,12 @@ fi
 # ── Deployment ─────────────────────────────────────────────────────────────────
 # All steps below run on the Pi (remote or local) via a single shell session.
 
-"${RUN_CMD[@]}" "${VERSION}" "${NOMON_REMOTE_DIR:-}" "${DEPLOY_LOCAL}" << 'END_REMOTE'
+"${RUN_CMD[@]}" "${VERSION}" "${DEPLOY_LOCAL}" "${NOMON_REMOTE_DIR:-}" << 'END_REMOTE'
 set -euo pipefail
 
 readonly REQUESTED_VERSION="$1"
-readonly REMOTE_DIR="${2:-${HOME}/perceptua-nomon/nomothetic}"
-readonly DEPLOY_LOCAL="${3:-false}"
+readonly DEPLOY_LOCAL="${2:-false}"
+readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/nomothetic}"
 
 if [[ ! -d "${REMOTE_DIR}" ]]; then
     echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
