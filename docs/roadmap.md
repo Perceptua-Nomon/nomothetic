@@ -13,7 +13,7 @@
 | 6 | Motor API Endpoints | ✅ Complete |
 | 7 | Vehicle Convenience API | ✅ Complete |
 | 8 | Audio & Peripheral Expansion | ✅ Complete |
-| 9 | Audio Levels Control | 🔲 Planned |
+| 9 | Audio Levels Control | ✅ Complete |
 | 10 | Calibration API | ✅ Complete |
 | 11 | Routine API | ✅ Complete |
 | 12 | Line-Following Routine API | 🔲 Planned |
@@ -334,7 +334,7 @@ corresponding IPC methods in `nomopractic` (see nomopractic Phase 9).
 
 **Testing & Integration:**
 - [x] New tests in `test_hat.py` and `test_api.py` for volume and mic gain endpoints
-- [x] `pytest tests/` — 292 passing
+- [x] `pytest tests/` — 292 passing (at time of phase completion)
 - [x] `black --check .` + `ruff check .` — clean
 
 ---
@@ -479,7 +479,7 @@ API, matching the pattern established in Phase 11.
 - [ ] `RoutineStartRequest` extended (or existing model reused — `start_routine` uses generic pass-through params)
 - [ ] `POST /api/routine/start` already supports `follow_line` via generic param forwarding — verify acceptance
 - [ ] `tests/test_hat.py` + `tests/test_api.py`: `follow_line` start/stop/status tests
-- [ ] `uv run pytest tests/` — target ≥ 302 passing
+- [ ] `uv run pytest tests/` — no regressions from current total (≥ 352 passing)
 
 ---
 

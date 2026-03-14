@@ -1680,10 +1680,8 @@ def create_app() -> FastAPI:
         except HatConnectionError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         except HatError as e:
-            raise HTTPException(
-                status_code=422,
-                detail=str(e),
-            ) from e
+            status = 422 if e.code == "INVALID_PARAMS" else 500
+            raise HTTPException(status_code=status, detail=str(e)) from e
         return MotorCalibrationResponse(
             channel=entry.channel,
             speed_scale=entry.speed_scale,
@@ -1708,10 +1706,8 @@ def create_app() -> FastAPI:
         except HatConnectionError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         except HatError as e:
-            raise HTTPException(
-                status_code=422,
-                detail=str(e),
-            ) from e
+            status = 422 if e.code == "INVALID_PARAMS" else 500
+            raise HTTPException(status_code=status, detail=str(e)) from e
         return ServoCalibrationResponse(
             servo=entry.servo,
             trim_us=entry.trim_us,
@@ -1734,10 +1730,8 @@ def create_app() -> FastAPI:
         except HatConnectionError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         except HatError as e:
-            raise HTTPException(
-                status_code=422,
-                detail=str(e),
-            ) from e
+            status = 422 if e.code == "INVALID_PARAMS" else 500
+            raise HTTPException(status_code=status, detail=str(e)) from e
         return GrayscaleCaptureResponse(
             channel=result.channel,
             adc_channel=result.adc_channel,
