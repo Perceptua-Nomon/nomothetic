@@ -2,21 +2,30 @@
 # deploy.sh — Deploy nomothetic to the Raspberry Pi over SSH.
 #
 # Usage:
-#   ./scripts/deploy.sh [<version>] [<pi-host>]
+#   ./scripts/deploy.sh [--local] [<version>] [<pi-host>]
 #
 # Arguments:
+#   --local   Deploy the current local source tree (synced via rsync).
+#             Bypasses git fetch/checkout on the Pi. Version is read from
+#             pyproject.toml. Ignored if a version argument is also given.
 #   version   Git tag to deploy (e.g. "v0.2.0"). If omitted, the script finds
-#             and deploys the latest semver tag on the remote.
+#             and deploys the latest semver tag on the remote. Ignored if --local.
 #   pi-host   SSH host (user@host or plain hostname). Overrides NOMON_PI_HOST.
 #             If omitted and NOMON_PI_HOST is unset, runs locally — useful
 #             when already connected to the Pi via SSH.
 #
 # Examples:
-#   # Deploy from a dev machine to the Pi over SSH:
+#   # Deploy local code from a dev machine to the Pi over SSH:
+#   ./scripts/deploy.sh --local perceptua@perceptua
+#
+#   # Deploy latest release from a dev machine to the Pi over SSH:
+#   ./scripts/deploy.sh perceptua@perceptua
+#
+#   # Deploy a specific version from a dev machine to the Pi over SSH:
 #   ./scripts/deploy.sh v0.2.0 perceptua@perceptua
 #
-#   # Deploy directly on the Pi (no SSH needed):
-#   ./scripts/deploy.sh v0.2.0
+#   # Deploy local code directly on the Pi (no SSH needed):
+#   ./scripts/deploy.sh --local
 #
 # Environment (read from .env in the repo root):
 #   NOMON_PI_HOST     SSH target — "user@host" or plain hostname. Optional;
@@ -27,7 +36,7 @@
 #   NOMON_REMOTE_DIR  Absolute path to the repo directory on the Pi. Optional;
 #                     defaults to ${HOME}/perceptua-nomon/nomothetic.
 #
-# The script connects to the Pi and performs the following steps there:
+# The script (release mode) connects to the Pi and performs the following steps there:
 #   1. Stops all nomothetic servers.
 #   2. Records the current git ref so it can be restored on failure.
 #   3. Fetches tags from origin and checks out the target version.
@@ -35,6 +44,11 @@
 #   5. Runs release checks: lint (ruff), format (black), type-check (mypy), tests.
 #   6. Starts the API server, waits for readiness, starts the stream via the API,
 #      performs a health check, then stops the stream and API.
+#
+# The script (--local mode):
+#   1. Reads the version from pyproject.toml.
+#   2. Syncs the local source tree to the Pi via rsync (skipped if already on Pi).
+#   3. Connects to the Pi and performs steps 1, 4–6 above (skipping git operations).
 #
 # Rollback:
 #   If any step from 3–6 fails the script checks out the previous ref,
@@ -53,7 +67,7 @@ REPO_DIR="$(dirname "${SCRIPT_DIR}")"
 # ── Help ───────────────────────────────────────────────────────────────────────
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    sed -n '2,30p' "$0" | sed 's/^# \?//'
+    sed -n '2,60p' "$0" | sed 's/^# \?//'
     exit 0
 fi
 
@@ -82,12 +96,33 @@ fi
 
 # ── Argument & configuration validation ───────────────────────────────────────
 
+DEPLOY_LOCAL=false
 VERSION="${1:-}"
 PI_HOST="${2:-${NOMON_PI_HOST:-}}"
+
+# Check if first argument is --local flag
+if [[ "${VERSION}" == "--local" ]]; then
+    DEPLOY_LOCAL=true
+    VERSION=""
+    PI_HOST="${2:-${NOMON_PI_HOST:-}}"
+fi
 
 if [[ -n "${VERSION}" && ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "Error: version must start with 'v' followed by semver (e.g. v0.2.0)" >&2
     exit 1
+fi
+
+# ── Local mode: resolve version from pyproject.toml ───────────────────────────
+
+if [[ "${DEPLOY_LOCAL}" == true ]]; then
+    _raw_version="$(grep -m1 '^version' "${REPO_DIR}/pyproject.toml" \
+        | sed -E 's/.*version\s*=\s*"([^"]+)".*/\1/')"
+    if [[ -z "${_raw_version}" ]]; then
+        echo "Error: could not determine version from pyproject.toml" >&2
+        exit 1
+    fi
+    VERSION="v${_raw_version}"
+    echo "==> Local deploy: nomothetic ${VERSION}"
 fi
 
 # ── SSH helpers ────────────────────────────────────────────────────────────────
@@ -105,14 +140,40 @@ else
     RUN_CMD=(bash -ls --)
 fi
 
+# ── Local mode: sync source tree to Pi ────────────────────────────────────────
+
+if [[ "${DEPLOY_LOCAL}" == true && -n "${PI_HOST}" ]]; then
+    _remote_dir="${NOMON_REMOTE_DIR:-}"
+    # We can't expand $HOME for the remote side here, so default to a literal path
+    # the remote script will also accept. Use a placeholder that ssh can resolve.
+    _rsync_dest="${PI_HOST}:${_remote_dir:-~/perceptua-nomon/nomothetic/}"
+    RSYNC_OPTS=(--archive --compress --delete
+        --exclude='.git/'
+        --exclude='__pycache__/'
+        --exclude='*.pyc'
+        --exclude='.venv/'
+        --exclude='htmlcov/'
+        --exclude='logs/'
+    )
+    if [[ -n "${NOMON_SSH_KEY:-}" ]]; then
+        RSYNC_OPTS+=(-e "ssh -i ${NOMON_SSH_KEY} -o StrictHostKeyChecking=accept-new")
+    else
+        RSYNC_OPTS+=(-e "ssh -o StrictHostKeyChecking=accept-new")
+    fi
+    echo "==> Syncing local source → ${_rsync_dest}..."
+    rsync "${RSYNC_OPTS[@]}" "${REPO_DIR}/" "${_rsync_dest}"
+    echo "  Sync complete ✓"
+fi
+
 # ── Deployment ─────────────────────────────────────────────────────────────────
 # All steps below run on the Pi (remote or local) via a single shell session.
 
-"${RUN_CMD[@]}" "${VERSION}" "${NOMON_REMOTE_DIR:-}" << 'END_REMOTE'
+"${RUN_CMD[@]}" "${VERSION}" "${DEPLOY_LOCAL}" "${NOMON_REMOTE_DIR:-}" << 'END_REMOTE'
 set -euo pipefail
 
 readonly REQUESTED_VERSION="$1"
-readonly REMOTE_DIR="${2:-${HOME}/perceptua-nomon/nomothetic}"
+readonly DEPLOY_LOCAL="${2:-false}"
+readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/nomothetic}"
 
 if [[ ! -d "${REMOTE_DIR}" ]]; then
     echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
@@ -121,39 +182,47 @@ fi
 
 cd "${REMOTE_DIR}"
 
-# ── Save current ref for rollback ─────────────────────────────────────────────
+# ── Save current ref for rollback (release mode only) ─────────────────────────
 
-PREV_REF="$(git rev-parse HEAD)"
-PREV_LABEL="$(git describe --tags --exact-match HEAD 2>/dev/null \
-              || git rev-parse --short HEAD)"
-echo "  Current ref: ${PREV_LABEL}"
+if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
+    PREV_REF="$(git rev-parse HEAD)"
+    PREV_LABEL="$(git describe --tags --exact-match HEAD 2>/dev/null \
+                  || git rev-parse --short HEAD)"
+    echo "  Current ref: ${PREV_LABEL}"
+fi
 
 # ── Resolve target version (pre-flight, before we touch anything) ─────────────
 
-echo "==> Fetching tags from origin..."
-git fetch --tags --quiet
+if [[ "${DEPLOY_LOCAL}" == "true" ]]; then
+    # Version was already resolved from pyproject.toml on the dev machine.
+    TARGET="${REQUESTED_VERSION}"
+    echo "==> Target: ${TARGET} (local source)"
+else
+    echo "==> Fetching tags from origin..."
+    git fetch --tags --quiet
 
-TARGET="${REQUESTED_VERSION}"
-if [[ -z "${TARGET}" ]]; then
-    TARGET="$(git tag --list 'v*' --sort=-version:refname | head -1)"
+    TARGET="${REQUESTED_VERSION}"
     if [[ -z "${TARGET}" ]]; then
-        echo "Error: no semver tags found in the repository." >&2
+        TARGET="$(git tag --list 'v*' --sort=-version:refname | head -1)"
+        if [[ -z "${TARGET}" ]]; then
+            echo "Error: no semver tags found in the repository." >&2
+            exit 1
+        fi
+        echo "  Latest release tag: ${TARGET}"
+    fi
+
+    if [[ ! "${TARGET}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Error: resolved tag '${TARGET}' is not a valid semver tag." >&2
         exit 1
     fi
-    echo "  Latest release tag: ${TARGET}"
-fi
 
-if [[ ! "${TARGET}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "Error: resolved tag '${TARGET}' is not a valid semver tag." >&2
-    exit 1
-fi
+    CURRENT_TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+    if [[ "${CURRENT_TAG}" == "${TARGET}" ]]; then
+        echo "  Note: already on ${TARGET}; re-running checks and restarting servers."
+    fi
 
-CURRENT_TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
-if [[ "${CURRENT_TAG}" == "${TARGET}" ]]; then
-    echo "  Note: already on ${TARGET}; re-running checks and restarting servers."
+    echo "==> Target: ${TARGET}"
 fi
-
-echo "==> Target: ${TARGET}"
 
 # ── Rollback helper ────────────────────────────────────────────────────────────
 # Set up only after pre-flight so that early errors (tag resolution etc.) do
@@ -167,9 +236,11 @@ rollback() {
     _ROLLING_BACK=1
 
     echo "" >&2
-    echo "!! Deployment failed. Rolling back to ${PREV_LABEL}..." >&2
+    echo "!! Deployment failed. Rolling back to ${PREV_LABEL:-local}..." >&2
 
-    git checkout --quiet "${PREV_REF}" || true
+    if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
+        git checkout --quiet "${PREV_REF}" || true
+    fi
 
     echo "  Reinstalling previous version..." >&2
     uv sync --extra pi --extra web --extra api --extra telemetry 2>&1 || true
@@ -177,7 +248,7 @@ rollback() {
     echo "  Restarting API server..." >&2
     ./scripts/start.sh api 2>&1 || true
 
-    echo "!! Rollback complete. API server restored to ${PREV_LABEL}." >&2
+    echo "!! Rollback complete. API server restored to ${PREV_LABEL:-local}." >&2
     exit 2
 }
 
@@ -188,10 +259,12 @@ trap rollback ERR
 echo "==> Stopping servers..."
 ./scripts/stop.sh all
 
-# ── Checkout target version ────────────────────────────────────────────────────
+# ── Checkout target version (release mode only) ────────────────────────────────
 
-echo "==> Checking out ${TARGET}..."
-git checkout --quiet "${TARGET}"
+if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
+    echo "==> Checking out ${TARGET}..."
+    git checkout --quiet "${TARGET}"
+fi
 
 # ── Install dependencies ───────────────────────────────────────────────────────
 
