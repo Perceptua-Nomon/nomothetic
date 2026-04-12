@@ -3,7 +3,8 @@
 Tests cover endpoint functionality, error handling, and CORS behavior.
 """
 
-from unittest.mock import MagicMock
+import os
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,8 +15,9 @@ from nomothetic.api import APIServer, create_app
 @pytest.fixture
 def client():
     """Create a test client for the FastAPI app."""
-    app = create_app()
-    return TestClient(app)
+    with patch.dict(os.environ, {"NOMON_DEVICE_AUTH": "false"}, clear=False):
+        app = create_app()
+        yield TestClient(app)
 
 
 @pytest.fixture

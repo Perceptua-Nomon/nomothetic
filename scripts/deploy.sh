@@ -333,6 +333,43 @@ echo "  Stream server stopped ✓"
 echo "==> Stopping API server..."
 ./scripts/stop.sh api
 
+# ── Systemd integration (optional) ────────────────────────────────────────────
+# Install and enable systemd service files if systemd is available.
+
+if command -v systemctl >/dev/null 2>&1; then
+    _systemd_changed=false
+
+    for _svc_file in systemd/*.service; do
+        [[ -f "${_svc_file}" ]] || continue
+        _svc_name="$(basename "${_svc_file}")"
+        _dest="/etc/systemd/system/${_svc_name}"
+
+        if [[ ! -f "${_dest}" ]] || ! diff -q "${_svc_file}" "${_dest}" >/dev/null 2>&1; then
+            echo "  Installing ${_svc_name}..."
+            sudo cp "${_svc_file}" "${_dest}"
+            _systemd_changed=true
+        fi
+    done
+
+    if [[ "${_systemd_changed}" == "true" ]]; then
+        echo "  Reloading systemd daemon..."
+        sudo systemctl daemon-reload
+    fi
+
+    # Enable and restart the device-mode services.
+    for _svc in nomothetic-api nomothetic-stream; do
+        if [[ -f "/etc/systemd/system/${_svc}.service" ]]; then
+            sudo systemctl enable "${_svc}.service" 2>/dev/null || true
+            echo "  Restarting ${_svc}..."
+            sudo systemctl restart "${_svc}.service"
+        fi
+    done
+
+    echo "  systemd services updated ✓"
+else
+    echo "  systemd not available — skipping service installation."
+fi
+
 echo ""
 echo "✓ nomothetic ${TARGET} deployed successfully to ${HOSTNAME}."
 END_REMOTE

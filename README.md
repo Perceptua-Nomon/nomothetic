@@ -2,7 +2,10 @@
 
 Comms for the `nomon` fleet.
 
-This Python package provides peripheral control, HTTPS REST API, and MQTT telemetry for a fleet of Raspberry Pi devices.
+This Python package provides peripheral control, HTTPS REST API, MQTT telemetry, and fleet management for a fleet of Raspberry Pi devices. Supports two deployment modes:
+
+- **Device mode** (default): hardware control endpoints running on each Pi
+- **Central mode**: authentication and fleet management endpoints for a centrally-hosted server
 
 ---
 
@@ -12,9 +15,22 @@ This Python package provides peripheral control, HTTPS REST API, and MQTT teleme
 |---|---|---|
 | `nomothetic.camera` | `Camera` | picamera2 wrapper — still capture, video recording, MJPEG frames |
 | `nomothetic.streaming` | `StreamServer` | Flask MJPEG stream server for local LAN viewing |
-| `nomothetic.api` | `APIServer` | FastAPI HTTPS REST server — primary remote control interface |
+| `nomothetic.api` | `APIServer` | FastAPI HTTPS REST server — mode-aware route registration |
 | `nomothetic.telemetry` | `TelemetryPublisher` | paho-mqtt background telemetry publisher |
-| *(planned)* | *(planned)* | HAT IPC client for the future `nomopractic` Rust daemon *(Phase 5; Python client not yet implemented, module not available in current release)* |
+| `nomothetic.hat` | `HatClient` | IPC client for the nomopractic Rust daemon |
+| `nomothetic.audio` | `AudioPlayer`, `AudioRecorder` | ALSA audio recording and playback |
+| `nomothetic.mode` | `Mode` | Device/central mode selection from `NOMON_API_MODE` env var |
+| `nomothetic.auth` | `AuthService` | JWT authentication (central and device modes) |
+| `nomothetic.auth_routes` | — | `/api/auth/*` endpoints (register, login, refresh, logout, profile) |
+| `nomothetic.device_auth_routes` | — | `/api/device/auth/*` endpoints (pairing, refresh, profile) |
+| `nomothetic.pairing` | `PairingState` | Device pairing secret lifecycle (generate, verify, consume) |
+| `nomothetic.fleet_routes` | — | `/api/fleet/*` endpoints (device CRUD) |
+| `nomothetic.rate_limit` | `RateLimiter` | Sliding-window rate limiting for auth and pairing endpoints |
+| `nomothetic.db` | `DatabaseClient` | ArcadeDB HTTP API client with Gremlin query support |
+| `nomothetic.user_store` | `UserStore` | User persistence (in-memory + Gremlin backends) |
+| `nomothetic.fleet_store` | `FleetStore` | Fleet device persistence (in-memory + Gremlin backends) |
+| `nomothetic.token_store` | `TokenStore` | Refresh token persistence (in-memory + Gremlin backends) |
+| `nomothetic.gremlin_utils` | — | Shared Gremlin value sanitiser |
 
 See [docs/architecture.md](docs/architecture.md) for a full system diagram and module responsibilities.
 
@@ -37,8 +53,14 @@ pip install "nomothetic[web]"
 # MQTT telemetry
 pip install "nomothetic[telemetry]"
 
+# JWT authentication (central and device modes)
+pip install "nomothetic[auth]"
+
+# Central-mode fleet server (httpx for device health checks)
+pip install "nomothetic[central]"
+
 # All runtime extras
-pip install "nomothetic[pi,api,web,telemetry]"
+pip install "nomothetic[pi,api,web,telemetry,auth,central]"
 ```
 
 > **Note:** `picamera2` and `spidev` are only installable on Raspberry Pi OS. Install the `[pi]` extra (`pip install "nomothetic[pi]"`) on the Pi. The package remains importable without them on other platforms for development and testing.
