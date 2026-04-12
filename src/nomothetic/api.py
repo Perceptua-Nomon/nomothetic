@@ -938,8 +938,10 @@ def create_app() -> FastAPI:
             create_fleet_router,
             set_fleet_store,
         )
-        from nomothetic.fleet_store import InMemoryFleetStore
+        from nomothetic.fleet_store import FleetStore, InMemoryFleetStore
         from nomothetic.rate_limit import RateLimiter
+        from nomothetic.token_store import TokenStore
+        from nomothetic.user_store import UserStore
 
         # Per-app rate limiters so each test client gets fresh instances
         app.state.login_limiter = RateLimiter(max_requests=5, window_seconds=60)
@@ -947,6 +949,9 @@ def create_app() -> FastAPI:
 
         # Database-backed stores when ArcadeDB is configured
         db_client = None
+        user_store: UserStore
+        fleet_store: FleetStore
+        token_store: TokenStore
         arcadedb_host = os.environ.get("ARCADEDB_HOST")
         if arcadedb_host:
             from nomothetic.db import DatabaseClient, DatabaseConfig

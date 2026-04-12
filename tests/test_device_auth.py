@@ -1,6 +1,7 @@
 """Tests for device-mode authentication endpoints."""
 
 import os
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -33,7 +34,7 @@ def device_no_auth_client():
 
 def _get_pairing_secret(app) -> str:
     """Extract the pairing secret from app state."""
-    return app.state.pairing_state.secret
+    return cast(str, app.state.pairing_state.secret)
 
 
 def _pair(client, secret: str, display_name: str = "Test Owner"):
@@ -48,7 +49,7 @@ def _get_token(client, app) -> str:
     """Pair and return the access token."""
     secret = _get_pairing_secret(app)
     resp = _pair(client, secret)
-    return resp.json()["access_token"]
+    return cast(str, resp.json()["access_token"])
 
 
 # ============================================================================

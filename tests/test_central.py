@@ -21,6 +21,9 @@ def central_client():
         {
             "NOMON_API_MODE": "central",
             "NOMON_JWT_SECRET": _TEST_SECRET,
+            # Ensure tests use in-memory stores even when developer shell has
+            # ARCADEDB_* variables exported.
+            "ARCADEDB_HOST": "",
         },
     ):
         from nomothetic.api import create_app

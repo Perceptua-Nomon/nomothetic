@@ -6,7 +6,7 @@ AuthService delegates token CRUD to a TokenStore implementation.
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional, runtime_checkable
+from typing import TYPE_CHECKING, Any, Optional, runtime_checkable
 
 from typing_extensions import Protocol
 
@@ -16,6 +16,21 @@ if TYPE_CHECKING:
     from nomothetic.db import DatabaseClient
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_count(rows: list[Any]) -> int:
+    if not rows:
+        return 0
+    first = rows[0]
+    if isinstance(first, int):
+        return first
+    if isinstance(first, float):
+        return int(first)
+    if isinstance(first, dict):
+        val = first.get("count", 0)
+        if isinstance(val, (int, float)):
+            return int(val)
+    return 0
 
 
 @runtime_checkable
@@ -132,7 +147,7 @@ class GremlinTokenStore:
         safe_email = _sanitize_gremlin_value(email)
         count_q = f"g.V().hasLabel('RefreshToken').has('email', '{safe_email}').count()"
         rows = await self._db.execute_gremlin(count_q)
-        count = rows[0] if rows else 0
+        count = _coerce_count(rows)
         if count > 0:
             drop = f"g.V().hasLabel('RefreshToken').has('email', '{safe_email}').drop().iterate()"
             await self._db.execute_gremlin(drop)
@@ -142,7 +157,7 @@ class GremlinTokenStore:
         now = _sanitize_gremlin_value(datetime.now(timezone.utc).isoformat())
         count_q = f"g.V().hasLabel('RefreshToken').has('expires_at', lte('{now}')).count()"
         rows = await self._db.execute_gremlin(count_q)
-        count = rows[0] if rows else 0
+        count = _coerce_count(rows)
         if count > 0:
             drop = (
                 f"g.V().hasLabel('RefreshToken').has('expires_at', lte('{now}')).drop().iterate()"

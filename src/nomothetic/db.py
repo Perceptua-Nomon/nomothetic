@@ -8,7 +8,7 @@ See ADR-012 for design rationale.
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional, cast
 
 try:
     import httpx
@@ -85,9 +85,7 @@ class DatabaseConfig:
 
         password = os.environ.get("ARCADEDB_ROOT_PASSWORD")
         if not password:
-            raise ValueError(
-                "ARCADEDB_ROOT_PASSWORD environment variable is required"
-            )
+            raise ValueError("ARCADEDB_ROOT_PASSWORD environment variable is required")
 
         return cls(
             host=host,
@@ -125,7 +123,9 @@ class DatabaseClient:
             timeout=10.0,
         )
 
-    async def execute_gremlin(self, query: str, params: Optional[dict] = None) -> list[dict]:
+    async def execute_gremlin(
+        self, query: str, params: Optional[dict] = None
+    ) -> list[dict[str, Any]]:
         """Execute a Gremlin query via the HTTP command endpoint.
 
         Parameters
@@ -147,7 +147,7 @@ class DatabaseClient:
         """
         return await self._execute("gremlin", query, params)
 
-    async def execute_sql(self, query: str, params: Optional[dict] = None) -> list[dict]:
+    async def execute_sql(self, query: str, params: Optional[dict] = None) -> list[dict[str, Any]]:
         """Execute a SQL query via the HTTP command endpoint.
 
         Parameters
@@ -189,7 +189,9 @@ class DatabaseClient:
 
     # -- internal -----------------------------------------------------------
 
-    async def _execute(self, language: str, command: str, params: Optional[dict]) -> list[dict]:
+    async def _execute(
+        self, language: str, command: str, params: Optional[dict]
+    ) -> list[dict[str, Any]]:
         """Post a command to the ArcadeDB HTTP API.
 
         Parameters
@@ -227,4 +229,8 @@ class DatabaseClient:
             logger.error("Database error %d: %s", resp.status_code, resp.text)
             raise DatabaseError(resp.status_code, "Database query failed")
 
-        return resp.json().get("result", [])
+        payload = resp.json()
+        result = payload.get("result", [])
+        if not isinstance(result, list):
+            return []
+        return cast(list[dict[str, Any]], result)
