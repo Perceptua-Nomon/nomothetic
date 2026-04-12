@@ -18,15 +18,14 @@ def test_config_from_env():
         "ARCADEDB_HOST": "db.example.com",
         "ARCADEDB_HTTP_PORT": "3000",
         "ARCADEDB_DATABASE": "test_db",
-        "ARCADEDB_USER": "admin",
-        "ARCADEDB_PASSWORD": "s3cret",
+        "ARCADEDB_ROOT_PASSWORD": "s3cret",
     }
     with patch.dict(os.environ, env, clear=False):
         cfg = DatabaseConfig.from_env()
     assert cfg.host == "db.example.com"
     assert cfg.port == 3000
     assert cfg.database == "test_db"
-    assert cfg.user == "admin"
+    assert cfg.user == "root"
     assert cfg.password == "s3cret"
 
 
@@ -34,7 +33,7 @@ def test_config_from_env_defaults():
     """DatabaseConfig.from_env() applies correct defaults."""
     env = {
         "ARCADEDB_HOST": "localhost",
-        "ARCADEDB_PASSWORD": "pass",
+        "ARCADEDB_ROOT_PASSWORD": "pass",
     }
     with patch.dict(os.environ, env, clear=False):
         cfg = DatabaseConfig.from_env()
@@ -45,17 +44,17 @@ def test_config_from_env_defaults():
 
 def test_config_missing_host_raises():
     """Missing ARCADEDB_HOST raises ValueError."""
-    env = {"ARCADEDB_PASSWORD": "pass"}
+    env = {"ARCADEDB_ROOT_PASSWORD": "pass"}
     with patch.dict(os.environ, env, clear=True):
         with pytest.raises(ValueError, match="ARCADEDB_HOST"):
             DatabaseConfig.from_env()
 
 
 def test_config_missing_password_raises():
-    """Missing ARCADEDB_PASSWORD raises ValueError."""
+    """Missing ARCADEDB_ROOT_PASSWORD raises ValueError."""
     env = {"ARCADEDB_HOST": "localhost"}
     with patch.dict(os.environ, env, clear=True):
-        with pytest.raises(ValueError, match="ARCADEDB_PASSWORD"):
+        with pytest.raises(ValueError, match="ARCADEDB_ROOT_PASSWORD"):
             DatabaseConfig.from_env()
 
 
@@ -63,7 +62,7 @@ def test_database_config_tls_from_env():
     """DatabaseConfig.from_env() reads ARCADEDB_USE_TLS."""
     env = {
         "ARCADEDB_HOST": "db.example.com",
-        "ARCADEDB_PASSWORD": "pass",
+        "ARCADEDB_ROOT_PASSWORD": "pass",
         "ARCADEDB_USE_TLS": "true",
     }
     with patch.dict(os.environ, env, clear=False):
@@ -75,7 +74,7 @@ def test_database_config_tls_default_false():
     """DatabaseConfig.from_env() defaults use_tls to False."""
     env = {
         "ARCADEDB_HOST": "db.example.com",
-        "ARCADEDB_PASSWORD": "pass",
+        "ARCADEDB_ROOT_PASSWORD": "pass",
     }
     with patch.dict(os.environ, env, clear=False):
         cfg = DatabaseConfig.from_env()

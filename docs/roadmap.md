@@ -611,8 +611,8 @@ and ArcadeDB (production) backends via the HTTP Gremlin API.
 
 #### 14.1 — Database Client (`nomothetic.db`)
 - [x] `DatabaseConfig` dataclass: `from_env()` reads `ARCADEDB_HOST`,
-      `ARCADEDB_HTTP_PORT`, `ARCADEDB_DATABASE`, `ARCADEDB_USER`,
-      `ARCADEDB_PASSWORD` from environment
+      `ARCADEDB_HTTP_PORT`, `ARCADEDB_DATABASE`,
+      `ARCADEDB_ROOT_PASSWORD` from environment (user is always `root`)
 - [x] `DatabaseClient` class: `httpx.AsyncClient` with Basic Auth,
       `execute_gremlin()`, `execute_sql()`, `health()`, `close()`
 - [x] `DatabaseError` exception: `status_code`, `message`
@@ -843,7 +843,7 @@ Android, iOS, and web from a single TypeScript codebase.
 
 ### Database (nomographic)
 
-Managed in the `nomographic` repository. ArcadeDB schemas and Flyway migrations.
+Managed in the `nomographic` repository. ArcadeDB schemas and ArcadeDB-native migrations.
 
 **Interfaces:**
 - Central mode: nomothetic connects to ArcadeDB server via HTTP API

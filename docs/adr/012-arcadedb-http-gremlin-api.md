@@ -12,7 +12,7 @@ Phase 13 delivered central-mode authentication and fleet management with
 transient in-memory stores. This was sufficient for the API contract and test
 suite, but production use requires durable persistence. The nomographic
 repository already manages ArcadeDB schemas (User, Vehicle, OwnsDevice) via
-Flyway migrations.
+ArcadeDB-native migrations.
 
 The question is how nomothetic should communicate with ArcadeDB.
 
@@ -42,7 +42,7 @@ Use the **ArcadeDB HTTP API with `httpx.AsyncClient`** (option 3).
   → Vehicle).
 - SQL is available for simple lookups and aggregations.
 - `DatabaseConfig.from_env()` reads connection parameters from environment
-  variables (`ARCADEDB_HOST`, `ARCADEDB_PASSWORD`, etc.).
+  variables (`ARCADEDB_HOST`, `ARCADEDB_ROOT_PASSWORD`, etc.).
 - `httpx` is already a dev dependency and is added to the `[central]` optional
   dependency group.
 

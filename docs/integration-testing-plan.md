@@ -26,7 +26,7 @@ today and what infrastructure is required.
 
 | Tool | Purpose | When Needed |
 |------|---------|-------------|
-| **ArcadeDB test instance** (Docker) | Integration tests for `GremlinUserStore`, `GremlinFleetStore`, and `DatabaseClient` | Available now — `nomographic/docker-compose.yml` + `scripts/init-db.sh` |
+| **ArcadeDB test instance** (Docker) | Integration tests for `GremlinUserStore`, `GremlinFleetStore`, and `DatabaseClient` | Available now — central via `nomographic/docker-compose.yml` + `scripts/init-db.sh central`; local via `scripts/migrate-local.sh` |
 | **BLE simulator / mock** | Test BLE discovery and Wi-Fi provisioning | When BLE implementation starts |
 | **MQTT test broker** (Mosquitto Docker) | Telemetry publish integration tests | For end-to-end telemetry validation |
 | **pytest-asyncio** | If async test patterns are introduced | If test coverage expands to async flows |

@@ -72,27 +72,28 @@ class DatabaseConfig:
         ARCADEDB_HOST : str (required)
         ARCADEDB_HTTP_PORT : int (default 2480)
         ARCADEDB_DATABASE : str (default ``nomon_central``)
-        ARCADEDB_USER : str (default ``root``)
-        ARCADEDB_PASSWORD : str (required)
+        ARCADEDB_ROOT_PASSWORD : str (required)
 
         Raises
         ------
         ValueError
-            If ``ARCADEDB_HOST`` or ``ARCADEDB_PASSWORD`` is not set.
+            If ``ARCADEDB_HOST`` or ``ARCADEDB_ROOT_PASSWORD`` is not set.
         """
         host = os.environ.get("ARCADEDB_HOST")
         if not host:
             raise ValueError("ARCADEDB_HOST environment variable is required")
 
-        password = os.environ.get("ARCADEDB_PASSWORD")
+        password = os.environ.get("ARCADEDB_ROOT_PASSWORD")
         if not password:
-            raise ValueError("ARCADEDB_PASSWORD environment variable is required")
+            raise ValueError(
+                "ARCADEDB_ROOT_PASSWORD environment variable is required"
+            )
 
         return cls(
             host=host,
             port=int(os.environ.get("ARCADEDB_HTTP_PORT", "2480")),
             database=os.environ.get("ARCADEDB_DATABASE", "nomon_central"),
-            user=os.environ.get("ARCADEDB_USER", "root"),
+            user="root",
             password=password,
             use_tls=os.environ.get("ARCADEDB_USE_TLS", "").lower() in ("1", "true"),
         )
