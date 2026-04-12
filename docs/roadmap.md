@@ -7,7 +7,7 @@
 | 1 | Camera Module | ✅ Complete |
 | 1.5 | MJPEG Stream Server | ✅ Complete |
 | 2 | HTTPS REST API | ✅ Complete |
-| 2.5 | Auth & Rate Limiting | 🔲 Optional / Deferred |
+| 2.5 | Auth & Rate Limiting | ⊘ Superseded by Phase 13 |
 | 3 | MQTT Telemetry | ✅ Complete |
 | 5 | HAT Module Driver (Rust) | ✅ Complete |
 | 6 | Motor API Endpoints | ✅ Complete |
@@ -17,8 +17,13 @@
 | 10 | Calibration API | ✅ Complete |
 | 11 | Routine API | ✅ Complete |
 | 12 | Line-Following Routine API | 🔲 Planned |
+| 13 | Central Mode & Authentication | ✅ Complete |
+| 14 | ArcadeDB Persistence Layer | ✅ Complete |
+| 15 | Deploy Hardening | ✅ Complete |
+| 16 | Security Hardening | ✅ Complete |
+| 17 | Device-Mode Authentication | ✅ Complete |
 
-**Test totals (current): 352 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine)
+**Test totals (current): 497 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store)
 
 ---
 
@@ -273,22 +278,13 @@ wire stream start/stop into the REST API.
 
 ## Upcoming
 
-### Phase 2.5 — Authentication & Rate Limiting (Optional)
+### Phase 2.5 — Authentication & Rate Limiting (⊘ Superseded)
 
-Adds security layers on top of the existing API. Can be deferred since Tailscale VPN currently provides network-layer access control.
-
-**Candidate deliverables:**
-- [ ] JWT token issuance and validation middleware
-- [ ] API key management (create/revoke/list via admin endpoint)
-- [ ] Per-client rate limiting
-- [ ] Request audit logging (structured JSON log file)
-- [ ] `GET /api/admin/keys` endpoint (protected)
-
-**Implementation approach:**
-- Middleware-first: avoid coupling auth logic into route handlers
-- Consider `fastapi-users` or hand-rolled JWT with `python-jose`/`authlib`
-- Rate limiting via `slowapi` (wraps `limits`)
-- Log to file; Phase 3 MQTT can forward logs to management server
+**Superseded by Phase 13 — Central Mode & Authentication.**
+The original Phase 2.5 planned JWT tokens and API keys as an optional
+enhancement to the device-mode API. Phase 13 delivers a more comprehensive
+solution with config-driven API modes, self-hosted JWT auth, user management,
+and fleet data endpoints (see ADR-010, ADR-011).
 
 ---
 
@@ -483,17 +479,377 @@ API, matching the pattern established in Phase 11.
 
 ---
 
+### Phase 13 — Central Mode & Authentication (P1)
+
+**Goal:** Run the same nomothetic codebase as a centrally-hosted API server
+(in addition to the existing device-mode deployment on each Pi). Central mode
+provides JWT authentication, user management, and fleet data endpoints.
+Device mode is unchanged.
+
+**Cross-repo dependencies:**
+- nomographic V2 central migration (User + OwnsDevice schema)
+- nomotactic Phase 1 (consumes auth and fleet endpoints)
+
+**Architecture decisions:**
+- ADR-010: Self-hosted JWT authentication
+- ADR-011: Central vs device API mode
+
+#### 13.1 — Config-Driven API Mode (`nomothetic.mode`)
+- [x] New module `src/nomothetic/mode.py`: `Mode` enum (`device`, `central`),
+      `get_mode()` reads `NOMON_API_MODE` env var (default `device`)
+- [x] `create_app()` in `api.py` conditionally registers route groups:
+  - Device mode: camera, HAT, vehicle, sensor, stream, audio, calibration,
+    routine endpoints (existing behaviour)
+  - Central mode: auth, fleet endpoints (new)
+  - Both modes: health endpoint
+- [x] `config.toml`: add `api_mode = "device"` to `[api]` section
+- [x] Test fixture: `@pytest.fixture(params=["device", "central"])` for
+      mode-switching tests
+- [x] Verify: existing device-mode tests pass without changes
+- [x] Mode-specific CORS: device mode allows all origins; central mode
+      uses explicit `NOMON_CORS_ORIGINS` list
+
+**Exit criteria:**
+- ✅ Device mode: all existing endpoints work, no regressions
+- ✅ Central mode: health endpoint returns ok; hardware endpoints not registered
+- ✅ `pytest && ruff check . && black --check .`
+
+#### 13.2 — JWT Auth Module (`nomothetic.auth`)
+- [x] New module `src/nomothetic/auth.py`:
+  - `AuthService` class: JWT creation, validation, password hashing
+  - Access tokens: HS256, 15-min TTL, claims `{sub, exp, iat, iss}`
+  - Refresh tokens: random bytes, 7-day TTL, stored hashed in ArcadeDB
+  - Password hashing: bcrypt (10 rounds minimum)
+  - `jwt_required` FastAPI dependency for route protection
+  - JWT secret from `NOMON_JWT_SECRET` env var (validated at startup)
+- [x] New optional dependency group `[auth]`: `authlib>=1.0`, `bcrypt>=4.0`
+- [x] Conditional import: auth module only loaded in central mode
+- [x] Auth rate limiting via `src/nomothetic/rate_limit.py`:
+  - Sliding-window rate limiter (5/min login, 10/min register)
+  - Per-IP tracking scoped to app state (isolated across test instances)
+  - `NOMON_TRUST_PROXY` env var controls X-Forwarded-For trust
+- [x] Tests: token creation/validation, password hashing, expired token
+      rejection, refresh token rotation, rate limiting
+
+**Exit criteria:**
+- ✅ `AuthService` creates and validates JWT tokens
+- ✅ bcrypt password hashing works
+- ✅ `jwt_required` dependency returns 401 for missing/invalid tokens
+- ✅ JWT secret not logged (security checklist P5)
+
+#### 13.3 — User Management Endpoints (Central Mode)
+- [x] `POST /api/auth/register` — create user account
+  Request: `{ email, password, display_name }`
+  Response: `{ user_id, email, display_name, timestamp }`
+  Errors: `409` email already exists, `422` validation failure
+- [x] `POST /api/auth/login` — authenticate and issue tokens
+  Request: `{ email, password }`
+  Response: `{ access_token, refresh_token, token_type: "bearer", expires_in }`
+  Errors: `401` invalid credentials
+- [x] `POST /api/auth/refresh` — rotate refresh token
+  Request: `{ refresh_token }`
+  Response: `{ access_token, refresh_token, token_type: "bearer", expires_in }`
+  Errors: `401` invalid/expired refresh token
+- [x] `GET /api/auth/me` — current user profile (requires JWT)
+  Response: `{ email, display_name, created_at, last_login_at }`
+- [x] All endpoints tagged `"Auth"` in OpenAPI docs
+- [x] Pydantic models: `RegisterRequest`, `LoginRequest`, `RefreshRequest`,
+      `TokenResponse`, `UserResponse`
+- [x] CORS on auth routes: explicit origins from `NOMON_CORS_ORIGINS` env var
+- [x] Tests: register, login, refresh, profile — success, validation, error cases
+
+**Exit criteria:**
+- ✅ Full auth flow works: register → login → access protected endpoint → refresh
+- ✅ Duplicate email registration returns 409
+- ✅ Invalid credentials return 401
+- ✅ Refresh token rotation invalidates previous token
+
+#### 13.4 — Fleet Data Endpoints (Central Mode)
+- [x] New module `src/nomothetic/fleet_routes.py`: in-memory fleet data store
+  (ArcadeDB integration deferred; transient store sufficient for MVP)
+- [x] `POST /api/fleet/devices` — register a device and link to user
+  Request: `{ vin, model }` (requires JWT)
+  Response: `{ vin, model, registered_at, timestamp }`
+  Creates Vehicle vertex + OwnsDevice edge (role: `owner`)
+- [x] `GET /api/fleet/devices` — list current user's devices
+  Response: `{ devices: [{ vin, model, firmware_version, last_seen_at }], timestamp }`
+- [x] `GET /api/fleet/devices/{vin}` — device detail with latest telemetry
+  Response: `{ vin, model, firmware_version, last_seen_at, latest_telemetry: {...}, timestamp }`
+- [x] `DELETE /api/fleet/devices/{vin}` — remove device ownership
+  Response: `{ vin, removed, timestamp }`
+  Removes OwnsDevice edge; does not delete Vehicle vertex
+- [x] All endpoints tagged `"Fleet"`, require JWT
+- [x] Tests: CRUD operations, authorization (user can only see own devices),
+      error cases (device not found, unauthorized)
+
+**Exit criteria:**
+- ✅ User can register, associate, list, query, and disassociate devices
+- ✅ Device queries scoped to authenticated user (no cross-user access)
+- ✅ `pytest && ruff check . && black --check .`
+
+#### Phase 13 Exit Criteria (aggregate)
+- [x] Central mode serves auth + fleet endpoints; device mode unchanged
+- [x] Full auth flow: register → login → manage devices → refresh token
+- [x] No regressions in device-mode test suite (≥ 352 passing)
+- [x] Central-mode test suite covers all new endpoints
+- [x] `uv run pytest tests/` — 412 passing
+- [x] `uv run ruff check . && uv run black --check .` — clean
+
+---
+
+### Phase 14 — ArcadeDB Persistence Layer (P1)
+
+**Goal:** Replace the transient in-memory stores from Phase 13 with a
+Protocol-based persistence abstraction supporting both in-memory (dev/test)
+and ArcadeDB (production) backends via the HTTP Gremlin API.
+
+**Architecture decisions:**
+- ADR-012: ArcadeDB HTTP Gremlin API for persistence
+
+**Cross-repo dependencies:**
+- nomographic central migrations (V1 Vehicle schema, V2 User schema)
+
+#### 14.1 — Database Client (`nomothetic.db`)
+- [x] `DatabaseConfig` dataclass: `from_env()` reads `ARCADEDB_HOST`,
+      `ARCADEDB_HTTP_PORT`, `ARCADEDB_DATABASE`,
+      `ARCADEDB_ROOT_PASSWORD` from environment (user is always `root`)
+- [x] `DatabaseClient` class: `httpx.AsyncClient` with Basic Auth,
+      `execute_gremlin()`, `execute_sql()`, `health()`, `close()`
+- [x] `DatabaseError` exception: `status_code`, `message`
+- [x] Conditional import: `httpx` availability flag
+- [x] 13 passing tests (`tests/test_db.py`)
+
+#### 14.2 — User Store (`nomothetic.user_store`)
+- [x] `UserStore` Protocol: `get_user`, `create_user`, `update_user`,
+      `user_exists`
+- [x] `InMemoryUserStore`: dict-backed implementation (extracted from
+      AuthService)
+- [x] `GremlinUserStore`: ArcadeDB-backed implementation with Gremlin
+      traversals and `_sanitize_gremlin_value()` input validation
+- [x] 19 passing tests (`tests/test_user_store.py`)
+
+#### 14.3 — Fleet Store (`nomothetic.fleet_store`)
+- [x] `FleetStore` Protocol: `get_devices`, `get_device`, `register_device`,
+      `remove_device`, `device_exists`
+- [x] `DeviceItem` model: moved from `fleet_routes.py`
+- [x] `InMemoryFleetStore`: dict-backed implementation (extracted from
+      `fleet_routes._FleetStore`)
+- [x] `GremlinFleetStore`: ArcadeDB-backed implementation with Vehicle
+      vertex and OwnsDevice edge traversals
+- [x] 22 passing tests (`tests/test_fleet_store.py`)
+
+#### 14.4 — AuthService Async Refactor
+- [x] `AuthService.__init__` accepts optional `user_store` parameter
+      (defaults to `InMemoryUserStore`)
+- [x] `create_user`, `authenticate`, `get_user`, `refresh_token` are now
+      `async def` — all call sites updated with `await`
+- [x] `auth_routes.py` updated with `await` on all store-backed calls
+- [x] `test_auth.py` tests converted to `@pytest.mark.asyncio` where needed
+- [x] `pytest-asyncio>=0.21` added to dev dependencies
+
+#### 14.5 — Fleet Routes Refactor
+- [x] `_FleetStore` class removed from `fleet_routes.py`
+- [x] Routes import `FleetStore`, `DeviceItem` from `fleet_store`
+- [x] All store method calls use `await`
+- [x] `set_fleet_store` / `get_fleet_store` accept/return `FleetStore`
+
+#### 14.6 — Application Wiring (`nomothetic.api`)
+- [x] `create_app()` checks `ARCADEDB_HOST` environment variable:
+  - If set: creates `DatabaseClient`, `GremlinUserStore`, `GremlinFleetStore`
+  - If not set: creates `InMemoryUserStore`, `InMemoryFleetStore`
+- [x] `db_client` stored on `app.state` for lifespan cleanup
+- [x] Lifespan shutdown closes `db_client` if present
+
+#### Phase 14 Exit Criteria
+- [x] All 412 pre-existing tests still pass (no regressions)
+- [x] 54 new tests for db, user_store, and fleet_store modules
+- [x] `uv run pytest tests/` — 466 passing
+- [x] `uv run ruff check . && uv run black --check .` — clean
+- [x] REST API contract unchanged — no breaking changes
+- [x] In-memory stores used by default (tests and dev)
+- [x] ArcadeDB stores activated when `ARCADEDB_HOST` is set
+
+---
+
+### Phase 15 — Deploy Hardening
+
+**Goal:** Production-ready deployment infrastructure — systemd services,
+environment templates, and deploy script integration.
+
+**Architecture decisions:**
+- ADR-013: Systemd service architecture
+
+#### 15.1 — Systemd Service Files
+- [x] `systemd/nomothetic-api.service` — device-mode API (uvicorn, port 8443)
+  - After=network.target nomopractic.service; Wants=nomopractic.service
+  - EnvironmentFile=-/etc/nomothetic/nomothetic.env (optional)
+  - Environment=NOMON_API_MODE=device
+- [x] `systemd/nomothetic-stream.service` — device-mode MJPEG stream (Flask, port 8000)
+  - Standalone; no dependency on nomopractic
+- [x] `systemd/nomothetic-central.service` — central-mode API (uvicorn, port 443, TLS)
+  - EnvironmentFile=/etc/nomothetic/nomothetic.env (required)
+  - Environment=NOMON_API_MODE=central
+  - TLS certs at /etc/nomothetic/tls/
+- [x] All services: User=nomon, Group=nomon, Restart=on-failure, journal logging
+
+#### 15.2 — Environment Templates
+- [x] `.env.example` updated with all known env vars:
+  API mode, JWT, ArcadeDB, CORS, proxy trust, media, audio, MQTT, deploy
+- [x] `nomotactic/.env.example` created with EXPO_PUBLIC_*_API_URL vars
+- [x] `nomotactic/.gitignore` updated to ignore `.env`
+
+#### 15.3 — Deploy Script Integration
+- [x] `scripts/deploy.sh` extended with post-deploy systemd steps:
+  - Copies service files to /etc/systemd/system/ if changed
+  - Runs systemctl daemon-reload
+  - Enables and restarts device-mode services
+  - Gracefully skipped if systemd is not available
+
+#### 15.4 — nomographic Local Deploy
+- [x] `nomographic/scripts/deploy-local.sh` — deploy ArcadeDB local migrations to Pi
+  - Accepts optional pi-host argument for remote execution via SSH
+  - Rsyncs nomographic directory, ensures data directory, runs migrations
+
+---
+
+### Phase 16 — Security Hardening
+
+**Goal:** Harden input validation, add token persistence layer, server-side
+logout, device-mode TLS, and ArcadeDB TLS support.
+
+#### 16.1 — Sanitizer & Input Validation
+- [x] `_sanitize_gremlin_value()` in `user_store.py` and `fleet_store.py`
+      now rejects null bytes and control characters (ord < 0x20)
+- [x] `_ALLOWED_USER_UPDATE_FIELDS` whitelist restricts `update_user()` to
+      `display_name`, `last_login_at`, `active` — prevents property injection
+- [x] Tests: sanitizer and whitelist coverage in `test_user_store.py` and
+      `test_fleet_store.py`
+
+#### 16.2 — Token Store (`nomothetic.token_store`)
+- [x] `TokenStore` Protocol: `store_token`, `get_email`, `delete_token`,
+      `delete_tokens_for_user`, `cleanup_expired`
+- [x] `InMemoryTokenStore`: dict-backed implementation with lazy expiry cleanup
+- [x] `GremlinTokenStore`: ArcadeDB-backed implementation with Gremlin
+      traversals and `_sanitize_gremlin_value()` input validation
+- [x] `nomographic/central/sql/V3__create_refresh_token.sql` migration
+- [x] 13 passing tests (`tests/test_token_store.py`)
+
+#### 16.3 — AuthService Token Store Integration
+- [x] `AuthService.__init__` accepts optional `token_store` parameter
+      (defaults to `InMemoryTokenStore`)
+- [x] `create_refresh_token` and `create_tokens` are now `async def`
+- [x] `refresh_token` uses `TokenStore` instead of in-memory dict
+- [x] `revoke_refresh_token` method added for server-side logout
+- [x] `create_app()` wires `GremlinTokenStore` when ArcadeDB configured
+- [x] All call sites updated with `await`
+
+#### 16.4 — Logout Endpoint
+- [x] `POST /api/auth/logout` — revoke refresh token (requires JWT)
+  Request: `{ refresh_token }`, Response: `{ success, timestamp }`
+  Idempotent — always returns 200 to avoid leaking token validity
+- [x] nomotactic `logout()` calls server-side revocation (best-effort)
+- [x] Tests: logout success, requires auth, invalid token still 200
+
+#### 16.5 — Device-Mode TLS & CORS
+- [x] `systemd/nomothetic-api.service` updated with `--ssl-keyfile` and
+      `--ssl-certfile` flags for device-mode TLS
+- [x] Device-mode CORS replaced `allow_origins=["*"]` with configurable
+      `NOMON_CORS_ORIGINS` (default `https://10.0.0.1:8443`)
+
+#### 16.6 — ArcadeDB TLS Support
+- [x] `DatabaseConfig.use_tls` field reads `ARCADEDB_USE_TLS` env var
+- [x] `DatabaseClient` uses `https://` when `use_tls=True`
+- [x] Tests for TLS config and client URL scheme
+
+#### 16.7 — Security Documentation
+- [x] ADR-010 updated with Known Limitations (web token storage)
+- [x] ADR-011 updated with Device-Mode Security Boundary section
+- [x] Startup warning logged when Tailscale not detected in device mode
+- [x] `nomographic/docker-compose.yml` requires `ARCADEDB_ROOT_PASSWORD`
+- [x] `nomographic/.env.example` passwords changed to `changeme_before_deploy`
+
+---
+
+### Phase 17 — Device-Mode Authentication
+
+**Goal:** Add opt-in JWT authentication to device-mode endpoints so that
+the on-robot API is protected without requiring a central server. A
+one-time pairing flow (shared secret displayed at startup) issues
+device-scoped JWTs with a separate issuer (`nomon-device`) to prevent
+token reuse across modes.
+
+**Architecture decisions:**
+- ADR-014: Device-mode authentication
+
+**Cross-repo dependencies:**
+- nomotactic (pairing UI, device token management)
+- nomourgoi (security checklist P18–P21)
+
+#### 17.1 — Pairing Module (`nomothetic.pairing`)
+- [x] `PairingState` class: `generate_secret()` (128-bit, `secrets.token_urlsafe`),
+      `verify_and_consume()` (constant-time `hmac.compare_digest`, single-use),
+      `is_paired()`, `reset()`
+- [x] Auto-generated `jwt_secret` per pairing lifecycle (`secrets.token_urlsafe(48)`)
+- [x] 14 passing tests (`tests/test_pairing.py`)
+
+#### 17.2 — Device Auth Routes (`nomothetic.device_auth_routes`)
+- [x] `GET /api/device/auth/status` — pairing state (unauthenticated)
+- [x] `POST /api/device/auth/pair` — consume pairing secret, create
+      `device-owner@local` user, issue tokens (rate-limited: 3/min)
+- [x] `POST /api/device/auth/refresh` — rotate device refresh token
+- [x] `GET /api/device/auth/me` — device owner profile (requires JWT)
+- [x] 17 passing tests (`tests/test_device_auth.py`)
+
+#### 17.3 — API Wiring
+- [x] All device-mode endpoints wrapped in `APIRouter(dependencies=[Depends(jwt_required)])`
+- [x] `AuthService` issuer parameterised: `nomon-device` (device) vs `nomon-central` (central)
+- [x] Health endpoint remains unauthenticated
+- [x] Opt-out via `NOMON_DEVICE_AUTH=false` env var (warning logged)
+- [x] Pairing secret logged at startup for operator visibility
+- [x] `pairing_rate_limit` added to `rate_limit.py`
+
+#### 17.4 — nomotactic Integration
+- [x] `lib/auth.tsx`: device token storage (`expo-secure-store`), `pairWithDevice()`,
+      `unpairDevice()`, `refreshDeviceToken()`
+- [x] `lib/api.ts`: per-base-URL token injection, device-aware 401 refresh
+- [x] `app/index.tsx`: inline pairing prompt (secret + display name inputs)
+- [x] TypeScript strict + ESLint clean
+
+#### Phase 17 Exit Criteria
+- [x] Device-mode endpoints require JWT when `NOMON_DEVICE_AUTH=true`
+- [x] Pairing flow: secret displayed → operator enters in app → tokens issued
+- [x] Central tokens rejected on device API (issuer isolation)
+- [x] No regressions: 466 pre-existing tests pass with `NOMON_DEVICE_AUTH=false`
+- [x] 31 new tests (14 pairing + 17 device auth)
+- [x] `uv run pytest tests/` — 497 passing
+- [x] `uv run ruff check . && uv run black --check .` — clean
+
+---
+
 ## Adjacent Systems
 
-### Mobile App
+### Mobile & Web App (nomotactic)
 
-Developed in a separate repository. Consumes the `nomothetic` REST API.
+Developed in the `nomotactic` repository. Expo (React Native) app serving
+Android, iOS, and web from a single TypeScript codebase.
 
-**Expected interface:**
-- HTTPS requests to `https://<pi-tailscale-ip>:8443`
-- Self-signed cert acceptance (trust on first use or pinned cert)
-- Endpoints: status, capture, record start/stop
-- Future: stream preview, telemetry dashboard, HAT control
+**Interfaces consumed:**
+- Device mode HTTPS API: `https://<pi-tailscale-ip>:8443` (device control)
+- Central mode HTTPS API: `https://<central-host>/api/auth/*`, `/api/fleet/*`
+  (authentication, fleet management)
+- Self-signed cert acceptance for device connections
+
+**See:** `nomotactic/docs/roadmap.md`, `nomotactic/docs/architecture.md`
+
+### Database (nomographic)
+
+Managed in the `nomographic` repository. ArcadeDB schemas and ArcadeDB-native migrations.
+
+**Interfaces:**
+- Central mode: nomothetic connects to ArcadeDB server via HTTP API
+- Local mode: nomothetic opens embedded ArcadeDB from filesystem
+
+**See:** `nomographic/docs/roadmap.md`, `nomographic/docs/architecture.md`
 
 ### Management Server
 

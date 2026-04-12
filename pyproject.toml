@@ -37,6 +37,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
+    "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
     "black>=23.0",
     "ruff>=0.1.0",
@@ -62,10 +63,17 @@ api = [
     "python-multipart>=0.0.6",
     "cryptography>=41.0",
     "python-dotenv>=1.0",
-    "pydantic>=2",
+    "pydantic[email]>=2",
 ]
 telemetry = [
     "paho-mqtt>=2.0",
+]
+auth = [
+    "authlib>=1.0",
+    "bcrypt>=4.0",
+]
+central = [
+    "httpx>=0.25",
 ]
 audio = [
     "pyaudio>=0.2.14; sys_platform == 'linux' and platform_machine == 'aarch64'",
@@ -104,6 +112,7 @@ select = [
 ]
 ignore = [
     "E501",   # line too long (handled by black)
+    "B008",   # Depends() in function defaults (standard FastAPI pattern)
 ]
 
 [tool.ruff.lint.isort]
@@ -126,3 +135,8 @@ python_functions = ["test_*"]
 
 [tool.coverage.run]
 omit = ["*/__init__.py"]
+
+[dependency-groups]
+dev = [
+    "pytest-asyncio>=1.2.0",
+]

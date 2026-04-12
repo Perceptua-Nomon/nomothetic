@@ -2,6 +2,12 @@
 
 This module provides a FastAPI-based REST API for remote camera
 operations with HTTPS/TLS support and CORS for mobile clients.
+Supports two deployment modes via ``NOMON_API_MODE``:
+
+- **device** (default): hardware control endpoints (camera, HAT, audio, etc.)
+- **central**: authentication and fleet management endpoints
+
+See ADR-011 for design rationale.
 
 Classes
 -------
@@ -29,13 +35,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from nomothetic.audio import AudioPlayer, AudioRecorder, list_audio_files
-from nomothetic.camera import Camera
-from nomothetic.hat import (
-    HatClient,
-    HatConnectionError,
-    HatError,
-)
+from nomothetic.mode import Mode, get_mode
+
+# Device-mode imports (conditionally used)
+try:
+    from nomothetic.audio import AudioPlayer, AudioRecorder, list_audio_files
+except ImportError:  # pragma: no cover
+    AudioPlayer = None  # type: ignore[assignment,misc]
+    AudioRecorder = None  # type: ignore[assignment,misc]
+    list_audio_files = None  # type: ignore[assignment]
+
+try:
+    from nomothetic.camera import Camera
+except ImportError:  # pragma: no cover
+    Camera = None  # type: ignore[assignment,misc]
+
+try:
+    from nomothetic.hat import (
+        HatClient,
+        HatConnectionError,
+        HatError,
+    )
+except ImportError:  # pragma: no cover
+    HatClient = None  # type: ignore[assignment,misc]
+    HatConnectionError = Exception  # type: ignore[assignment,misc]
+    HatError = Exception  # type: ignore[assignment,misc]
 
 try:
     from nomothetic.streaming import StreamServer
@@ -812,6 +836,11 @@ async def lifespan(app: FastAPI):
     if _hat_client:
         _hat_client.close()
 
+    # Shutdown: Close ArcadeDB client (central mode)
+    db_client = getattr(app.state, "db_client", None)
+    if db_client is not None:
+        await db_client.close()
+
 
 # ============================================================================
 # FastAPI Application
@@ -821,15 +850,29 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application.
 
+    Route registration is determined by the ``NOMON_API_MODE`` environment
+    variable (see :func:`nomothetic.mode.get_mode`):
+
+    - **device** — hardware endpoints (camera, HAT, vehicle, sensor, stream,
+      audio, calibration, routine).
+    - **central** — auth and fleet management endpoints.
+
+    The health endpoint is available in both modes.
+
     Returns
     -------
     FastAPI
-        Configured FastAPI application with CORS and camera endpoints.
+        Configured FastAPI application with CORS and mode-specific endpoints.
     """
+    mode = get_mode()
 
     app = FastAPI(
-        title="nomon Camera API",
-        description="HTTP REST API for Raspberry Pi camera control",
+        title="nomon Camera API" if mode == Mode.DEVICE else "nomon Central API",
+        description=(
+            "HTTP REST API for Raspberry Pi camera control"
+            if mode == Mode.DEVICE
+            else "HTTP REST API for fleet management and authentication"
+        ),
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -838,13 +881,26 @@ def create_app() -> FastAPI:
     # CORS Middleware (Mobile & Web Client Support)
     # ========================================================================
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # In production, limit to specific origins
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE"],
-        allow_headers=["*"],
-    )
+    if mode == Mode.CENTRAL:
+        cors_origins_raw = os.environ.get("NOMON_CORS_ORIGINS", "http://localhost:8081")
+        cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "DELETE"],
+            allow_headers=["*"],
+        )
+    else:
+        device_cors_raw = os.environ.get("NOMON_CORS_ORIGINS", "https://10.0.0.1:8443")
+        device_cors = [o.strip() for o in device_cors_raw.split(",") if o.strip()]
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=device_cors,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "DELETE"],
+            allow_headers=["*"],
+        )
 
     # ========================================================================
     # Routes
@@ -857,13 +913,142 @@ def create_app() -> FastAPI:
     @app.get("/", tags=["Health"])
     async def health():
         """Health check endpoint."""
-        return {"status": "ok", "service": "nomon-camera-api", "version": "0.1.0"}
+        return {
+            "status": "ok",
+            "service": "nomon-camera-api" if mode == Mode.DEVICE else "nomon-central-api",
+            "version": "0.1.0",
+            "mode": mode.value,
+        }
+
+    # Global exception handler (shared by both modes)
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request, exc):
+        """Format HTTP exceptions as JSON."""
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ErrorResponse(
+                error=exc.detail, timestamp=datetime.now(timezone.utc).isoformat()
+            ).model_dump(),
+        )
+
+    if mode == Mode.CENTRAL:
+        from nomothetic.auth import AuthService, set_auth_service
+        from nomothetic.auth_routes import create_auth_router
+        from nomothetic.fleet_routes import (
+            create_fleet_router,
+            set_fleet_store,
+        )
+        from nomothetic.fleet_store import FleetStore, InMemoryFleetStore
+        from nomothetic.rate_limit import RateLimiter
+        from nomothetic.token_store import TokenStore
+        from nomothetic.user_store import UserStore
+
+        # Per-app rate limiters so each test client gets fresh instances
+        app.state.login_limiter = RateLimiter(max_requests=5, window_seconds=60)
+        app.state.register_limiter = RateLimiter(max_requests=10, window_seconds=60)
+
+        # Database-backed stores when ArcadeDB is configured
+        db_client = None
+        user_store: UserStore
+        fleet_store: FleetStore
+        token_store: TokenStore
+        arcadedb_host = os.environ.get("ARCADEDB_HOST")
+        if arcadedb_host:
+            from nomothetic.db import DatabaseClient, DatabaseConfig
+            from nomothetic.fleet_store import GremlinFleetStore
+            from nomothetic.token_store import GremlinTokenStore
+            from nomothetic.user_store import GremlinUserStore
+
+            db_config = DatabaseConfig.from_env()
+            db_client = DatabaseClient(db_config)
+            user_store = GremlinUserStore(db_client)
+            fleet_store = GremlinFleetStore(db_client)
+            token_store = GremlinTokenStore(db_client)
+            app.state.db_client = db_client
+        else:
+            from nomothetic.token_store import InMemoryTokenStore
+            from nomothetic.user_store import InMemoryUserStore
+
+            user_store = InMemoryUserStore()
+            fleet_store = InMemoryFleetStore()
+            token_store = InMemoryTokenStore()
+            app.state.db_client = None
+
+        auth_service = AuthService(user_store=user_store, token_store=token_store)
+        set_auth_service(auth_service)
+        app.include_router(create_auth_router())
+
+        set_fleet_store(fleet_store)
+        app.include_router(create_fleet_router())
+
+        return app
 
     # ========================================================================
-    # Sensor Endpoints
+    # Device-mode auth (opt-in via NOMON_DEVICE_AUTH env var)
     # ========================================================================
 
-    @app.get("/api/sensor/grayscale", response_model=GrayscaleResponse, tags=["Sensor"])
+    from fastapi import APIRouter, Depends
+
+    device_auth_enabled = os.environ.get("NOMON_DEVICE_AUTH", "true").lower() in (
+        "1",
+        "true",
+    )
+
+    if device_auth_enabled:
+        from nomothetic.auth import AuthService, jwt_required, set_auth_service
+        from nomothetic.device_auth_routes import create_device_auth_router
+        from nomothetic.pairing import PairingState
+        from nomothetic.rate_limit import RateLimiter
+        from nomothetic.token_store import InMemoryTokenStore
+        from nomothetic.user_store import InMemoryUserStore
+
+        pairing = PairingState()
+        user_store = InMemoryUserStore()
+        token_store = InMemoryTokenStore()
+        auth_service = AuthService(
+            secret=pairing.jwt_secret,
+            issuer="nomon-device",
+            user_store=user_store,
+            token_store=token_store,
+        )
+        set_auth_service(auth_service)
+        app.state.pairing_state = pairing
+        app.state.pairing_limiter = RateLimiter(max_requests=3, window_seconds=60)
+
+        if not pairing.is_paired():
+            secret = pairing.generate_secret()
+            # Print directly to stderr to avoid journal persistence.
+            # The secret is single-use and cleared after pairing.
+            import sys
+
+            print(  # noqa: T201
+                f"\n{'=' * 60}\n"
+                f"  DEVICE PAIRING SECRET: {secret}\n"
+                f"  Enter this in the nomon app to pair.\n"
+                f"  This secret is single-use and will be invalidated after pairing.\n"
+                f"{'=' * 60}\n",
+                file=sys.stderr,
+                flush=True,
+            )
+            logger.info("Pairing secret generated — check stderr output")
+
+        app.include_router(create_device_auth_router())
+
+        device_router = APIRouter(
+            dependencies=[Depends(jwt_required)],
+        )
+    else:
+        logger.warning(
+            "Device auth is disabled (NOMON_DEVICE_AUTH=false). "
+            "All device endpoints are unauthenticated."
+        )
+        device_router = APIRouter()
+
+    # ========================================================================
+    # Device-mode endpoints (only registered when NOMON_API_MODE=device)
+    # ========================================================================
+
+    @device_router.get("/api/sensor/grayscale", response_model=GrayscaleResponse, tags=["Sensor"])
     async def get_grayscale():
         """Read all three grayscale sensor ADC channels.
 
@@ -895,7 +1080,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.get("/api/sensor/ultrasonic", response_model=UltrasonicResponse, tags=["Sensor"])
+    @device_router.get("/api/sensor/ultrasonic", response_model=UltrasonicResponse, tags=["Sensor"])
     async def get_ultrasonic():
         """Trigger the ultrasonic sensor and return the measured distance.
 
@@ -933,7 +1118,7 @@ def create_app() -> FastAPI:
     # Vehicle Endpoints (high-level convenience API)
     # ========================================================================
 
-    @app.post("/api/drive", response_model=DriveResponse, tags=["Vehicle"])
+    @device_router.post("/api/drive", response_model=DriveResponse, tags=["Vehicle"])
     async def drive(request: DriveRequest):
         """Drive all configured DC motors at the same speed simultaneously.
 
@@ -970,7 +1155,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.post("/api/steer", response_model=SteerResponse, tags=["Vehicle"])
+    @device_router.post("/api/steer", response_model=SteerResponse, tags=["Vehicle"])
     async def steer(request: SteerRequest):
         """Set the steering servo angle.
 
@@ -1003,7 +1188,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.post("/api/camera/pan", response_model=PanResponse, tags=["Vehicle"])
+    @device_router.post("/api/camera/pan", response_model=PanResponse, tags=["Vehicle"])
     async def pan_camera(request: PanRequest):
         """Set the camera pan (horizontal) servo angle.
 
@@ -1036,7 +1221,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.post("/api/camera/tilt", response_model=TiltResponse, tags=["Vehicle"])
+    @device_router.post("/api/camera/tilt", response_model=TiltResponse, tags=["Vehicle"])
     async def tilt_camera(request: TiltRequest):
         """Set the camera tilt (vertical) servo angle.
 
@@ -1073,7 +1258,7 @@ def create_app() -> FastAPI:
     # Stream Endpoints
     # ========================================================================
 
-    @app.post("/api/stream/start", response_model=StreamStartResponse, tags=["Stream"])
+    @device_router.post("/api/stream/start", response_model=StreamStartResponse, tags=["Stream"])
     async def start_stream(request: StreamStartRequest):
         """Start the MJPEG stream server in the background.
 
@@ -1126,7 +1311,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post("/api/stream/stop", response_model=StreamStopResponse, tags=["Stream"])
+    @device_router.post("/api/stream/stop", response_model=StreamStopResponse, tags=["Stream"])
     async def stop_stream():
         """Stop the MJPEG stream server.
 
@@ -1155,7 +1340,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.get("/api/stream/status", response_model=StreamStatusResponse, tags=["Stream"])
+    @device_router.get("/api/stream/status", response_model=StreamStatusResponse, tags=["Stream"])
     async def get_stream_status():
         """Return the current stream server state."""
         running = _stream_server is not None
@@ -1174,7 +1359,7 @@ def create_app() -> FastAPI:
     # Camera Endpoints
     # ========================================================================
 
-    @app.get("/api/camera/status", response_model=CameraStatus, tags=["Camera"])
+    @device_router.get("/api/camera/status", response_model=CameraStatus, tags=["Camera"])
     async def get_camera_status():
         """Get current camera and recording status.
 
@@ -1195,7 +1380,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post("/api/camera/capture", response_model=CaptureResponse, tags=["Camera"])
+    @device_router.post("/api/camera/capture", response_model=CaptureResponse, tags=["Camera"])
     async def capture_image(request: CaptureRequest):
         """Capture a still image from the camera.
 
@@ -1230,7 +1415,9 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Capture failed: {str(e)}") from e
 
-    @app.post("/api/camera/record/start", response_model=RecordStartResponse, tags=["Camera"])
+    @device_router.post(
+        "/api/camera/record/start", response_model=RecordStartResponse, tags=["Camera"]
+    )
     async def start_recording(request: RecordRequest):
         """Start video recording.
 
@@ -1272,7 +1459,9 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Recording start failed: {str(e)}") from e
 
-    @app.post("/api/camera/record/stop", response_model=RecordStopResponse, tags=["Camera"])
+    @device_router.post(
+        "/api/camera/record/stop", response_model=RecordStopResponse, tags=["Camera"]
+    )
     async def stop_recording():
         """Stop the current video recording.
 
@@ -1306,7 +1495,9 @@ def create_app() -> FastAPI:
     # Audio Endpoints
     # ========================================================================
 
-    @app.post("/api/audio/record/start", response_model=AudioRecordStartResponse, tags=["Audio"])
+    @device_router.post(
+        "/api/audio/record/start", response_model=AudioRecordStartResponse, tags=["Audio"]
+    )
     async def start_audio_recording(request: AudioRecordStartRequest):
         """Start recording audio from the USB microphone.
 
@@ -1356,7 +1547,9 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post("/api/audio/record/stop", response_model=AudioRecordStopResponse, tags=["Audio"])
+    @device_router.post(
+        "/api/audio/record/stop", response_model=AudioRecordStopResponse, tags=["Audio"]
+    )
     async def stop_audio_recording():
         """Stop the active audio recording session.
 
@@ -1377,7 +1570,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post("/api/audio/play", response_model=AudioPlayResponse, tags=["Audio"])
+    @device_router.post("/api/audio/play", response_model=AudioPlayResponse, tags=["Audio"])
     async def play_audio(request: AudioPlayRequest):
         """Play a WAV audio file over the speaker.
 
@@ -1443,7 +1636,9 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post("/api/audio/play/stop", response_model=AudioPlayStopResponse, tags=["Audio"])
+    @device_router.post(
+        "/api/audio/play/stop", response_model=AudioPlayStopResponse, tags=["Audio"]
+    )
     async def stop_audio_playback():
         """Stop ongoing audio playback.
 
@@ -1470,7 +1665,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.get("/api/audio/files", response_model=AudioFilesResponse, tags=["Audio"])
+    @device_router.get("/api/audio/files", response_model=AudioFilesResponse, tags=["Audio"])
     async def list_audio():
         """List available WAV audio files in the configured audio directory.
 
@@ -1485,7 +1680,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.get("/api/audio/status", response_model=AudioStatusResponse, tags=["Audio"])
+    @device_router.get("/api/audio/status", response_model=AudioStatusResponse, tags=["Audio"])
     async def get_audio_status():
         """Return current audio recorder and player state."""
         rec_file = _audio_recorder.current_file if _audio_recorder else None
@@ -1498,7 +1693,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post("/api/audio/volume", response_model=VolumeResponse, tags=["Audio"])
+    @device_router.post("/api/audio/volume", response_model=VolumeResponse, tags=["Audio"])
     async def set_volume(request: VolumeRequest):
         """Set the output volume on the HifiBerry DAC via ALSA.
 
@@ -1531,7 +1726,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.get("/api/audio/volume", response_model=VolumeResponse, tags=["Audio"])
+    @device_router.get("/api/audio/volume", response_model=VolumeResponse, tags=["Audio"])
     async def get_volume():
         """Read the current output volume from the ALSA HifiBerry DAC mixer.
 
@@ -1559,7 +1754,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post("/api/audio/mic-gain", response_model=MicGainResponse, tags=["Audio"])
+    @device_router.post("/api/audio/mic-gain", response_model=MicGainResponse, tags=["Audio"])
     async def set_mic_gain(request: MicGainRequest):
         """Set the microphone capture gain on the USB mic via ALSA.
 
@@ -1592,7 +1787,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.get("/api/audio/mic-gain", response_model=MicGainResponse, tags=["Audio"])
+    @device_router.get("/api/audio/mic-gain", response_model=MicGainResponse, tags=["Audio"])
     async def get_mic_gain():
         """Read the current microphone capture gain from the ALSA USB mic mixer.
 
@@ -1624,7 +1819,9 @@ def create_app() -> FastAPI:
     # Calibration Endpoints
     # ========================================================================
 
-    @app.get("/api/calibration", response_model=CalibrationSnapshotResponse, tags=["Calibration"])
+    @device_router.get(
+        "/api/calibration", response_model=CalibrationSnapshotResponse, tags=["Calibration"]
+    )
     async def get_calibration():
         """Return a full snapshot of the current runtime calibration."""
         if _hat_client is None:
@@ -1660,7 +1857,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.put(
+    @device_router.put(
         "/api/calibration/motor/{channel}",
         response_model=MotorCalibrationResponse,
         tags=["Calibration"],
@@ -1690,7 +1887,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.put(
+    @device_router.put(
         "/api/calibration/servo/{servo_name}",
         response_model=ServoCalibrationResponse,
         tags=["Calibration"],
@@ -1714,7 +1911,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post(
+    @device_router.post(
         "/api/calibration/grayscale/{channel}/capture",
         response_model=GrayscaleCaptureResponse,
         tags=["Calibration"],
@@ -1741,7 +1938,9 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post("/api/calibration/save", response_model=SaveCalibrationResponse, tags=["Calibration"])
+    @device_router.post(
+        "/api/calibration/save", response_model=SaveCalibrationResponse, tags=["Calibration"]
+    )
     async def post_save_calibration():
         """Persist the current in-memory calibration store to disk."""
         if _hat_client is None:
@@ -1758,7 +1957,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post(
+    @device_router.post(
         "/api/calibration/reset", response_model=ResetCalibrationResponse, tags=["Calibration"]
     )
     async def post_reset_calibration():
@@ -1776,7 +1975,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.get(
+    @device_router.get(
         "/api/sensor/grayscale/normalized",
         response_model=NormalizedGrayscaleResponse,
         tags=["Sensor"],
@@ -1801,7 +2000,7 @@ def create_app() -> FastAPI:
     # HAT Endpoints
     # ========================================================================
 
-    @app.get("/api/hat/battery", response_model=BatteryResponse, tags=["HAT"])
+    @device_router.get("/api/hat/battery", response_model=BatteryResponse, tags=["HAT"])
     async def get_battery():
         """Read the Robot HAT V4 battery voltage.
 
@@ -1829,7 +2028,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.post("/api/hat/servo", response_model=ServoResponse, tags=["HAT"])
+    @device_router.post("/api/hat/servo", response_model=ServoResponse, tags=["HAT"])
     async def set_servo(request: ServoRequest):
         """Set a servo channel to the requested angle.
 
@@ -1868,7 +2067,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.post("/api/hat/reset", response_model=ResetResponse, tags=["HAT"])
+    @device_router.post("/api/hat/reset", response_model=ResetResponse, tags=["HAT"])
     async def reset_mcu():
         """Assert and release the Robot HAT V4 MCU reset line.
 
@@ -1896,7 +2095,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.get("/api/hat/servo/status", response_model=ServoStatusResponse, tags=["HAT"])
+    @device_router.get("/api/hat/servo/status", response_model=ServoStatusResponse, tags=["HAT"])
     async def get_servo_status():
         """Return the daemon's active servo TTL lease table.
 
@@ -1931,7 +2130,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.get("/api/hat/mcu/status", response_model=McuStatusResponse, tags=["HAT"])
+    @device_router.get("/api/hat/mcu/status", response_model=McuStatusResponse, tags=["HAT"])
     async def get_mcu_status():
         """Return MCU reset statistics tracked by the daemon.
 
@@ -1960,7 +2159,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.post("/api/hat/motor", response_model=MotorResponse, tags=["HAT"])
+    @device_router.post("/api/hat/motor", response_model=MotorResponse, tags=["HAT"])
     async def set_motor(request: MotorRequest):
         """Set a DC motor channel to the requested speed.
 
@@ -1999,7 +2198,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.post("/api/hat/motor/stop", response_model=StopMotorsResponse, tags=["HAT"])
+    @device_router.post("/api/hat/motor/stop", response_model=StopMotorsResponse, tags=["HAT"])
     async def stop_motors():
         """Immediately stop all DC motors and clear their leases.
 
@@ -2027,7 +2226,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.get("/api/hat/motor/status", response_model=MotorStatusResponse, tags=["HAT"])
+    @device_router.get("/api/hat/motor/status", response_model=MotorStatusResponse, tags=["HAT"])
     async def get_motor_status():
         """Return the daemon's active motor TTL lease table.
 
@@ -2062,7 +2261,7 @@ def create_app() -> FastAPI:
         except HatError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-    @app.post("/api/hat/speaker", response_model=SpeakerResponse, tags=["HAT"])
+    @device_router.post("/api/hat/speaker", response_model=SpeakerResponse, tags=["HAT"])
     async def set_speaker(request: SpeakerRequest):
         """Enable or disable the speaker amplifier on the Robot HAT V4.
 
@@ -2105,7 +2304,7 @@ def create_app() -> FastAPI:
     # Routine Endpoints
     # ========================================================================
 
-    @app.post("/api/routine/start", response_model=RoutineStartResponse, tags=["Routine"])
+    @device_router.post("/api/routine/start", response_model=RoutineStartResponse, tags=["Routine"])
     async def start_routine(request: RoutineStartRequest):
         """Start an autonomous routine.
 
@@ -2137,7 +2336,7 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.post("/api/routine/stop", response_model=RoutineStopResponse, tags=["Routine"])
+    @device_router.post("/api/routine/stop", response_model=RoutineStopResponse, tags=["Routine"])
     async def stop_routine():
         """Stop the currently running routine.
 
@@ -2162,7 +2361,9 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    @app.get("/api/routine/status", response_model=RoutineStatusResponse, tags=["Routine"])
+    @device_router.get(
+        "/api/routine/status", response_model=RoutineStatusResponse, tags=["Routine"]
+    )
     async def get_routine_status():
         """Return the current routine status snapshot."""
         if _hat_client is None:
@@ -2182,16 +2383,18 @@ def create_app() -> FastAPI:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    # Global exception handler
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request, exc):
-        """Format HTTP exceptions as JSON."""
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=ErrorResponse(
-                error=exc.detail, timestamp=datetime.now(timezone.utc).isoformat()
-            ).model_dump(),
-        )
+    # Include all device endpoints (with or without auth dependency)
+    app.include_router(device_router)
+
+    # Warn if Tailscale is not detected and auth is disabled
+    if not device_auth_enabled:
+        import shutil
+
+        if not shutil.which("tailscale"):
+            logger.warning(
+                "Tailscale not detected. Device-mode endpoints are unauthenticated — "
+                "network-level access control is required. See ADR-010."
+            )
 
     return app
 

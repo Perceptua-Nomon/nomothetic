@@ -1,0 +1,112 @@
+# ADR-014: Device-Mode Authentication
+
+## Status
+
+Accepted
+
+## Context
+
+Device-mode nomon endpoints (camera, motor, sensor, audio, calibration,
+routine) are served over HTTPS on the local network.  Prior to this
+change they relied solely on network-level access control (Tailscale VPN
+or private LAN).  A user connecting from the nomotactic mobile app had
+no application-layer identity — any client on the network could drive
+the robot.
+
+We need a lightweight, zero-infrastructure auth mechanism that:
+
+1. Works offline (no internet or central server required).
+2. Does not require the user to create an account before first use.
+3. Supports exactly one owner per device (single-user model).
+4. Issues short-lived JWT access tokens for API calls.
+5. Can be disabled for development or trusted-network deployments.
+
+## Decision
+
+### Pairing-Secret Flow
+
+On first boot (or after a factory reset), the nomothetic device service
+generates a random 128-bit pairing secret and logs it to the systemd
+journal / console:
+
+```
+INFO  DEVICE PAIRING SECRET: <22-char-url-safe-string>
+```
+
+The device owner reads this secret (physically or via SSH) and enters it
+in the nomotactic app's pairing prompt.  The app calls
+`POST /api/device/auth/pair` with the secret and a display name.
+
+On success:
+
+- A local user (`device-owner@local`) is created in an in-memory store
+  with a random password hash (never used directly).
+- JWT access and refresh tokens are issued with issuer `nomon-device`.
+- The pairing secret is consumed (single-use) — subsequent attempts
+  return 409.
+- The pairing endpoint is rate-limited to 3 requests/minute per IP.
+
+### Auto-Generated JWT Secret
+
+Each device generates its own JWT signing secret at startup
+(`secrets.token_urlsafe(48)`).  This secret lives only in memory — it
+is never persisted to disk.  A service restart generates a new secret,
+invalidating all existing tokens (clients must re-pair).
+
+This is acceptable because:
+
+- Device mode is single-user — only one person holds tokens.
+- Re-pairing after a restart is a minor inconvenience.
+- No key file to protect on the filesystem.
+
+### Issuer Separation
+
+Device-mode tokens use issuer `nomon-device`; central-mode tokens use
+`nomon-central`.  The AuthService `verify_token` method validates the
+issuer claim, preventing a token obtained from one mode being accepted
+by the other.
+
+### Opt-Out
+
+Setting `NOMON_DEVICE_AUTH=false` disables all device auth:
+
+- No pairing endpoints are registered.
+- No JWT dependency is added to device endpoints.
+- A warning is logged.
+
+This preserves backward compatibility and supports trusted-network
+deployments where Tailscale or firewall rules provide access control.
+
+### Protected Endpoints
+
+When device auth is enabled, all `/api/*` device endpoints require a
+valid JWT bearer token.  The health endpoint (`GET /`) remains
+unauthenticated for monitoring and load-balancer health checks.
+
+The device auth endpoints (`/api/device/auth/*`) handle their own
+authentication: `/status` and `/pair` are unauthenticated (by design),
+`/me` requires a JWT, and `/refresh` validates the refresh token.
+
+## Consequences
+
+### Positive
+
+- Zero infrastructure — works on an isolated Pi with no internet.
+- Single pairing step replaces account creation + login.
+- Rate limiting protects against brute-force pairing attempts.
+- Issuer separation prevents cross-mode token reuse.
+- Opt-out available for development and trusted networks.
+
+### Negative
+
+- Single-owner model — no multi-user access control on the device.
+- Tokens invalidated on service restart (by design, but inconvenient).
+- Pairing secret must be communicated out-of-band (console/SSH).
+- In-memory stores — device restart loses user and token state.
+
+### Future Considerations
+
+- Persist pairing state to disk for restart resilience.
+- QR code display on device screen for easier pairing.
+- Multi-user device access with role-based permissions.
+- BLE-based pairing for headless devices.

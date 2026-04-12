@@ -36,6 +36,51 @@
 
 ---
 
+## Deployment Modes
+
+nomothetic runs in one of two mutually exclusive modes, selected by the
+`NOMON_API_MODE` environment variable (see ADR-011):
+
+| Mode | `NOMON_API_MODE` | Deployment | Routes |
+|------|-----------------|-----------|--------|
+| **Device** | `device` (default) | Each Raspberry Pi | Hardware, camera, audio, calibration, routine |
+| **Central** | `central` | Dedicated server | Auth, user management, fleet data |
+
+```
+                    ┌──────────────────────────────────┐
+                    │       nomotactic (Expo app)       │
+                    │    Android / iOS / Web            │
+                    └─────────┬────────────┬────────────┘
+                              │            │
+                    HTTPS :443│            │HTTPS :8443
+                              ▼            ▼
+                    ┌─────────────┐  ┌─────────────────┐
+                    │ nomothetic  │  │   nomothetic     │
+                    │ central mode│  │   device mode    │
+                    │             │  │   (on Pi)        │
+                    │ Auth        │  │   Camera, HAT,   │
+                    │ Fleet       │  │   Audio, Stream, │
+                    │ User mgmt  │  │   Calibration,   │
+                    │             │  │   Routines       │
+                    └──────┬──────┘  └─────────────────┘
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │  ArcadeDB   │
+                    │  (central)  │
+                    └─────────────┘
+```
+
+- **Device mode** is the existing configuration — all current endpoints work
+  unchanged. Hardware-specific libraries are conditionally imported.
+- **Central mode** never imports hardware libraries (picamera2, pyaudio,
+  rppal socket). It requires `[auth]` and `[central]` optional dependencies.
+- The health endpoint (`GET /`) is available in both modes.
+- Route registration is conditional — each mode's `create_app()` only mounts
+  its own route group. No "dead" endpoints returning errors on the wrong server.
+
+---
+
 ## Module Responsibilities
 
 ### `nomothetic.camera` — `Camera`
@@ -333,11 +378,12 @@ Mobile App
 | Concern | Approach |
 |---------|----------|
 | Transport encryption | TLS 1.2+ via uvicorn; self-signed cert auto-generated |
-| Authentication (current) | None — relies on Tailscale VPN for network-layer access control |
-| Authentication (planned) | JWT tokens or API keys (Phase 2.5) |
+| Authentication (device mode) | None — relies on Tailscale VPN for network-layer access control |
+| Authentication (central mode) | Self-hosted JWT (HS256 access + refresh tokens); see ADR-010 |
 | Path traversal | Filename-only validation in `Camera`; rejects `/`, `\`, `..`, `.` prefix, absolute paths |
-| CORS | `allow_origins=["*"]` in dev; tighten for production |
-| Secrets | `python-dotenv` for envvars; `.env` and `.certs/` are gitignored |
+| CORS (device mode) | `allow_origins=["*"]` in dev; tighten for production |
+| CORS (central mode) | Explicit origins from `NOMON_CORS_ORIGINS` env var; no wildcard on auth routes |
+| Secrets | `python-dotenv` for envvars; `.env` and `.certs/` are gitignored; `NOMON_JWT_SECRET` required in central mode |
 
 ---
 
@@ -352,11 +398,34 @@ nomothetic.hat
 nomothetic.api
   ├── nomothetic.camera
   ├── nomothetic.hat           (HatClient — IPC to nomopractic daemon)
+  ├── nomothetic.auth          (central mode — JWT auth)
+  ├── nomothetic.mode          (device/central mode selection)
+  ├── nomothetic.rate_limit    (auth endpoint rate limiting)
+  ├── nomothetic.fleet_routes  (central mode — fleet CRUD)
+  ├── nomothetic.db            (central mode — ArcadeDB client, optional)
+  ├── nomothetic.user_store    (user persistence — InMemory or Gremlin)
+  ├── nomothetic.fleet_store   (fleet persistence — InMemory or Gremlin)
   ├── fastapi
   ├── uvicorn
   ├── pydantic
   ├── cryptography
   └── python-dotenv
+
+nomothetic.db
+  └── httpx  (optional — conditional import)
+
+nomothetic.user_store
+  ├── nomothetic.auth   (UserRecord dataclass)
+  └── nomothetic.db     (DatabaseClient, TYPE_CHECKING only)
+
+nomothetic.fleet_store
+  ├── pydantic          (DeviceItem model)
+  └── nomothetic.db     (DatabaseClient, TYPE_CHECKING only)
+
+nomothetic.auth
+  ├── authlib           (optional — [auth] extra)
+  ├── bcrypt            (optional — [auth] extra)
+  └── nomothetic.user_store (UserStore protocol)
 
 nomothetic.streaming
   ├── nomothetic.camera
@@ -414,7 +483,15 @@ nomothetic/              ← Python monorepo (this repo)
   nomothetic.streaming
   nomothetic.api
   nomothetic.telemetry
-  nomothetic.hat     ← IPC client for nomopractic (Phase 5)
+  nomothetic.hat          ← IPC client for nomopractic (Phase 5)
+  nomothetic.audio        ← USB mic recording + DAC playback (Phase 8)
+  nomothetic.auth         ← JWT auth service (Phase 13, central mode)
+  nomothetic.mode         ← Device/central mode selection (Phase 13)
+  nomothetic.rate_limit   ← Sliding-window rate limiter (Phase 13)
+  nomothetic.fleet_routes ← Fleet data REST endpoints (Phase 13)
+  nomothetic.db           ← ArcadeDB HTTP/Gremlin client (Phase 14)
+  nomothetic.user_store   ← User persistence: InMemory + Gremlin backends (Phase 14)
+  nomothetic.fleet_store  ← Fleet persistence: InMemory + Gremlin backends (Phase 14)
 
 nomopractic/          ← Rust repo (Phase 5, separate)
   Cargo.toml

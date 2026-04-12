@@ -1,0 +1,30 @@
+[Unit]
+Description=nomon REST API server (device mode)
+After=network.target nomopractic.service
+Wants=nomopractic.service
+
+[Service]
+Type=simple
+User=nomon
+Group=nomon
+
+# Adjust these paths to match your deployment:
+WorkingDirectory=/opt/nomothetic
+# TLS: Generate self-signed certs with:
+#   python3 -c "from nomothetic.api import create_self_signed_cert; from pathlib import Path; create_self_signed_cert(Path('/etc/nomothetic/tls/cert.pem'), Path('/etc/nomothetic/tls/key.pem'))"
+# Or provide proper certificates for production.
+ExecStart=/opt/nomothetic/.venv/bin/uvicorn nomothetic.api:create_app --factory --host 0.0.0.0 --port 8443 --ssl-keyfile /etc/nomothetic/tls/key.pem --ssl-certfile /etc/nomothetic/tls/cert.pem
+
+# Optional env file — service starts even if the file is absent.
+EnvironmentFile=-/etc/nomothetic/nomothetic.env
+Environment=NOMON_API_MODE=device
+Environment=NOMON_DEVICE_AUTH=true
+
+Restart=on-failure
+RestartSec=5s
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
