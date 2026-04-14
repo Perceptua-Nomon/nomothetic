@@ -96,6 +96,14 @@ if [[ -z "${CONFIG_FILE}" ]]; then
   fi
 fi
 
+# ─── Load .env if present (allows central-mode secrets without manual export) ──
+if [[ -f "${REPO_DIR}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${REPO_DIR}/.env"
+  set +a
+fi
+
 # ─── Activate virtual environment if present ─────────────────────────────────
 VENV_ACTIVATE="${REPO_DIR}/.venv/bin/activate"
 if [[ -f "${VENV_ACTIVATE}" ]]; then
@@ -143,6 +151,7 @@ else:
     au = cfg.get("audio", {})
     mq = cfg.get("mqtt", {})
     tl = cfg.get("telemetry", {})
+    print("NOM_API_MODE="             + repr(str(a.get("api_mode",         "device"))))
     print("NOM_API_HOST="             + repr(str(a.get("host",             "0.0.0.0"))))
     print("NOM_API_PORT="             + str(int(a.get("port",              8443))))
     print("NOM_API_USE_SSL="          + str(bool(a.get("use_ssl",          True))).lower())
@@ -196,10 +205,20 @@ else
   if [[ -n "${NOM_HAT_SOCKET-}" ]]; then
     NOMON_HAT_SOCKET_PATH="${NOM_HAT_SOCKET}"
   fi
-  export NOM_API_HOST NOM_API_PORT NOM_API_USE_SSL NOM_API_CERT_DIR NOMON_HAT_SOCKET_PATH
+  export NOM_API_MODE NOM_API_HOST NOM_API_PORT NOM_API_USE_SSL NOM_API_CERT_DIR NOMON_HAT_SOCKET_PATH
   export NOMON_MEDIA_DIR NOMON_AUDIO_INPUT_INDEX NOMON_AUDIO_VOLUME NOMON_AUDIO_MIC_GAIN
   export NOMON_MQTT_BROKER NOMON_MQTT_PORT NOMON_MQTT_TOPIC NOMON_MQTT_INTERVAL
   export NOMON_DEVICE_ID
+  export NOMON_API_MODE="${NOMON_API_MODE:-${NOM_API_MODE}}"
+
+  if [[ "${NOMON_API_MODE}" == "central" ]]; then
+    if [[ -z "${NOMON_JWT_SECRET:-}" || ${#NOMON_JWT_SECRET} -lt 32 ]]; then
+      echo "Error: central mode requires NOMON_JWT_SECRET (min 32 chars)." >&2
+      echo "Set it in ${REPO_DIR}/.env or export it before starting the API." >&2
+      exit 1
+    fi
+  fi
+
   SCHEME="$([[ "${NOM_API_USE_SSL}" == "true" ]] && echo "https" || echo "http")"
   DISPLAY_URL="${SCHEME}://${NOM_API_HOST}:${NOM_API_PORT}"
   DISPLAY_EXTRA="  Docs: ${DISPLAY_URL}/docs"$'\n'

@@ -20,11 +20,15 @@ create_app
     Factory function to create a configured FastAPI application.
 create_self_signed_cert
     Generate self-signed TLS certificates for development/testing.
+provision_tls_cert
+    Provision TLS certs via Tailscale (preferred) or self-signed fallback.
 """
 
 import asyncio
+import json
 import logging
 import os
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -649,6 +653,30 @@ class CalibrationSnapshotResponse(BaseModel):
 # ============================================================================
 
 
+def _build_san_entries(IPv4Address):  # noqa: N803
+    """Build SAN list from defaults plus NOMON_TLS_EXTRA_HOSTS env var.
+
+    NOMON_TLS_EXTRA_HOSTS is a comma-separated list of hostnames or IPv4
+    addresses to include in the certificate's Subject Alternative Names.
+    Example: ``NOMON_TLS_EXTRA_HOSTS=desktop-0rkvlns-wsl,100.89.254.25``
+    """
+    from ipaddress import AddressValueError
+
+    from cryptography import x509 as _x509
+
+    entries = [
+        _x509.DNSName("localhost"),
+        _x509.IPAddress(IPv4Address("127.0.0.1")),
+    ]
+    extra = os.environ.get("NOMON_TLS_EXTRA_HOSTS", "")
+    for token in (t.strip() for t in extra.split(",") if t.strip()):
+        try:
+            entries.append(_x509.IPAddress(IPv4Address(token)))
+        except (AddressValueError, ValueError):
+            entries.append(_x509.DNSName(token))
+    return entries
+
+
 def create_self_signed_cert(cert_path: Path, key_path: Path) -> None:
     """Generate a self-signed certificate for HTTPS.
 
@@ -713,12 +741,7 @@ def create_self_signed_cert(cert_path: Path, key_path: Path) -> None:
         .not_valid_before(datetime.now(timezone.utc))
         .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365 * 10))
         .add_extension(
-            x509.SubjectAlternativeName(
-                [
-                    x509.DNSName("localhost"),
-                    x509.IPAddress(IPv4Address("127.0.0.1")),
-                ]
-            ),
+            x509.SubjectAlternativeName(_build_san_entries(IPv4Address)),
             critical=False,
         )
         .sign(private_key, hashes.SHA256(), default_backend())
@@ -739,6 +762,116 @@ def create_self_signed_cert(cert_path: Path, key_path: Path) -> None:
                 encryption_algorithm=serialization.NoEncryption(),
             )
         )
+
+
+def provision_tls_cert(cert_path: Path, key_path: Path) -> str:
+    """Provision TLS certificates, preferring Tailscale-issued certs.
+
+    Runs on every API startup:
+
+    1. **Existing cert still valid** (>7 days remaining) → reuse as-is.
+    2. **Tailscale available** → ``tailscale cert`` issues a Let's Encrypt-
+       backed certificate for the node's MagicDNS FQDN, trusted by all
+       major browsers and iOS with no manual trust setup.
+    3. **Fallback** → generate a self-signed certificate (browsers show a
+       security warning).
+
+    .. note::
+
+       All devices (dev machines, mobile, web, vehicles) are assumed to be
+       on the same Tailscale tailnet for now.  Public hosting for users
+       outside the tailnet is a future consideration — see ADR-001.
+
+    Parameters
+    ----------
+    cert_path : Path
+        Where the certificate PEM file should be written.
+    key_path : Path
+        Where the private key PEM file should be written.
+
+    Returns
+    -------
+    str
+        Certificate source: ``"existing"``, ``"tailscale"``, or
+        ``"self-signed"``.
+    """
+    # ── 1. Reuse existing cert if still valid ────────────────────────────
+    if cert_path.exists() and key_path.exists():
+        try:
+            from cryptography import x509
+            from cryptography.hazmat.backends import default_backend
+
+            with open(cert_path, "rb") as f:
+                cert = x509.load_pem_x509_certificate(f.read(), default_backend())
+            expiry = getattr(cert, "not_valid_after_utc", None)
+            if expiry is None:
+                expiry = cert.not_valid_after.replace(tzinfo=timezone.utc)
+            remaining = expiry - datetime.now(timezone.utc)
+            if remaining > timedelta(days=7):
+                logger.info("TLS cert valid for %d more days, reusing.", remaining.days)
+                return "existing"
+            logger.info("TLS cert expires in %d days, renewing.", remaining.days)
+        except Exception:
+            logger.debug("Could not check existing cert, will reprovision.")
+
+    # ── 2. Try Tailscale-issued cert ─────────────────────────────────────
+    try:
+        ts_status = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if ts_status.returncode == 0:
+            status = json.loads(ts_status.stdout)
+            fqdn = status.get("Self", {}).get("DNSName", "").rstrip(".")
+            if fqdn:
+                cert_path.parent.mkdir(parents=True, exist_ok=True)
+                ts_cert = subprocess.run(
+                    [
+                        "tailscale",
+                        "cert",
+                        "--cert-file",
+                        str(cert_path),
+                        "--key-file",
+                        str(key_path),
+                        fqdn,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if ts_cert.returncode == 0:
+                    logger.info(
+                        "Tailscale TLS cert provisioned for %s "
+                        "(Let's Encrypt-backed, browser-trusted).",
+                        fqdn,
+                    )
+                    return "tailscale"
+                logger.warning(
+                    "tailscale cert failed (exit %d): %s",
+                    ts_cert.returncode,
+                    ts_cert.stderr.strip(),
+                )
+    except FileNotFoundError:
+        logger.debug("Tailscale CLI not found.")
+    except subprocess.TimeoutExpired:
+        logger.debug("Tailscale CLI timed out.")
+    except Exception as exc:
+        logger.debug("Tailscale cert provisioning error: %s", exc)
+
+    # ── 3. Fallback to self-signed ───────────────────────────────────────
+    # Remove partial files from a failed Tailscale attempt before generating
+    for p in (cert_path, key_path):
+        if p.exists():
+            p.unlink()
+    create_self_signed_cert(cert_path, key_path)
+    logger.warning(
+        "Using self-signed TLS cert (browsers will show a warning). "
+        "To use trusted certs, enable HTTPS certificates in the Tailscale "
+        "admin console: https://login.tailscale.com/admin/dns"
+    )
+    return "self-signed"
 
 
 # ============================================================================
@@ -955,15 +1088,15 @@ def create_app() -> FastAPI:
         arcadedb_host = os.environ.get("ARCADEDB_HOST")
         if arcadedb_host:
             from nomothetic.db import DatabaseClient, DatabaseConfig
-            from nomothetic.fleet_store import GremlinFleetStore
-            from nomothetic.token_store import GremlinTokenStore
-            from nomothetic.user_store import GremlinUserStore
+            from nomothetic.fleet_store import SqlFleetStore
+            from nomothetic.token_store import SqlTokenStore
+            from nomothetic.user_store import SqlUserStore
 
             db_config = DatabaseConfig.from_env()
             db_client = DatabaseClient(db_config)
-            user_store = GremlinUserStore(db_client)
-            fleet_store = GremlinFleetStore(db_client)
-            token_store = GremlinTokenStore(db_client)
+            user_store = SqlUserStore(db_client)
+            fleet_store = SqlFleetStore(db_client)
+            token_store = SqlTokenStore(db_client)
             app.state.db_client = db_client
         else:
             from nomothetic.token_store import InMemoryTokenStore
@@ -2447,7 +2580,7 @@ class APIServer:
         if self.use_ssl:
             self.cert_file = self.cert_dir / "cert.pem"
             self.key_file = self.cert_dir / "key.pem"
-            create_self_signed_cert(self.cert_file, self.key_file)
+            provision_tls_cert(self.cert_file, self.key_file)
 
     def get_config(self) -> dict:
         """Get uvicorn configuration dictionary.

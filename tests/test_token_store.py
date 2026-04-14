@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nomothetic.token_store import GremlinTokenStore, InMemoryTokenStore
+from nomothetic.token_store import InMemoryTokenStore, SqlTokenStore
 
 # ============================================================================
 # InMemoryTokenStore
@@ -78,31 +78,30 @@ class TestInMemoryTokenStore:
 
 
 # ============================================================================
-# GremlinTokenStore
+# SqlTokenStore
 # ============================================================================
 
 
-class TestGremlinTokenStore:
+class TestSqlTokenStore:
     """Tests for the ArcadeDB-backed token store."""
 
     @pytest.fixture
     def mock_db(self):
         db = MagicMock()
-        db.execute_gremlin = AsyncMock()
+        db.execute_sql = AsyncMock()
         return db
 
     @pytest.fixture
     def store(self, mock_db):
-        return GremlinTokenStore(mock_db)
+        return SqlTokenStore(mock_db)
 
     @pytest.mark.asyncio
-    async def test_gremlin_store_and_retrieve(self, store, mock_db):
-        """store_token sends addV; get_email returns email from elementMap."""
-        mock_db.execute_gremlin.side_effect = [
+    async def test_sql_store_and_retrieve(self, store, mock_db):
+        """store_token sends INSERT; get_email returns email from SELECT."""
+        mock_db.execute_sql.side_effect = [
             [],  # store_token result
             [
                 {
-                    "token_hash": "hash1",
                     "email": "alice@example.com",
                     "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
                 }
@@ -112,54 +111,53 @@ class TestGremlinTokenStore:
         await store.store_token("hash1", "alice@example.com", expires)
         email = await store.get_email("hash1")
         assert email == "alice@example.com"
-        # Verify addV was called
-        first_call = mock_db.execute_gremlin.call_args_list[0][0][0]
-        assert "addV('RefreshToken')" in first_call
+        first_call = mock_db.execute_sql.call_args_list[0][0][0]
+        assert "INSERT INTO RefreshToken" in first_call
 
     @pytest.mark.asyncio
-    async def test_gremlin_get_email_not_found(self, store, mock_db):
-        """get_email returns None when no vertex matches."""
-        mock_db.execute_gremlin.return_value = []
+    async def test_sql_get_email_not_found(self, store, mock_db):
+        """get_email returns None when no row matches."""
+        mock_db.execute_sql.return_value = []
         assert await store.get_email("unknown_hash") is None
 
     @pytest.mark.asyncio
-    async def test_gremlin_delete_token(self, store, mock_db):
-        """delete_token returns True and sends drop query."""
-        mock_db.execute_gremlin.side_effect = [
-            [1],  # count check
-            [],  # drop result
+    async def test_sql_delete_token(self, store, mock_db):
+        """delete_token returns True and sends DELETE query."""
+        mock_db.execute_sql.side_effect = [
+            [{"count": 1}],  # count check
+            [],  # DELETE result
         ]
         assert await store.delete_token("hash1") is True
-        assert mock_db.execute_gremlin.call_count == 2
-        drop_query = mock_db.execute_gremlin.call_args_list[1][0][0]
-        assert "drop()" in drop_query
+        assert mock_db.execute_sql.call_count == 2
+        delete_query = mock_db.execute_sql.call_args_list[1][0][0]
+        assert "DELETE FROM RefreshToken" in delete_query
 
     @pytest.mark.asyncio
-    async def test_gremlin_delete_token_not_found(self, store, mock_db):
+    async def test_sql_delete_token_not_found(self, store, mock_db):
         """delete_token returns False when count is 0."""
-        mock_db.execute_gremlin.return_value = [0]
+        mock_db.execute_sql.return_value = [{"count": 0}]
         assert await store.delete_token("nonexistent") is False
 
     @pytest.mark.asyncio
-    async def test_gremlin_delete_tokens_for_user(self, store, mock_db):
-        """delete_tokens_for_user sends count + drop queries."""
-        mock_db.execute_gremlin.side_effect = [
-            [3],  # count
-            [],  # drop
+    async def test_sql_delete_tokens_for_user(self, store, mock_db):
+        """delete_tokens_for_user sends count + DELETE queries."""
+        mock_db.execute_sql.side_effect = [
+            [{"count": 3}],  # count
+            [],  # DELETE
         ]
         count = await store.delete_tokens_for_user("alice@example.com")
         assert count == 3
-        assert mock_db.execute_gremlin.call_count == 2
+        assert mock_db.execute_sql.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_gremlin_cleanup_expired(self, store, mock_db):
-        """cleanup_expired sends count + drop for expired tokens."""
-        mock_db.execute_gremlin.side_effect = [
-            [5],  # count
-            [],  # drop
+    async def test_sql_cleanup_expired(self, store, mock_db):
+        """cleanup_expired sends count + DELETE for expired tokens."""
+        mock_db.execute_sql.side_effect = [
+            [{"count": 5}],  # count
+            [],  # DELETE
         ]
         count = await store.cleanup_expired()
         assert count == 5
-        assert mock_db.execute_gremlin.call_count == 2
-        count_query = mock_db.execute_gremlin.call_args_list[0][0][0]
-        assert "lte(" in count_query
+        assert mock_db.execute_sql.call_count == 2
+        count_query = mock_db.execute_sql.call_args_list[0][0][0]
+        assert "<=" in count_query

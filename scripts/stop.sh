@@ -14,6 +14,17 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# ─── Load .env if present ────────────────────────────────────────────────────
+if [[ -f "${REPO_DIR}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${REPO_DIR}/.env"
+  set +a
+fi
+
 STREAM_PID_FILE="/tmp/nomothetic-stream.pid"
 API_PID_FILE="/tmp/nomothetic-api.pid"
 
