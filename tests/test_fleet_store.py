@@ -5,9 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nomothetic.fleet_store import (
-    GremlinFleetStore,
     InMemoryFleetStore,
-    _sanitize_gremlin_value,
+    SqlFleetStore,
 )
 
 # ============================================================================
@@ -87,80 +86,55 @@ class TestInMemoryFleetStore:
 
 
 # ============================================================================
-# Sanitization
+# SqlFleetStore
 # ============================================================================
 
 
-def test_sanitize_clean_vin():
-    """Clean VINs pass through unchanged."""
-    assert _sanitize_gremlin_value("NOMON-001_alpha") == "NOMON-001_alpha"
-
-
-def test_sanitize_quote_rejected():
-    """Values with single quotes are rejected."""
-    with pytest.raises(ValueError, match="Unsafe"):
-        _sanitize_gremlin_value("VIN'inject")
-
-
-def test_sanitize_rejects_null_bytes():
-    """Values with null bytes are rejected."""
-    with pytest.raises(ValueError, match="Control characters"):
-        _sanitize_gremlin_value("hello\x00world")
-
-
-def test_sanitize_rejects_control_chars():
-    """Values with control characters are rejected."""
-    with pytest.raises(ValueError, match="Control characters"):
-        _sanitize_gremlin_value("hello\x01world")
-
-
-# ============================================================================
-# GremlinFleetStore
-# ============================================================================
-
-
-class TestGremlinFleetStore:
+class TestSqlFleetStore:
     """Tests for the ArcadeDB-backed fleet store."""
 
     @pytest.fixture
     def mock_db(self):
         db = MagicMock()
-        db.execute_gremlin = AsyncMock()
+        db.execute_sql = AsyncMock()
         return db
 
     @pytest.fixture
     def store(self, mock_db):
-        return GremlinFleetStore(mock_db)
+        return SqlFleetStore(mock_db)
 
     @pytest.mark.asyncio
     async def test_get_devices(self, store, mock_db):
-        """get_devices returns DeviceItems from Gremlin results."""
-        mock_db.execute_gremlin.return_value = [
+        """get_devices returns DeviceItems from SQL results."""
+        mock_db.execute_sql.return_value = [
             {
-                "e": {"registered_at": "2026-01-01T00:00:00+00:00", "role": "owner"},
-                "v": {"vin": "N001", "model": "explorer-v1"},
+                "vin": "N001",
+                "model": "explorer-v1",
+                "registered_at": "2026-01-01T00:00:00+00:00",
+                "role": "owner",
             }
         ]
         devices = await store.get_devices("alice@example.com")
         assert len(devices) == 1
         assert devices[0].vin == "N001"
-        query = mock_db.execute_gremlin.call_args[0][0]
-        assert "hasLabel('User')" in query
-        assert "OwnsDevice" in query
+        query = mock_db.execute_sql.call_args[0][0]
+        assert "FROM OwnsDevice" in query
 
     @pytest.mark.asyncio
     async def test_get_devices_empty(self, store, mock_db):
         """get_devices returns empty list when no edges exist."""
-        mock_db.execute_gremlin.return_value = []
+        mock_db.execute_sql.return_value = []
         assert await store.get_devices("nobody@example.com") == []
 
     @pytest.mark.asyncio
     async def test_get_device_found(self, store, mock_db):
         """get_device returns a DeviceItem when the edge exists."""
-        mock_db.execute_gremlin.return_value = [
+        mock_db.execute_sql.return_value = [
             {
-                "e": {"registered_at": "2026-01-01T00:00:00+00:00", "role": "owner"},
-                "v": {"vin": "N001", "model": "explorer-v1"},
+                "vin": "N001",
+                "model": "explorer-v1",
+                "registered_at": "2026-01-01T00:00:00+00:00",
+                "role": "owner",
             }
         ]
         item = await store.get_device("alice@example.com", "N001")
@@ -170,30 +144,49 @@ class TestGremlinFleetStore:
     @pytest.mark.asyncio
     async def test_get_device_not_found(self, store, mock_db):
         """get_device returns None when no matching edge exists."""
-        mock_db.execute_gremlin.return_value = []
+        mock_db.execute_sql.return_value = []
         assert await store.get_device("alice@example.com", "NOEXIST") is None
 
     @pytest.mark.asyncio
     async def test_register_device(self, store, mock_db):
-        """register_device creates Vehicle vertex and OwnsDevice edge."""
-        # get_device check (duplicate) → not found, then vehicle upsert, then edge create
-        mock_db.execute_gremlin.side_effect = [
+        """register_device creates Vehicle record and OwnsDevice edge."""
+        # get_device check → not found, vehicle count → 0, INSERT vehicle, CREATE EDGE
+        mock_db.execute_sql.side_effect = [
             [],  # get_device → not found
-            [{"vin": "N001"}],  # create/get vehicle
-            [],  # create edge
+            [{"count": 0}],  # vehicle count
+            [],  # INSERT INTO Vehicle
+            [],  # CREATE EDGE
         ]
         item = await store.register_device("alice@example.com", "N001", "explorer-v1")
         assert item.vin == "N001"
         assert item.role == "owner"
-        assert mock_db.execute_gremlin.call_count == 3
+        assert mock_db.execute_sql.call_count == 4
+        insert_query = mock_db.execute_sql.call_args_list[2][0][0]
+        assert "INSERT INTO Vehicle" in insert_query
+        edge_query = mock_db.execute_sql.call_args_list[3][0][0]
+        assert "CREATE EDGE" in edge_query
+
+    @pytest.mark.asyncio
+    async def test_register_device_existing_vehicle(self, store, mock_db):
+        """register_device skips vehicle INSERT when vehicle already exists."""
+        mock_db.execute_sql.side_effect = [
+            [],  # get_device → not found
+            [{"count": 1}],  # vehicle already exists
+            [],  # CREATE EDGE
+        ]
+        item = await store.register_device("alice@example.com", "N001", "explorer-v1")
+        assert item.vin == "N001"
+        assert mock_db.execute_sql.call_count == 3
 
     @pytest.mark.asyncio
     async def test_register_device_duplicate(self, store, mock_db):
         """register_device raises ValueError when device already owned."""
-        mock_db.execute_gremlin.return_value = [
+        mock_db.execute_sql.return_value = [
             {
-                "e": {"registered_at": "2026-01-01T00:00:00+00:00", "role": "owner"},
-                "v": {"vin": "DUP001", "model": "explorer-v1"},
+                "vin": "DUP001",
+                "model": "explorer-v1",
+                "registered_at": "2026-01-01T00:00:00+00:00",
+                "role": "owner",
             }
         ]
         with pytest.raises(ValueError, match="already registered"):
@@ -201,40 +194,36 @@ class TestGremlinFleetStore:
 
     @pytest.mark.asyncio
     async def test_remove_device(self, store, mock_db):
-        """remove_device drops the OwnsDevice edge."""
-        # First call: get_device (exists check)
-        # Second call: drop edge
-        mock_db.execute_gremlin.side_effect = [
+        """remove_device deletes the OwnsDevice edge."""
+        mock_db.execute_sql.side_effect = [
             [
                 {
-                    "e": {"registered_at": "2026-01-01T00:00:00+00:00", "role": "owner"},
-                    "v": {"vin": "N001", "model": "explorer-v1"},
+                    "vin": "N001",
+                    "model": "explorer-v1",
+                    "registered_at": "2026-01-01T00:00:00+00:00",
+                    "role": "owner",
                 }
-            ],
-            [],  # drop result
+            ],  # get_device exists
+            [],  # DELETE EDGE result
         ]
         assert await store.remove_device("alice@example.com", "N001") is True
+        delete_query = mock_db.execute_sql.call_args_list[1][0][0]
+        assert "DELETE EDGE" in delete_query
 
     @pytest.mark.asyncio
     async def test_remove_device_not_found(self, store, mock_db):
         """remove_device returns False when edge doesn't exist."""
-        mock_db.execute_gremlin.return_value = []
+        mock_db.execute_sql.return_value = []
         assert await store.remove_device("alice@example.com", "NOEXIST") is False
 
     @pytest.mark.asyncio
     async def test_device_exists_true(self, store, mock_db):
         """device_exists returns True when count > 0."""
-        mock_db.execute_gremlin.return_value = [1]
+        mock_db.execute_sql.return_value = [{"count": 1}]
         assert await store.device_exists("N001") is True
 
     @pytest.mark.asyncio
     async def test_device_exists_false(self, store, mock_db):
         """device_exists returns False when count is 0."""
-        mock_db.execute_gremlin.return_value = [0]
+        mock_db.execute_sql.return_value = [{"count": 0}]
         assert await store.device_exists("NOEXIST") is False
-
-    @pytest.mark.asyncio
-    async def test_register_unsafe_vin_rejected(self, store, mock_db):
-        """register_device rejects VINs with unsafe characters."""
-        with pytest.raises(ValueError, match="Unsafe"):
-            await store.register_device("alice@example.com", "VIN'bad", "model")

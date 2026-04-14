@@ -1,8 +1,14 @@
 # ADR-012: ArcadeDB HTTP Gremlin API for Persistence
 
-**Status:** Accepted  
+**Status:** Superseded  
 **Date:** 2026-04-11  
 **Deciders:** Perceptua  
+
+> **Note (2026-04-13):** This ADR is superseded. The stores now use
+> `execute_sql()` with named parameters instead of Gremlin traversals.
+> The `_sanitize_gremlin_value()` helper and `execute_gremlin()` code path
+> have been removed. Parameterized SQL eliminates the injection risks
+> discussed below.
 
 ---
 

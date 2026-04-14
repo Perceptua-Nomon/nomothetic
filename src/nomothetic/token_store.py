@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING, Any, Optional, runtime_checkable
 
 from typing_extensions import Protocol
 
-from nomothetic.gremlin_utils import sanitize_gremlin_value as _sanitize_gremlin_value
-
 if TYPE_CHECKING:
     from nomothetic.db import DatabaseClient
 
@@ -97,70 +95,72 @@ class InMemoryTokenStore:
         return len(expired)
 
 
-class GremlinTokenStore:
-    """ArcadeDB-backed token store using Gremlin traversals."""
+class SqlTokenStore:
+    """ArcadeDB-backed token store using parameterized SQL queries."""
 
     def __init__(self, db: "DatabaseClient") -> None:
         self._db = db
 
     async def store_token(self, token_hash: str, email: str, expires_at: datetime) -> None:
-        safe_hash = _sanitize_gremlin_value(token_hash)
-        safe_email = _sanitize_gremlin_value(email)
-        safe_expires = _sanitize_gremlin_value(expires_at.isoformat())
-        safe_created = _sanitize_gremlin_value(datetime.now(timezone.utc).isoformat())
+        """Persist a new refresh token."""
         query = (
-            f"g.addV('RefreshToken')"
-            f".property('token_hash', '{safe_hash}')"
-            f".property('email', '{safe_email}')"
-            f".property('created_at', '{safe_created}')"
-            f".property('expires_at', '{safe_expires}')"
+            "INSERT INTO RefreshToken SET token_hash = :token_hash,"
+            " email = :email, created_at = :created_at, expires_at = :expires_at"
         )
-        await self._db.execute_gremlin(query)
+        await self._db.execute_sql(
+            query,
+            {
+                "token_hash": token_hash,
+                "email": email,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+        )
 
     async def get_email(self, token_hash: str) -> Optional[str]:
-        safe_hash = _sanitize_gremlin_value(token_hash)
-        now = datetime.now(timezone.utc).isoformat()
-        # Look up by hash; check expiry in application code for portability
-        query = f"g.V().hasLabel('RefreshToken').has('token_hash', '{safe_hash}').elementMap()"
-        rows = await self._db.execute_gremlin(query)
+        """Look up the owning email for a token hash.
+
+        Returns None if the token is not found or expired.
+        """
+        query = "SELECT email, expires_at FROM RefreshToken WHERE token_hash = :token_hash"
+        rows = await self._db.execute_sql(query, {"token_hash": token_hash})
         if not rows:
             return None
         row = rows[0]
         expires_at_str = row.get("expires_at", "")
+        now = datetime.now(timezone.utc).isoformat()
         if expires_at_str and expires_at_str <= now:
-            # Expired — clean up
             await self.delete_token(token_hash)
             return None
         return row.get("email")
 
     async def delete_token(self, token_hash: str) -> bool:
-        safe_hash = _sanitize_gremlin_value(token_hash)
-        check = f"g.V().hasLabel('RefreshToken').has('token_hash', '{safe_hash}').count()"
-        rows = await self._db.execute_gremlin(check)
-        if not rows or rows[0] == 0:
+        """Delete a single token. Returns True if it existed."""
+        check = "SELECT count(*) as count FROM RefreshToken WHERE token_hash = :token_hash"
+        rows = await self._db.execute_sql(check, {"token_hash": token_hash})
+        if _coerce_count(rows) == 0:
             return False
-        drop = f"g.V().hasLabel('RefreshToken').has('token_hash', '{safe_hash}').drop().iterate()"
-        await self._db.execute_gremlin(drop)
+        delete = "DELETE FROM RefreshToken WHERE token_hash = :token_hash"
+        await self._db.execute_sql(delete, {"token_hash": token_hash})
         return True
 
     async def delete_tokens_for_user(self, email: str) -> int:
-        safe_email = _sanitize_gremlin_value(email)
-        count_q = f"g.V().hasLabel('RefreshToken').has('email', '{safe_email}').count()"
-        rows = await self._db.execute_gremlin(count_q)
+        """Delete all tokens for a user. Returns count deleted."""
+        count_q = "SELECT count(*) as count FROM RefreshToken WHERE email = :email"
+        rows = await self._db.execute_sql(count_q, {"email": email})
         count = _coerce_count(rows)
         if count > 0:
-            drop = f"g.V().hasLabel('RefreshToken').has('email', '{safe_email}').drop().iterate()"
-            await self._db.execute_gremlin(drop)
+            delete = "DELETE FROM RefreshToken WHERE email = :email"
+            await self._db.execute_sql(delete, {"email": email})
         return count
 
     async def cleanup_expired(self) -> int:
-        now = _sanitize_gremlin_value(datetime.now(timezone.utc).isoformat())
-        count_q = f"g.V().hasLabel('RefreshToken').has('expires_at', lte('{now}')).count()"
-        rows = await self._db.execute_gremlin(count_q)
+        """Remove all expired tokens. Returns count removed."""
+        now = datetime.now(timezone.utc).isoformat()
+        count_q = "SELECT count(*) as count FROM RefreshToken WHERE expires_at <= :now"
+        rows = await self._db.execute_sql(count_q, {"now": now})
         count = _coerce_count(rows)
         if count > 0:
-            drop = (
-                f"g.V().hasLabel('RefreshToken').has('expires_at', lte('{now}')).drop().iterate()"
-            )
-            await self._db.execute_gremlin(drop)
+            delete = "DELETE FROM RefreshToken WHERE expires_at <= :now"
+            await self._db.execute_sql(delete, {"now": now})
         return count

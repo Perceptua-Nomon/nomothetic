@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, Optional, runtime_checkable
 from typing_extensions import Protocol
 
 from nomothetic.auth import UserRecord
-from nomothetic.gremlin_utils import sanitize_gremlin_value as _sanitize_gremlin_value
 
 if TYPE_CHECKING:
     from nomothetic.db import DatabaseClient
@@ -186,12 +185,12 @@ class InMemoryUserStore:
 
 
 # ---------------------------------------------------------------------------
-# Gremlin implementation
+# SQL implementation
 # ---------------------------------------------------------------------------
 
 
-class GremlinUserStore:
-    """ArcadeDB-backed user store using Gremlin traversals.
+class SqlUserStore:
+    """ArcadeDB-backed user store using parameterized SQL queries.
 
     Parameters
     ----------
@@ -203,10 +202,12 @@ class GremlinUserStore:
         self._db = db
 
     async def get_user(self, email: str) -> Optional[UserRecord]:
-        """Fetch a user vertex by email."""
-        safe_email = _sanitize_gremlin_value(email)
-        query = f"g.V().hasLabel('User').has('email', '{safe_email}').elementMap()"
-        rows = await self._db.execute_gremlin(query)
+        """Fetch a user by email."""
+        query = (
+            "SELECT email, display_name, password_hash, created_at,"
+            " last_login_at, active FROM User WHERE email = :email"
+        )
+        rows = await self._db.execute_sql(query, {"email": email})
         if not rows:
             return None
         row = rows[0]
@@ -226,31 +227,28 @@ class GremlinUserStore:
         password_hash: str,
         created_at: str,
     ) -> UserRecord:
-        """Insert a new User vertex via Gremlin.
+        """Insert a new User record via parameterized SQL.
 
         Raises
         ------
         ValueError
             If the email already exists.
         """
-        safe_email = _sanitize_gremlin_value(email)
-        safe_name = _sanitize_gremlin_value(display_name)
-        safe_hash = _sanitize_gremlin_value(password_hash)
-        safe_created = _sanitize_gremlin_value(created_at)
-
         if await self.user_exists(email):
             raise ValueError(f"Email already registered: {email}")
 
         query = (
-            f"g.addV('User')"
-            f".property('email', '{safe_email}')"
-            f".property('display_name', '{safe_name}')"
-            f".property('password_hash', '{safe_hash}')"
-            f".property('created_at', '{safe_created}')"
-            f".property('active', true)"
-            f".elementMap()"
+            "INSERT INTO User SET email = :email, display_name = :display_name,"
+            " password_hash = :password_hash, created_at = sysdate(), active = true"
         )
-        await self._db.execute_gremlin(query)
+        await self._db.execute_sql(
+            query,
+            {
+                "email": email,
+                "display_name": display_name,
+                "password_hash": password_hash,
+            },
+        )
         return UserRecord(
             email=email,
             display_name=display_name,
@@ -260,36 +258,27 @@ class GremlinUserStore:
         )
 
     async def update_user(self, email: str, **fields: str) -> Optional[UserRecord]:
-        """Update properties on an existing User vertex."""
+        """Update properties on an existing User record."""
         for key in fields:
             if key not in _ALLOWED_USER_UPDATE_FIELDS:
                 raise ValueError(f"Cannot update field: {key!r}")
-        safe_email = _sanitize_gremlin_value(email)
-        prop_chain = ""
-        for key, value in fields.items():
-            safe_val = _sanitize_gremlin_value(str(value))
-            prop_chain += f".property('{key}', '{safe_val}')"
 
-        if not prop_chain:
+        if not fields:
             return await self.get_user(email)
 
-        query = f"g.V().hasLabel('User').has('email', '{safe_email}')" f"{prop_chain}.elementMap()"
-        rows = await self._db.execute_gremlin(query)
-        if not rows:
-            return None
-        row = rows[0]
-        return UserRecord(
-            email=row["email"],
-            display_name=row["display_name"],
-            password_hash=row["password_hash"],
-            created_at=row["created_at"],
-            last_login_at=row.get("last_login_at"),
-            active=row.get("active", True),
-        )
+        set_parts: list[str] = []
+        params: dict[str, Any] = {"email": email}
+        for key, value in fields.items():
+            set_parts.append(f"{key} = :{key}")
+            params[key] = value
+
+        set_clause = ", ".join(set_parts)
+        query = f"UPDATE User SET {set_clause} WHERE email = :email"
+        await self._db.execute_sql(query, params)
+        return await self.get_user(email)
 
     async def user_exists(self, email: str) -> bool:
-        """Return whether a User vertex with the given email exists."""
-        safe_email = _sanitize_gremlin_value(email)
-        query = f"g.V().hasLabel('User').has('email', '{safe_email}').count()"
-        rows = await self._db.execute_gremlin(query)
+        """Return whether a User with the given email exists."""
+        query = "SELECT count(*) as count FROM User WHERE email = :email"
+        rows = await self._db.execute_sql(query, {"email": email})
         return _coerce_count(rows) > 0

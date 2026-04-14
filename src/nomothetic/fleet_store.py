@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING, Any, Optional, runtime_checkable
 from pydantic import BaseModel
 from typing_extensions import Protocol
 
-from nomothetic.gremlin_utils import sanitize_gremlin_value as _sanitize_gremlin_value
-
 if TYPE_CHECKING:
     from nomothetic.db import DatabaseClient
 
@@ -205,12 +203,12 @@ class InMemoryFleetStore:
 
 
 # ---------------------------------------------------------------------------
-# Gremlin implementation
+# SQL implementation
 # ---------------------------------------------------------------------------
 
 
-class GremlinFleetStore:
-    """ArcadeDB-backed fleet store using Gremlin traversals.
+class SqlFleetStore:
+    """ArcadeDB-backed fleet store using parameterized SQL queries.
 
     Parameters
     ----------
@@ -223,95 +221,78 @@ class GremlinFleetStore:
 
     async def get_devices(self, owner_email: str) -> list[DeviceItem]:
         """List devices owned by the user via OwnsDevice edges."""
-        safe_email = _sanitize_gremlin_value(owner_email)
         query = (
-            f"g.V().hasLabel('User').has('email', '{safe_email}')"
-            f".outE('OwnsDevice').as('e')"
-            f".inV().hasLabel('Vehicle').as('v')"
-            f".select('e', 'v').by(elementMap())"
+            "SELECT in.vin as vin, in.model as model,"
+            " in.firmware_version as firmware_version,"
+            " in.last_seen_at as last_seen_at, registered_at, role"
+            " FROM OwnsDevice WHERE out.email = :email"
         )
-        rows = await self._db.execute_gremlin(query)
+        rows = await self._db.execute_sql(query, {"email": owner_email})
         items: list[DeviceItem] = []
         for row in rows:
-            edge = row.get("e", {})
-            vehicle = row.get("v", {})
             items.append(
                 DeviceItem(
-                    vin=vehicle.get("vin", ""),
-                    model=vehicle.get("model", ""),
-                    registered_at=edge.get("registered_at", ""),
-                    role=edge.get("role", "owner"),
-                    firmware_version=vehicle.get("firmware_version"),
-                    last_seen_at=vehicle.get("last_seen_at"),
+                    vin=row.get("vin", ""),
+                    model=row.get("model", ""),
+                    registered_at=row.get("registered_at", ""),
+                    role=row.get("role", "owner"),
+                    firmware_version=row.get("firmware_version"),
+                    last_seen_at=row.get("last_seen_at"),
                 )
             )
         return items
 
     async def get_device(self, owner_email: str, vin: str) -> Optional[DeviceItem]:
         """Fetch a single device by VIN scoped to the owner."""
-        safe_email = _sanitize_gremlin_value(owner_email)
-        safe_vin = _sanitize_gremlin_value(vin)
         query = (
-            f"g.V().hasLabel('User').has('email', '{safe_email}')"
-            f".outE('OwnsDevice').as('e')"
-            f".inV().hasLabel('Vehicle').has('vin', '{safe_vin}').as('v')"
-            f".select('e', 'v').by(elementMap())"
+            "SELECT in.vin as vin, in.model as model,"
+            " in.firmware_version as firmware_version,"
+            " in.last_seen_at as last_seen_at, registered_at, role"
+            " FROM OwnsDevice WHERE out.email = :email AND in.vin = :vin"
         )
-        rows = await self._db.execute_gremlin(query)
+        rows = await self._db.execute_sql(query, {"email": owner_email, "vin": vin})
         if not rows:
             return None
-        edge = rows[0].get("e", {})
-        vehicle = rows[0].get("v", {})
+        row = rows[0]
         return DeviceItem(
-            vin=vehicle.get("vin", ""),
-            model=vehicle.get("model", ""),
-            registered_at=edge.get("registered_at", ""),
-            role=edge.get("role", "owner"),
-            firmware_version=vehicle.get("firmware_version"),
-            last_seen_at=vehicle.get("last_seen_at"),
+            vin=row.get("vin", ""),
+            model=row.get("model", ""),
+            registered_at=row.get("registered_at", ""),
+            role=row.get("role", "owner"),
+            firmware_version=row.get("firmware_version"),
+            last_seen_at=row.get("last_seen_at"),
         )
 
     async def register_device(self, owner_email: str, vin: str, model: str) -> DeviceItem:
-        """Create a Vehicle vertex and OwnsDevice edge.
+        """Create a Vehicle record and OwnsDevice edge.
 
         Raises
         ------
         ValueError
             If the device is already registered for this owner.
         """
-        safe_email = _sanitize_gremlin_value(owner_email)
-        safe_vin = _sanitize_gremlin_value(vin)
-        safe_model = _sanitize_gremlin_value(model)
-
-        # Check for duplicate
         existing = await self.get_device(owner_email, vin)
         if existing is not None:
             raise ValueError(f"Device {vin} already registered")
 
         now = datetime.now(timezone.utc).isoformat()
-        safe_now = _sanitize_gremlin_value(now)
 
-        # Create or reuse Vehicle vertex
-        vehicle_query = (
-            f"g.V().hasLabel('Vehicle').has('vin', '{safe_vin}')"
-            f".fold().coalesce("
-            f"unfold(),"
-            f"addV('Vehicle').property('vin', '{safe_vin}')"
-            f".property('model', '{safe_model}')"
-            f".property('registered_at', '{safe_now}')"
-            f").elementMap()"
-        )
-        await self._db.execute_gremlin(vehicle_query)
+        # Create Vehicle if it doesn't exist
+        count_q = "SELECT count(*) as count FROM Vehicle WHERE vin = :vin"
+        rows = await self._db.execute_sql(count_q, {"vin": vin})
+        if _coerce_count(rows) == 0:
+            insert_v = (
+                "INSERT INTO Vehicle SET vin = :vin, model = :model, registered_at = sysdate()"
+            )
+            await self._db.execute_sql(insert_v, {"vin": vin, "model": model})
 
         # Create OwnsDevice edge
-        edge_query = (
-            f"g.V().hasLabel('User').has('email', '{safe_email}').as('u')"
-            f".V().hasLabel('Vehicle').has('vin', '{safe_vin}').as('v')"
-            f".addE('OwnsDevice').from('u').to('v')"
-            f".property('role', 'owner')"
-            f".property('registered_at', '{safe_now}')"
+        edge_q = (
+            "CREATE EDGE OwnsDevice FROM (SELECT FROM User WHERE email = :email)"
+            " TO (SELECT FROM Vehicle WHERE vin = :vin)"
+            " SET role = 'owner', registered_at = sysdate()"
         )
-        await self._db.execute_gremlin(edge_query)
+        await self._db.execute_sql(edge_q, {"email": owner_email, "vin": vin})
 
         return DeviceItem(
             vin=vin,
@@ -321,25 +302,16 @@ class GremlinFleetStore:
         )
 
     async def remove_device(self, owner_email: str, vin: str) -> bool:
-        """Remove the OwnsDevice edge (does not delete the Vehicle vertex)."""
-        safe_email = _sanitize_gremlin_value(owner_email)
-        safe_vin = _sanitize_gremlin_value(vin)
-        query = (
-            f"g.V().hasLabel('User').has('email', '{safe_email}')"
-            f".outE('OwnsDevice')"
-            f".where(inV().has('vin', '{safe_vin}'))"
-            f".drop().iterate()"
-        )
-        # Check existence first
+        """Remove the OwnsDevice edge (does not delete the Vehicle record)."""
         existing = await self.get_device(owner_email, vin)
         if existing is None:
             return False
-        await self._db.execute_gremlin(query)
+        query = "DELETE EDGE OwnsDevice WHERE out.email = :email AND in.vin = :vin"
+        await self._db.execute_sql(query, {"email": owner_email, "vin": vin})
         return True
 
     async def device_exists(self, vin: str) -> bool:
-        """Check whether a Vehicle vertex with this VIN exists."""
-        safe_vin = _sanitize_gremlin_value(vin)
-        query = f"g.V().hasLabel('Vehicle').has('vin', '{safe_vin}').count()"
-        rows = await self._db.execute_gremlin(query)
+        """Check whether a Vehicle with this VIN exists."""
+        query = "SELECT count(*) as count FROM Vehicle WHERE vin = :vin"
+        rows = await self._db.execute_sql(query, {"vin": vin})
         return _coerce_count(rows) > 0
