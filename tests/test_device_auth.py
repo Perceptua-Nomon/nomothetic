@@ -17,7 +17,11 @@ from nomothetic.api import create_app
 @pytest.fixture
 def device_auth_client():
     """Test client with device auth enabled (default)."""
-    with patch.dict(os.environ, {"NOMON_DEVICE_AUTH": "true"}, clear=False):
+    with patch.dict(
+        os.environ,
+        {"NOMON_DEVICE_AUTH": "true", "NOMON_API_MODE": "device"},
+        clear=False,
+    ):
         app = create_app()
         client = TestClient(app)
         yield client, app
@@ -26,7 +30,11 @@ def device_auth_client():
 @pytest.fixture
 def device_no_auth_client():
     """Test client with device auth disabled."""
-    with patch.dict(os.environ, {"NOMON_DEVICE_AUTH": "false"}, clear=False):
+    with patch.dict(
+        os.environ,
+        {"NOMON_DEVICE_AUTH": "false", "NOMON_API_MODE": "device"},
+        clear=False,
+    ):
         app = create_app()
         client = TestClient(app)
         yield client, app

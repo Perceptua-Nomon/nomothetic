@@ -8,6 +8,12 @@
 This document is the interface contract between the two processes. Both sides
 must implement this schema exactly; changes require coordinated releases.
 
+> **BLE note:** The nomotactic mobile app can also communicate directly with
+> nomopractic via BLE GATT using a compact binary protocol (see nomopractic
+> ADR-002). BLE commands bypass nomothetic entirely — they are decoded by
+> `ble/bridge.rs` and dispatched through the same `Handler` as IPC commands.
+> This NDJSON schema applies only to the Unix socket path.
+
 ---
 
 ## Transport

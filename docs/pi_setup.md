@@ -18,6 +18,24 @@ and installing `nomothetic` on the Raspberry Pi.
   curl -LsSf https://astral.sh/uv/install.sh | sh
   ```
 - **Rust toolchain** — install with `rustup` (see [Installing Rust on the Pi](#installing-rust-on-the-pi) below)
+- **BlueZ** — Bluetooth stack for BLE GATT server (usually pre-installed on
+  Raspberry Pi OS). Required if BLE is enabled in nomopractic:
+  ```bash
+  # Verify BlueZ is installed
+  bluetoothctl --version
+
+  # If not installed:
+  sudo apt install -y bluez
+
+  # Enable and start the Bluetooth service
+  sudo systemctl enable --now bluetooth
+
+  # Verify the controller is powered on
+  bluetoothctl show | grep Powered
+  # → Powered: yes
+  ```
+  **Note:** On Pi Zero 2W, WiFi and BLE share the BCM43436s antenna.
+  Simultaneous WiFi + BLE is supported but may reduce range for both.
 - **Both repos cloned**: `Perceptua-Nomon/nomothetic` and `Perceptua-Nomon/nomopractic`
 
 ### Software — on your dev machine (optional, for cross-compilation)
@@ -358,6 +376,62 @@ Run the integration test suite (no hardware needed):
 cd nomopractic/
 cargo test
 ```
+
+---
+
+## 8 — BLE Pairing (Optional)
+
+BLE pairing allows the nomotactic mobile app to pair with the robot without
+an existing WiFi connection. The app writes the pairing secret to the
+nomopractic BLE GATT server, which verifies it and issues a JWT. That JWT
+is then used for subsequent HTTPS requests once WiFi is configured.
+
+> **Note:** BLE and WiFi share the BCM43436s antenna on Pi Zero 2W.
+> Simultaneous operation is supported but may reduce range for both.
+
+### How it works
+
+1. nomothetic generates a pairing secret at startup and writes it to
+   `/var/lib/nomon/pairing_secret` (configurable via `NOMON_PAIRING_SECRET_PATH`).
+2. The secret is also displayed in the startup log for manual entry if needed.
+3. nomopractic reads the shared file and uses it to verify BLE pairing requests.
+4. On successful BLE pairing, nomopractic issues a JWT that is valid for HTTPS.
+
+### Pairing secret file
+
+| Property | Value |
+|----------|-------|
+| Path | `/var/lib/nomon/pairing_secret` (default) |
+| Mode | `0640` (`rw-r-----`) |
+| Owner | `nomon:nomon` |
+| Env override | `NOMON_PAIRING_SECRET_PATH` |
+
+The systemd service (`nomothetic-api.service`) automatically creates
+`/var/lib/nomon/` on startup.
+
+### Verify BLE is working
+
+```bash
+# Check BlueZ is running
+sudo systemctl status bluetooth
+
+# Check the controller is powered on
+bluetoothctl show | grep Powered
+# → Powered: yes
+
+# Verify the pairing secret file exists
+ls -la /var/lib/nomon/pairing_secret
+```
+
+### Troubleshooting BLE
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| BLE not advertising | BlueZ service not running | `sudo systemctl start bluetooth` |
+| `Powered: no` in bluetoothctl | Bluetooth disabled in firmware | Add `dtoverlay=disable-bt` is absent from `/boot/config.txt`; reboot |
+| Pairing secret file missing | nomothetic hasn't started or `/var/lib/nomon/` doesn't exist | Start nomothetic; verify directory exists |
+| BLE pairing fails | Secret mismatch or consumed | Restart nomothetic to regenerate the secret |
+| Weak BLE signal | Antenna shared with WiFi | Move app closer to the Pi; reduce WiFi traffic |
 
 ---
 
