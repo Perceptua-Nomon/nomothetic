@@ -31,6 +31,25 @@ def _coerce_count(rows: list[Any]) -> int:
     return 0
 
 
+def _coerce_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 @runtime_checkable
 class TokenStore(Protocol):
     """Abstract interface for refresh token persistence."""
@@ -127,9 +146,9 @@ class SqlTokenStore:
         if not rows:
             return None
         row = rows[0]
-        expires_at_str = row.get("expires_at", "")
-        now = datetime.now(timezone.utc).isoformat()
-        if expires_at_str and expires_at_str <= now:
+        expires_at = _coerce_datetime(row.get("expires_at"))
+        now = datetime.now(timezone.utc)
+        if expires_at is not None and expires_at <= now:
             await self.delete_token(token_hash)
             return None
         return row.get("email")
@@ -156,11 +175,10 @@ class SqlTokenStore:
 
     async def cleanup_expired(self) -> int:
         """Remove all expired tokens. Returns count removed."""
-        now = datetime.now(timezone.utc).isoformat()
-        count_q = "SELECT count(*) as count FROM RefreshToken WHERE expires_at <= :now"
-        rows = await self._db.execute_sql(count_q, {"now": now})
+        count_q = "SELECT count(*) as count FROM RefreshToken WHERE expires_at <= sysdate()"
+        rows = await self._db.execute_sql(count_q)
         count = _coerce_count(rows)
         if count > 0:
-            delete = "DELETE FROM RefreshToken WHERE expires_at <= :now"
-            await self._db.execute_sql(delete, {"now": now})
+            delete = "DELETE FROM RefreshToken WHERE expires_at <= sysdate()"
+            await self._db.execute_sql(delete)
         return count
