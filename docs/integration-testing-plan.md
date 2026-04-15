@@ -692,6 +692,335 @@ These are static verification tests that can run without hardware:
 
 ---
 
+## End-to-End Hardware Walkthrough
+
+Step-by-step instructions for running the full BLE pairing → command → WiFi
+provisioning workflow on real hardware. This covers every service across all
+repos and validates the complete data path from phone to motors.
+
+### Prerequisites
+
+| Item | Requirement |
+|------|-------------|
+| **Raspberry Pi** | Pi Zero 2W (or any Pi with Bluetooth) running Raspberry Pi OS (64-bit) |
+| **Robot HAT** | SunFounder Robot HAT V4 connected via I2C (address `0x14`) |
+| **Dev machine** | macOS or Linux with Rust cross-compile toolchain, Python 3.11+, Node.js 18+ |
+| **Phone** | Android or iOS device with Expo Go installed (same WiFi as dev machine) |
+| **Network** | Pi and dev machine on the same local network (Pi via Ethernet or pre-configured WiFi) |
+
+### Step 1 — Prepare the Pi
+
+Ensure BlueZ, I2C, and the `nomon` system user/group are configured:
+
+```bash
+# SSH into the Pi
+ssh pi@<PI_IP>
+
+# Enable I2C (if not already)
+sudo raspi-config nonint do_i2c 0
+
+# Install BlueZ
+sudo apt update && sudo apt install -y bluez
+
+# Start and enable Bluetooth
+sudo systemctl enable --now bluetooth
+
+# Verify the adapter is up
+bluetoothctl show   # should show "Powered: yes"
+
+# Create the nomon group and state directory
+sudo groupadd -f nomon
+sudo useradd -r -s /usr/sbin/nologin -g nomon nomon 2>/dev/null || true
+sudo mkdir -p /var/lib/nomon
+sudo chown nomon:nomon /var/lib/nomon
+sudo chmod 750 /var/lib/nomon
+```
+
+### Step 2 — Build and Deploy nomopractic
+
+On the **dev machine**, cross-compile with the `ble` feature enabled:
+
+```bash
+cd nomopractic
+
+# Install cross if needed
+cargo install cross
+
+# Build for Pi (aarch64) with BLE support
+cross build --target aarch64-unknown-linux-gnu --release --features ble
+```
+
+Deploy to the Pi:
+
+```bash
+# Copy binary
+scp target/aarch64-unknown-linux-gnu/release/nomopractic pi@<PI_IP>:/tmp/
+
+# SSH in and install
+ssh pi@<PI_IP> << 'EOF'
+  sudo systemctl stop nomopractic 2>/dev/null || true
+  sudo mv /tmp/nomopractic /usr/local/bin/nomopractic
+  sudo chmod 755 /usr/local/bin/nomopractic
+EOF
+
+# Copy config (first time only)
+scp config.toml pi@<PI_IP>:/tmp/config.toml
+ssh pi@<PI_IP> << 'EOF'
+  sudo mkdir -p /etc/nomopractic
+  sudo cp /tmp/config.toml /etc/nomopractic/config.toml
+EOF
+```
+
+**Enable BLE in the config** — add a `[ble]` section to
+`/etc/nomopractic/config.toml` on the Pi:
+
+```toml
+[ble]
+enabled = true
+device_name = "nomon"
+pairing_secret_path = "/var/lib/nomon/pairing_secret"
+jwt_secret_env = "NOMON_JWT_SECRET"
+```
+
+Install and start the systemd service:
+
+```bash
+scp systemd/nomopractic.service pi@<PI_IP>:/tmp/
+ssh pi@<PI_IP> << 'EOF'
+  sudo cp /tmp/nomopractic.service /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now nomopractic
+  sudo systemctl status nomopractic   # should show "active (running)"
+EOF
+```
+
+### Step 3 — Install and Start nomothetic
+
+On the **Pi**, install nomothetic in device mode:
+
+```bash
+ssh pi@<PI_IP>
+
+cd /opt/nomothetic   # or wherever you cloned the repo
+
+# Create venv and install with Pi extras
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[pi]"
+
+# Generate a self-signed TLS cert (first time only)
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem \
+  -out certs/cert.pem -days 365 -nodes \
+  -subj "/CN=nomon-device"
+```
+
+Set environment variables and start:
+
+```bash
+export NOMON_API_MODE=device
+export NOMON_DEVICE_AUTH=true
+export NOMON_JWT_SECRET="<matching-secret>"  # must match nomopractic's JWT secret
+export NOMON_TLS_CERT=certs/cert.pem
+export NOMON_TLS_KEY=certs/key.pem
+
+# Start the API server
+uvicorn nomothetic.api:app --host 0.0.0.0 --port 8443 \
+  --ssl-keyfile "$NOMON_TLS_KEY" --ssl-certfile "$NOMON_TLS_CERT"
+```
+
+Or install and use the systemd service for a persistent setup:
+
+```bash
+sudo cp systemd/nomothetic-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nomothetic-api
+```
+
+### Step 4 — Verify Both Daemons on the Pi
+
+Run these checks from the Pi shell:
+
+```bash
+# 1. nomopractic IPC socket is alive
+echo '{"method":"get_battery"}' | socat - UNIX-CONNECT:/run/nomopractic/nomopractic.sock
+# Expected: JSON response with battery voltage
+
+# 2. BLE adapter is advertising
+bluetoothctl show | grep -A2 "Powered"
+# Expected: Powered: yes
+
+# Look for the GATT service registration in the journal
+sudo journalctl -u nomopractic --no-pager -n 20 | grep -i ble
+# Expected: lines showing BLE GATT server started
+
+# 3. nomothetic HTTPS is responding
+curl -sk https://localhost:8443/
+# Expected: {"status":"ok"} or similar health response
+
+# 4. Pairing secret file exists
+ls -la /var/lib/nomon/pairing_secret
+# Expected: -rw-r----- 1 root nomon ... pairing_secret
+# Read the secret — you'll need this for the phone
+sudo cat /var/lib/nomon/pairing_secret
+```
+
+**Record the pairing secret** — you will enter this in the app during Step 6.
+
+### Step 5 — Start the Mobile App
+
+On the **dev machine**:
+
+```bash
+cd nomotactic
+
+# Install dependencies
+npm install
+
+# Set the device API URL to point at the Pi
+export EXPO_PUBLIC_DEVICE_API_URL="https://<PI_IP>:8443"
+
+# Start the Expo dev server
+npx expo start
+```
+
+On the **phone**, open Expo Go and scan the QR code from the terminal. The app
+should load and show the login/pairing screen.
+
+> **Note:** For BLE testing, you must use a development build or Expo Go on a
+> physical device — BLE does not work in simulators/emulators.
+
+### Step 6 — BLE Pairing
+
+1. In the app, navigate to the device connection screen.
+2. Tap **Scan for devices** — the app scans for BLE peripherals advertising the
+   nomon GATT service UUID (`e3a10001-1000-2000-3000-e3a1e3a1e3a1`).
+3. Select the device named `nomon` from the scan results.
+4. The app connects and discovers GATT services/characteristics.
+5. Enter the **pairing secret** from Step 4 when prompted.
+6. The app writes the secret to the Pairing characteristic — the Pi verifies it,
+   mints a JWT, and sends it back via a BLE notification.
+7. Both sides derive the AES-128-CCM encryption key from the JWT using
+   HKDF-SHA256.
+
+**Verify pairing succeeded:**
+- The app should show a "Connected" or "Paired" status.
+- On the Pi: `sudo journalctl -u nomopractic --no-pager -n 10` should show a
+  successful pairing log entry.
+
+### Step 7 — Send Commands over BLE
+
+With BLE paired and encrypted, test the command path:
+
+| Action in App | BLE Opcode | Expected Result |
+|---------------|-----------|-----------------|
+| Read battery | `0x07` GetBattery | App displays battery voltage |
+| Drive forward | `0x01` SetMotorSpeed | Motors spin (verify physically) |
+| Stop motors | `0x01` SetMotorSpeed (speed=0) | Motors stop |
+| Read ultrasonic | `0x09` GetUltrasonic | App displays distance in cm |
+| Steer servo | `0x03` SetServoAngle | Servo moves to target angle |
+
+Each command is encrypted with AES-128-CCM. Verify on the Pi that the
+counter increments by checking daemon logs:
+
+```bash
+sudo journalctl -u nomopractic --no-pager -n 30 | grep -i "counter\|decrypt\|command"
+```
+
+### Step 8 — WiFi Provisioning over BLE
+
+1. In the app, navigate to the WiFi settings screen.
+2. Tap **Scan WiFi** — the app writes a scan request to the WiFi GATT
+   characteristic. The Pi runs `nmcli dev wifi list` and returns available
+   networks as binary-encoded results.
+3. Select a network from the scan results.
+4. Enter the WiFi password when prompted.
+5. The app sends a WiFi Connect command with SSID + password over BLE.
+6. The Pi runs `nmcli dev wifi connect ...` and returns the connection status.
+
+**Verify WiFi connected:**
+
+```bash
+# On the Pi
+nmcli connection show --active
+# Expected: the WiFi network appears with an IP address
+
+ip addr show wlan0
+# Expected: an IP on the target WiFi network
+```
+
+### Step 9 — Send Commands over HTTPS
+
+Once the Pi is on WiFi, the app's `TransportProvider` should automatically
+switch from BLE to HTTPS (or you can manually test HTTPS):
+
+```bash
+# From the dev machine — verify HTTPS is reachable over WiFi
+curl -sk https://<PI_WIFI_IP>:8443/
+# Expected: health response
+
+# Send an authenticated command (use the JWT from BLE pairing)
+curl -sk -H "Authorization: Bearer <JWT>" \
+  -X POST https://<PI_WIFI_IP>:8443/api/hat/motor \
+  -H "Content-Type: application/json" \
+  -d '{"motor": 1, "speed": 50}'
+# Expected: 200 OK — motor spins
+
+# Stop the motor
+curl -sk -H "Authorization: Bearer <JWT>" \
+  -X POST https://<PI_WIFI_IP>:8443/api/hat/motor \
+  -d '{"motor": 1, "speed": 0}'
+```
+
+In the app, send the same commands through the UI — verify the transport
+indicator shows HTTPS instead of BLE.
+
+### Step 10 — Transport Fallback
+
+Test that the app falls back to BLE when WiFi drops:
+
+1. **Disconnect the Pi from WiFi:**
+   ```bash
+   ssh pi@<PI_IP_ETHERNET> "sudo nmcli connection down <WIFI_SSID>"
+   ```
+2. In the app, send a command — the `TransportProvider` should detect the HTTPS
+   failure and fall back to BLE.
+3. Verify the command still executes (motors respond).
+4. **Reconnect WiFi:**
+   ```bash
+   ssh pi@<PI_IP_ETHERNET> "sudo nmcli connection up <WIFI_SSID>"
+   ```
+5. After a short delay, the next command should route over HTTPS again.
+
+### Step 11 — Cleanup
+
+```bash
+# On the Pi — stop services
+sudo systemctl stop nomopractic nomothetic-api
+
+# Verify no orphaned BLE advertisements
+bluetoothctl show | grep "Discovering"
+# Expected: no — advertising should have stopped with the daemon
+
+# Verify IPC socket is cleaned up
+ls /run/nomopractic/nomopractic.sock 2>/dev/null && echo "WARN: socket still exists"
+```
+
+### Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| BLE scan finds nothing | BlueZ not running or adapter powered off | `sudo systemctl restart bluetooth && bluetoothctl power on` |
+| Pairing fails with "invalid secret" | Secret mismatch or file not readable | `sudo cat /var/lib/nomon/pairing_secret` and re-enter exactly |
+| `socat` to IPC socket hangs | nomopractic not running or socket path wrong | `sudo systemctl status nomopractic` — check for crash in journal |
+| HTTPS connection refused | nomothetic not running or wrong port | `sudo systemctl status nomothetic-api` — verify port 8443 |
+| Motor commands return OK but nothing moves | Robot HAT not connected or I2C disabled | `sudo i2cdetect -y 1` — should show device at `0x14` |
+| WiFi scan returns empty | Pi has no WiFi hardware or antenna contention | Run `nmcli dev wifi list` manually — BCM43436s shares antenna with BLE |
+| Transport does not fall back to BLE | TransportProvider not detecting failure | Check app logs for timeout errors; verify BLE is still connected |
+| `cross build` fails for `ble` feature | Missing `dbus` cross-compile deps | Ensure the Cross.toml has `pkg-config` and `libdbus-1-dev` for aarch64 |
+
+---
+
 ## Test Execution
 
 ### Running All Tests
