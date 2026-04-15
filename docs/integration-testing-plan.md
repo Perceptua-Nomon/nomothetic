@@ -382,7 +382,7 @@ nomotactic (app)                nomopractic (Pi)
 | Device storage | Devices stored in ArcadeDB `Vehicle` vertex | Yes | `GremlinFleetStore` in `fleet_store.py` — requires running ArcadeDB (Docker Compose) |
 | Token storage | Refresh tokens stored in ArcadeDB `RefreshToken` vertex | Yes | `GremlinTokenStore` in `token_store.py` — requires running ArcadeDB (Docker Compose) |
 | Graph queries | Gremlin traversals for user→device relationships | Yes | `GremlinUserStore` and `GremlinFleetStore` implement Gremlin traversals via `DatabaseClient` (`db.py`) |
-| Telemetry history | TelemetryReading vertices via HasTelemetry edges | No | Schema exists in nomographic; no query layer yet |
+| Telemetry history | TelemetryReading vertices via ReadFrom edges | No | Schema exists in nomographic; no query layer yet |
 
 ---
 
