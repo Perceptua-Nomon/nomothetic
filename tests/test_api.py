@@ -50,7 +50,7 @@ def test_health_check(client):
 def test_camera_status_without_camera(client):
     """Test camera status endpoint without initialized camera."""
     response = client.get("/api/camera/status")
-    assert response.status_code == 500
+    assert response.status_code == 503
     assert "not initialized" in response.json()["error"]
 
 
@@ -157,7 +157,7 @@ def test_capture_without_camera(client):
         "/api/camera/capture",
         json={"filename": "test.jpg"},
     )
-    assert response.status_code == 500
+    assert response.status_code == 503
     assert "not initialized" in response.json()["error"]
 
 
@@ -246,7 +246,7 @@ def test_record_start_without_camera(client):
         "/api/camera/record/start",
         json={"filename": "video.mp4"},
     )
-    assert response.status_code == 500
+    assert response.status_code == 503
     assert "not initialized" in response.json()["error"]
 
 
@@ -301,7 +301,7 @@ def test_record_stop_camera_error(client, mock_camera):
 def test_record_stop_without_camera(client):
     """Test record stop without initialized camera."""
     response = client.post("/api/camera/record/stop")
-    assert response.status_code == 500
+    assert response.status_code == 503
     assert "not initialized" in response.json()["error"]
 
 

@@ -31,6 +31,7 @@ This Python package provides peripheral control, HTTPS REST API, MQTT telemetry,
 | `nomothetic.fleet_store` | `FleetStore` | Fleet device persistence (in-memory + Gremlin backends) |
 | `nomothetic.token_store` | `TokenStore` | Refresh token persistence (in-memory + Gremlin backends) |
 | `nomothetic.gremlin_utils` | — | Shared Gremlin value sanitiser |
+| `nomothetic.db_utils` | — | Shared database query utilities |
 
 See [docs/architecture.md](docs/architecture.md) for a full system diagram and module responsibilities.
 

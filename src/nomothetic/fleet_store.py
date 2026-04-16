@@ -5,30 +5,17 @@ Protocol-based store abstraction for vehicle registration and fleet queries.
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional, runtime_checkable
+from typing import TYPE_CHECKING, Optional, runtime_checkable
 
 from pydantic import BaseModel
 from typing_extensions import Protocol
+
+from nomothetic.db_utils import coerce_count as _coerce_count
 
 if TYPE_CHECKING:
     from nomothetic.db import DatabaseClient
 
 logger = logging.getLogger(__name__)
-
-
-def _coerce_count(rows: list[Any]) -> int:
-    if not rows:
-        return 0
-    first = rows[0]
-    if isinstance(first, int):
-        return first
-    if isinstance(first, float):
-        return int(first)
-    if isinstance(first, dict):
-        val = first.get("count", 0)
-        if isinstance(val, (int, float)):
-            return int(val)
-    return 0
 
 
 # ---------------------------------------------------------------------------

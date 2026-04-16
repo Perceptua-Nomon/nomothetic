@@ -5,11 +5,100 @@ On first boot, a pairing secret is generated and logged to the console.
 The device owner enters this secret via the nomotactic UI to claim the
 device and receive JWT tokens.
 
+The pairing secret is also written to a shared file so that nomopractic
+can read it for BLE pairing verification (see nomopractic ADR-003).
+
 See ADR-014 for design rationale.
 """
 
+import grp
 import hmac
+import logging
+import os
 import secrets
+import stat
+import tempfile
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_PAIRING_SECRET_PATH = "/var/lib/nomon/pairing_secret"
+
+
+def get_pairing_secret_path() -> str:
+    """Return the configured pairing secret file path.
+
+    Reads from the ``NOMON_PAIRING_SECRET_PATH`` environment variable,
+    falling back to ``/var/lib/nomon/pairing_secret``.
+
+    Returns
+    -------
+    str
+        Absolute path to the shared pairing secret file.
+    """
+    return os.environ.get("NOMON_PAIRING_SECRET_PATH", _DEFAULT_PAIRING_SECRET_PATH)
+
+
+def _write_shared_secret(secret: str) -> None:
+    """Write the pairing secret to the shared file atomically.
+
+    Uses a write-to-temp-then-rename pattern for atomicity.  Sets file
+    mode ``0640`` and group ``nomon`` so that nomopractic can read it.
+
+    If the target directory does not exist or permissions cannot be set,
+    a warning is logged but no exception is raised — HTTP pairing still
+    works; only BLE pairing requires the shared file.
+
+    Parameters
+    ----------
+    secret : str
+        The pairing secret to persist.
+    """
+    path = get_pairing_secret_path()
+    target_dir = os.path.dirname(path)
+
+    if not os.path.isdir(target_dir):
+        logger.warning(
+            "Pairing secret directory %s does not exist; "
+            "BLE pairing will not work until it is created",
+            target_dir,
+        )
+        return
+
+    fd = None
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".pairing_secret_")
+        os.write(fd, secret.encode("utf-8"))
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)  # 0o640
+        os.close(fd)
+        fd = None
+
+        try:
+            nomon_gid = grp.getgrnam("nomon").gr_gid
+            os.chown(tmp_path, -1, nomon_gid)
+        except (KeyError, PermissionError):
+            logger.warning(
+                "Could not set group 'nomon' on pairing secret file; "
+                "nomopractic may not be able to read it"
+            )
+
+        os.rename(tmp_path, path)
+        logger.info("Pairing secret written to %s", path)
+        tmp_path = None  # rename succeeded — don't clean up
+    except OSError:
+        logger.warning(
+            "Failed to write pairing secret to %s; " "BLE pairing will not work",
+            path,
+            exc_info=True,
+        )
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 class PairingState:
@@ -40,6 +129,9 @@ class PairingState:
     def generate_secret(self) -> str:
         """Generate a 128-bit pairing secret.
 
+        The secret is also written to the shared pairing secret file so
+        that nomopractic can read it for BLE pairing verification.
+
         Returns
         -------
         str
@@ -47,6 +139,7 @@ class PairingState:
         """
         self.secret = secrets.token_urlsafe(16)
         self.paired = False
+        _write_shared_secret(self.secret)
         return self.secret
 
     def verify_and_consume(self, candidate: str) -> bool:

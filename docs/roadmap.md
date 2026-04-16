@@ -22,8 +22,9 @@
 | 15 | Deploy Hardening | ✅ Complete |
 | 16 | Security Hardening | ✅ Complete |
 | 17 | Device-Mode Authentication | ✅ Complete |
+| 18 | BLE Pairing Coordination | ✅ Complete |
 
-**Test totals (current): 497 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store)
+**Test totals (current): 532 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store)
 
 ---
 
@@ -822,6 +823,65 @@ token reuse across modes.
 - [x] No regressions: 466 pre-existing tests pass with `NOMON_DEVICE_AUTH=false`
 - [x] 31 new tests (14 pairing + 17 device auth)
 - [x] `uv run pytest tests/` — 497 passing
+- [x] `uv run ruff check . && uv run black --check .` — clean
+
+---
+
+### Phase 18 — BLE Pairing Coordination (P1)
+
+**Goal:** Coordinate BLE pairing between nomopractic (BLE GATT server) and
+nomotactic (BLE client) by managing the shared pairing secret lifecycle and
+providing WiFi provisioning support. nomothetic is NOT in the BLE data path —
+BLE commands go directly from nomotactic to nomopractic. nomothetic's role is:
+
+1. Generate and persist the pairing secret (shared with nomopractic)
+2. Accept WiFi provisioning requests (when Pi joins WiFi via BLE-provided creds)
+3. Document BLE prerequisites and setup
+
+**Architecture decisions:**
+- nomopractic ADR-001: BLE GATT server in nomopractic
+- nomopractic ADR-003: BLE security model
+
+**Cross-repo dependencies:**
+- nomopractic Phase 13: BLE GATT server reads shared pairing secret
+- nomotactic Phase 2: BLE client implementation
+
+#### 18.1 — Shared Pairing Secret Management
+- [x] `nomothetic/pairing.py`: update `PairingState.generate_secret()` to
+      also write the pairing secret to a shared file at
+      `/var/lib/nomon/pairing_secret` (mode `0640`, owner `root:nomon`)
+- [x] nomopractic reads this file for BLE pairing verification
+- [x] Secret rotation: regenerate on daemon restart (existing behaviour);
+      overwrite shared file atomically
+- [x] Systemd: ensure `/var/lib/nomon/` directory exists with correct
+      ownership in `nomothetic-api.service` `ExecStartPre`
+- [x] Tests: verify file write, permissions, atomic overwrite
+
+#### 18.2 — JWT Secret Sharing
+- [x] Document that `NOMON_JWT_SECRET` env var must be available to BOTH
+      nomopractic and nomothetic processes (already in shared env file
+      `/etc/nomothetic/nomothetic.env`)
+- [x] Verify: JWT issued by nomopractic over BLE is accepted by nomothetic's
+      `jwt_required` dependency (same secret, same issuer `nomon-device`)
+- [x] Integration test: BLE-issued JWT → HTTPS request → nomothetic validates
+
+#### 18.3 — Documentation Updates
+- [x] `docs/pi_setup.md`: add BlueZ prerequisites section
+  - `sudo apt install -y bluez` (usually pre-installed on Pi OS)
+  - `sudo systemctl enable --now bluetooth`
+  - Verify: `bluetoothctl show` shows controller
+- [x] `docs/getting_started.md`: add BLE verification step
+  - `bluetoothctl show | grep Powered` should show `yes`
+  - Note: BLE and WiFi share antenna on Pi Zero 2W
+- [x] `docs/hat_ipc_schema.md`: add note that BLE uses a separate binary
+      protocol (reference nomopractic ADR-002), not NDJSON
+
+#### Phase 18 Exit Criteria
+- [x] Shared pairing secret file written by nomothetic, readable by nomopractic
+- [x] JWT issued by nomopractic over BLE is valid for nomothetic HTTPS endpoints
+- [x] BlueZ prerequisites documented in pi_setup.md
+- [x] All existing tests pass (no regressions)
+- [x] `uv run pytest tests/` — ≥ 497 passing
 - [x] `uv run ruff check . && uv run black --check .` — clean
 
 ---

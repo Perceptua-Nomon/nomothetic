@@ -8,6 +8,10 @@ Type=simple
 User=nomon
 Group=nomon
 
+# Ensure the shared pairing secret directory exists with correct ownership.
+# systemd creates /var/lib/nomon owned by User:Group automatically.
+StateDirectory=nomon
+
 # Adjust these paths to match your deployment:
 WorkingDirectory=/opt/nomothetic
 # TLS: Generate self-signed certs with:

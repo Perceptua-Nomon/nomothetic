@@ -13,6 +13,13 @@ remotely.
 - **Camera module** attached (CSI ribbon or USB)
 - A workstation with SSH access to the Pi
 
+> **BLE alternative:** If your Pi is not yet on WiFi, you can use
+> Bluetooth Low Energy (BLE) to pair the nomotactic mobile app directly
+> with the robot. The app writes the pairing secret over BLE to
+> nomopractic, which issues a JWT for subsequent use over HTTPS. See
+> [pi_setup.md — BLE Pairing](pi_setup.md#8--ble-pairing-optional) for
+> setup details.
+
 ---
 
 ## Step 1 — Clone the repositories
@@ -198,6 +205,8 @@ open http://$PI:8000    # macOS; use xdg-open on Linux
 | `Connection refused` on port 8000 | Streaming server not running — `make start-stream`; check `logs/stream.log` |
 | `503 Service Unavailable` from HAT endpoint | nomopractic daemon not running — `sudo systemctl start nomopractic` |
 | `HARDWARE_ERROR` from battery/servo | HAT not connected or I2C not detected — `sudo i2cdetect -y 1` should show `0x14` |
+| BLE not advertising | BlueZ not running — `sudo systemctl start bluetooth`; check `bluetoothctl show` |
+| BLE pairing fails | Pairing secret mismatch — check `/var/lib/nomon/pairing_secret`; restart nomothetic to regenerate |
 | Certificate warning in browser | Expected for self-signed certs — click through or import `.certs/cert.pem` |
 
 For deeper troubleshooting, see [pi_setup.md](pi_setup.md#troubleshooting).
