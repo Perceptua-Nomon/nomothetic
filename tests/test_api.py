@@ -43,7 +43,7 @@ def test_health_check(client):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
-    assert data["service"] == "nomon-camera-api"
+    assert data["service"] == "nomon-central-api"
     assert "version" in data
 
 
