@@ -246,7 +246,7 @@ rollback() {
     uv sync --extra pi --extra web --extra api --extra telemetry 2>&1 || true
 
     echo "  Restarting API server..." >&2
-    ./scripts/start.sh api 2>&1 || true
+    NOMON_API_MODE=device NOMON_DEVICE_AUTH=false ./scripts/start.sh api 2>&1 || true
 
     echo "!! Rollback complete. API server restored to ${PREV_LABEL:-local}." >&2
     exit 2
@@ -298,7 +298,7 @@ _api_base="${_scheme}://127.0.0.1:${NOM_API_PORT}"
 _curl=(curl -sf -k --max-time 5)
 
 echo "==> Starting API server..."
-./scripts/start.sh api
+NOMON_API_MODE=device NOMON_DEVICE_AUTH=false ./scripts/start.sh api
 
 echo "==> Waiting for API to be ready..."
 _attempts=0
@@ -313,8 +313,18 @@ done
 echo "  API ready ✓"
 
 echo "==> Starting stream server via API..."
-"${_curl[@]}" -X POST "${_api_base}/api/stream/start" \
-    -H "Content-Type: application/json" -d '{}' > /dev/null
+_stream_resp="$(curl -sk --max-time 10 \
+    -X POST "${_api_base}/api/stream/start" \
+    -H "Content-Type: application/json" \
+    -d '{}' \
+    -w "\n%{http_code}")"
+_stream_code="$(printf '%s' "${_stream_resp}" | tail -1)"
+_stream_body="$(printf '%s' "${_stream_resp}" | sed '$d')"
+if [[ "${_stream_code}" != "200" ]]; then
+    echo "Error: failed to start stream server (HTTP ${_stream_code})" >&2
+    echo "  Response: ${_stream_body}" >&2
+    exit 1
+fi
 echo "  Stream server started ✓"
 
 echo "==> Health check..."

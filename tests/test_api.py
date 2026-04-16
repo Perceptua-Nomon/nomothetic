@@ -15,7 +15,14 @@ from nomothetic.api import APIServer, create_app
 @pytest.fixture
 def client():
     """Create a test client for the FastAPI app."""
-    with patch.dict(os.environ, {"NOMON_DEVICE_AUTH": "false"}, clear=False):
+    with patch.dict(
+        os.environ,
+        {
+            "NOMON_API_MODE": "device",
+            "NOMON_DEVICE_AUTH": "false",
+        },
+        clear=False,
+    ):
         app = create_app()
         yield TestClient(app)
 
@@ -43,7 +50,7 @@ def test_health_check(client):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
-    assert data["service"] == "nomon-central-api"
+    assert data["service"] == "nomon-camera-api"
     assert "version" in data
 
 
