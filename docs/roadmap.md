@@ -24,7 +24,7 @@
 | 17 | Device-Mode Authentication | ✅ Complete |
 | 18 | BLE Pairing Coordination | ✅ Complete |
 
-**Test totals (current): 497 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store)
+**Test totals (current): 532 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store)
 
 ---
 

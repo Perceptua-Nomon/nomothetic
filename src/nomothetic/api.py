@@ -925,6 +925,50 @@ _audio_player: Optional[AudioPlayer] = None
 _media_dir: Path = Path("~/perceptua-nomon/media").expanduser()
 
 
+# ============================================================================
+# Dependency helpers (N1 – N3)
+# ============================================================================
+
+
+def _require_hat() -> "HatClient":
+    """Return the HAT client or raise 503."""
+    if _hat_client is None:
+        raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+    return _hat_client
+
+
+async def _hat_call(method: str, *args, **kwargs):
+    """Call a HatClient method in a thread, mapping errors to HTTP responses."""
+    hat = _require_hat()
+    try:
+        return await asyncio.to_thread(getattr(hat, method), *args, **kwargs)
+    except HatConnectionError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except HatError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+def _require_audio_recorder():
+    """Return the audio recorder or raise 503."""
+    if _audio_recorder is None:
+        raise HTTPException(status_code=503, detail="audio recording not available")
+    return _audio_recorder
+
+
+def _require_audio_player():
+    """Return the audio player or raise 503."""
+    if _audio_player is None:
+        raise HTTPException(status_code=503, detail="audio playback not available")
+    return _audio_player
+
+
+def _require_camera():
+    """Return the camera or raise 503."""
+    if not _camera:
+        raise HTTPException(status_code=503, detail="Camera not initialized")
+    return _camera
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage camera, HAT client, and audio initialization and cleanup."""
@@ -980,141 +1024,77 @@ async def lifespan(app: FastAPI):
 # ============================================================================
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application.
-
-    Route registration is determined by the ``NOMON_API_MODE`` environment
-    variable (see :func:`nomothetic.mode.get_mode`):
-
-    - **device** — hardware endpoints (camera, HAT, vehicle, sensor, stream,
-      audio, calibration, routine).
-    - **central** — auth and fleet management endpoints.
-
-    The health endpoint is available in both modes.
-
-    Returns
-    -------
-    FastAPI
-        Configured FastAPI application with CORS and mode-specific endpoints.
-    """
-    mode = get_mode()
-
-    app = FastAPI(
-        title="nomon Camera API" if mode == Mode.DEVICE else "nomon Central API",
-        description=(
-            "HTTP REST API for Raspberry Pi camera control"
-            if mode == Mode.DEVICE
-            else "HTTP REST API for fleet management and authentication"
-        ),
-        version="0.1.0",
-        lifespan=lifespan,
-    )
-
-    # ========================================================================
-    # CORS Middleware (Mobile & Web Client Support)
-    # ========================================================================
-
+def _setup_cors(app: FastAPI, mode: "Mode") -> None:
+    """Add CORS middleware appropriate for the deployment mode."""
     if mode == Mode.CENTRAL:
         cors_origins_raw = os.environ.get("NOMON_CORS_ORIGINS", "http://localhost:8081")
         cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=cors_origins,
-            allow_credentials=True,
-            allow_methods=["GET", "POST", "PUT", "DELETE"],
-            allow_headers=["*"],
-        )
     else:
         device_cors_raw = os.environ.get("NOMON_CORS_ORIGINS", "https://10.0.0.1:8443")
-        device_cors = [o.strip() for o in device_cors_raw.split(",") if o.strip()]
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=device_cors,
-            allow_credentials=True,
-            allow_methods=["GET", "POST", "PUT", "DELETE"],
-            allow_headers=["*"],
-        )
+        cors_origins = [o.strip() for o in device_cors_raw.split(",") if o.strip()]
 
-    # ========================================================================
-    # Routes
-    # ========================================================================
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["*"],
+    )
 
-    # ========================================================================
-    # Health
-    # ========================================================================
 
-    @app.get("/", tags=["Health"])
-    async def health():
-        """Health check endpoint."""
-        return {
-            "status": "ok",
-            "service": "nomon-camera-api" if mode == Mode.DEVICE else "nomon-central-api",
-            "version": "0.1.0",
-            "mode": mode.value,
-        }
+def _setup_central_stores(app: FastAPI) -> None:
+    """Initialise persistence stores for central mode and register routes."""
+    from nomothetic.auth import AuthService, set_auth_service
+    from nomothetic.auth_routes import create_auth_router
+    from nomothetic.fleet_routes import (
+        create_fleet_router,
+        set_fleet_store,
+    )
+    from nomothetic.fleet_store import FleetStore, InMemoryFleetStore
+    from nomothetic.rate_limit import RateLimiter
+    from nomothetic.token_store import TokenStore
+    from nomothetic.user_store import UserStore
 
-    # Global exception handler (shared by both modes)
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request, exc):
-        """Format HTTP exceptions as JSON."""
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=ErrorResponse(
-                error=exc.detail, timestamp=datetime.now(timezone.utc).isoformat()
-            ).model_dump(),
-        )
+    # Per-app rate limiters so each test client gets fresh instances
+    app.state.login_limiter = RateLimiter(max_requests=5, window_seconds=60)
+    app.state.register_limiter = RateLimiter(max_requests=10, window_seconds=60)
 
-    if mode == Mode.CENTRAL:
-        from nomothetic.auth import AuthService, set_auth_service
-        from nomothetic.auth_routes import create_auth_router
-        from nomothetic.fleet_routes import (
-            create_fleet_router,
-            set_fleet_store,
-        )
-        from nomothetic.fleet_store import FleetStore, InMemoryFleetStore
-        from nomothetic.rate_limit import RateLimiter
-        from nomothetic.token_store import TokenStore
-        from nomothetic.user_store import UserStore
+    # Database-backed stores when ArcadeDB is configured
+    user_store: UserStore
+    fleet_store: FleetStore
+    token_store: TokenStore
+    arcadedb_host = os.environ.get("ARCADEDB_HOST")
+    if arcadedb_host:
+        from nomothetic.db import DatabaseClient, DatabaseConfig
+        from nomothetic.fleet_store import SqlFleetStore
+        from nomothetic.token_store import SqlTokenStore
+        from nomothetic.user_store import SqlUserStore
 
-        # Per-app rate limiters so each test client gets fresh instances
-        app.state.login_limiter = RateLimiter(max_requests=5, window_seconds=60)
-        app.state.register_limiter = RateLimiter(max_requests=10, window_seconds=60)
+        db_config = DatabaseConfig.from_env()
+        db_client = DatabaseClient(db_config)
+        user_store = SqlUserStore(db_client)
+        fleet_store = SqlFleetStore(db_client)
+        token_store = SqlTokenStore(db_client)
+        app.state.db_client = db_client
+    else:
+        from nomothetic.token_store import InMemoryTokenStore
+        from nomothetic.user_store import InMemoryUserStore
 
-        # Database-backed stores when ArcadeDB is configured
-        db_client = None
-        user_store: UserStore
-        fleet_store: FleetStore
-        token_store: TokenStore
-        arcadedb_host = os.environ.get("ARCADEDB_HOST")
-        if arcadedb_host:
-            from nomothetic.db import DatabaseClient, DatabaseConfig
-            from nomothetic.fleet_store import SqlFleetStore
-            from nomothetic.token_store import SqlTokenStore
-            from nomothetic.user_store import SqlUserStore
+        user_store = InMemoryUserStore()
+        fleet_store = InMemoryFleetStore()
+        token_store = InMemoryTokenStore()
+        app.state.db_client = None
 
-            db_config = DatabaseConfig.from_env()
-            db_client = DatabaseClient(db_config)
-            user_store = SqlUserStore(db_client)
-            fleet_store = SqlFleetStore(db_client)
-            token_store = SqlTokenStore(db_client)
-            app.state.db_client = db_client
-        else:
-            from nomothetic.token_store import InMemoryTokenStore
-            from nomothetic.user_store import InMemoryUserStore
+    auth_service = AuthService(user_store=user_store, token_store=token_store)
+    set_auth_service(auth_service)
+    app.include_router(create_auth_router())
 
-            user_store = InMemoryUserStore()
-            fleet_store = InMemoryFleetStore()
-            token_store = InMemoryTokenStore()
-            app.state.db_client = None
+    set_fleet_store(fleet_store)
+    app.include_router(create_fleet_router())
 
-        auth_service = AuthService(user_store=user_store, token_store=token_store)
-        set_auth_service(auth_service)
-        app.include_router(create_auth_router())
 
-        set_fleet_store(fleet_store)
-        app.include_router(create_fleet_router())
-
-        return app
+def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
+    """Set up device-mode auth and register all hardware endpoint routes."""
 
     # ========================================================================
     # Device-mode auth (opt-in via NOMON_DEVICE_AUTH env var)
@@ -1199,19 +1179,12 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware read failure.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            result = await asyncio.to_thread(_hat_client.read_grayscale)
-            return GrayscaleResponse(
-                channels=result.channels,
-                values=result.values,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        result = await _hat_call("read_grayscale")
+        return GrayscaleResponse(
+            channels=result.channels,
+            values=result.values,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.get("/api/sensor/ultrasonic", response_model=UltrasonicResponse, tags=["Sensor"])
     async def get_ultrasonic():
@@ -1234,18 +1207,11 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware error (timeout, no echo, GPIO failure).
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            result = await asyncio.to_thread(_hat_client.read_ultrasonic)
-            return UltrasonicResponse(
-                distance_cm=result.distance_cm,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        result = await _hat_call("read_ultrasonic")
+        return UltrasonicResponse(
+            distance_cm=result.distance_cm,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     # ========================================================================
     # Vehicle Endpoints (high-level convenience API)
@@ -1274,19 +1240,12 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware write failure.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            motors = await asyncio.to_thread(_hat_client.drive, request.speed_pct, request.ttl_ms)
-            return DriveResponse(
-                speed_pct=request.speed_pct,
-                motors=motors,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        motors = await _hat_call("drive", request.speed_pct, request.ttl_ms)
+        return DriveResponse(
+            speed_pct=request.speed_pct,
+            motors=motors,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.post("/api/steer", response_model=SteerResponse, tags=["Vehicle"])
     async def steer(request: SteerRequest):
@@ -1308,18 +1267,11 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware write failure.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(_hat_client.steer, request.angle_deg, request.ttl_ms)
-            return SteerResponse(
-                angle_deg=request.angle_deg,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        await _hat_call("steer", request.angle_deg, request.ttl_ms)
+        return SteerResponse(
+            angle_deg=request.angle_deg,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.post("/api/camera/pan", response_model=PanResponse, tags=["Vehicle"])
     async def pan_camera(request: PanRequest):
@@ -1341,18 +1293,11 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware write failure.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(_hat_client.pan_camera, request.angle_deg, request.ttl_ms)
-            return PanResponse(
-                angle_deg=request.angle_deg,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        await _hat_call("pan_camera", request.angle_deg, request.ttl_ms)
+        return PanResponse(
+            angle_deg=request.angle_deg,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.post("/api/camera/tilt", response_model=TiltResponse, tags=["Vehicle"])
     async def tilt_camera(request: TiltRequest):
@@ -1374,18 +1319,11 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware write failure.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(_hat_client.tilt_camera, request.angle_deg, request.ttl_ms)
-            return TiltResponse(
-                angle_deg=request.angle_deg,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        await _hat_call("tilt_camera", request.angle_deg, request.ttl_ms)
+        return TiltResponse(
+            angle_deg=request.angle_deg,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     # ========================================================================
     # Stream Endpoints
@@ -1414,8 +1352,7 @@ def create_app() -> FastAPI:
             500 if the stream server fails to start.
         """
         global _stream_server, _stream_host, _stream_port
-        if _camera is None:
-            raise HTTPException(status_code=503, detail="camera not available")
+        cam = _require_camera()
 
         host = request.host or _stream_host
         port = request.port or _stream_port
@@ -1430,7 +1367,7 @@ def create_app() -> FastAPI:
             )
 
         try:
-            server = StreamServer(host=host, port=port, camera=_camera)
+            server = StreamServer(host=host, port=port, camera=cam)
             server.start_background()
             _stream_server = server
         except Exception as e:
@@ -1501,15 +1438,14 @@ def create_app() -> FastAPI:
         CameraStatus
             Camera readiness, recording state, resolution, and settings
         """
-        if not _camera:
-            raise HTTPException(status_code=500, detail="Camera not initialized")
+        cam = _require_camera()
 
         return CameraStatus(
             camera_ready=True,
-            recording=_camera._is_recording,
-            resolution=f"{_camera.width}x{_camera.height}",
-            fps=_camera.fps,
-            encoder=_camera.encoder,
+            recording=cam._is_recording,
+            resolution=f"{cam.width}x{cam.height}",
+            fps=cam.fps,
+            encoder=cam.encoder,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -1532,11 +1468,10 @@ def create_app() -> FastAPI:
         HTTPException
             If filename is invalid or capture fails
         """
-        if not _camera:
-            raise HTTPException(status_code=500, detail="Camera not initialized")
+        cam = _require_camera()
 
         try:
-            _camera.capture_image(request.filename)
+            cam.capture_image(request.filename)
             return CaptureResponse(
                 success=True,
                 filename=request.filename,
@@ -1569,18 +1504,17 @@ def create_app() -> FastAPI:
         HTTPException
             If recording is already active, filename is invalid, or start fails
         """
-        if not _camera:
-            raise HTTPException(status_code=500, detail="Camera not initialized")
+        cam = _require_camera()
 
-        if _camera._is_recording:
+        if cam._is_recording:
             raise HTTPException(status_code=409, detail="Recording already in progress")
 
         try:
             # If encoder is specified, update camera settings
             if request.encoder and request.encoder.lower() in ["h264", "mjpeg"]:
-                _camera.encoder = request.encoder.lower()
+                cam.encoder = request.encoder.lower()
 
-            await asyncio.to_thread(_camera.start_recording, request.filename)
+            await asyncio.to_thread(cam.start_recording, request.filename)
             return RecordStartResponse(
                 success=True,
                 filename=request.filename,
@@ -1608,14 +1542,13 @@ def create_app() -> FastAPI:
         HTTPException
             If no recording is in progress or stop fails
         """
-        if not _camera:
-            raise HTTPException(status_code=500, detail="Camera not initialized")
+        cam = _require_camera()
 
-        if not _camera._is_recording:
+        if not cam._is_recording:
             raise HTTPException(status_code=409, detail="No recording in progress")
 
         try:
-            await asyncio.to_thread(_camera.stop_recording)
+            await asyncio.to_thread(cam.stop_recording)
             return RecordStopResponse(
                 success=True,
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -1656,9 +1589,8 @@ def create_app() -> FastAPI:
             409 if a recording is already in progress.
             500 on hardware error.
         """
-        if _audio_recorder is None:
-            raise HTTPException(status_code=503, detail="audio not available")
-        if _audio_recorder.is_recording:
+        recorder = _require_audio_recorder()
+        if recorder.is_recording:
             raise HTTPException(status_code=409, detail="A recording is already in progress")
 
         # Apply default mic capture gain before recording (best-effort).
@@ -1669,7 +1601,7 @@ def create_app() -> FastAPI:
                 pass  # Continue without gain set if daemon unavailable.
 
         try:
-            recording_path = await asyncio.to_thread(_audio_recorder.start, request.filename)
+            recording_path = await asyncio.to_thread(recorder.start, request.filename)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
@@ -1694,9 +1626,8 @@ def create_app() -> FastAPI:
             ``filename``: basename of the completed recording, or null if no
             recording was active.
         """
-        if _audio_recorder is None:
-            raise HTTPException(status_code=503, detail="audio not available")
-        recording_path = await asyncio.to_thread(_audio_recorder.stop)
+        recorder = _require_audio_recorder()
+        recording_path = await asyncio.to_thread(recorder.stop)
         return AudioRecordStopResponse(
             recording=False,
             filename=Path(recording_path).name if recording_path else None,
@@ -1728,9 +1659,8 @@ def create_app() -> FastAPI:
             409 if playback is already in progress.
             500 on hardware error.
         """
-        if _audio_player is None:
-            raise HTTPException(status_code=503, detail="audio not available")
-        if _audio_player.is_playing:
+        player = _require_audio_player()
+        if player.is_playing:
             raise HTTPException(status_code=409, detail="Playback is already in progress")
 
         # Enable speaker amplifier before playback (best-effort).
@@ -1748,7 +1678,7 @@ def create_app() -> FastAPI:
                 pass  # Continue without volume set if daemon unavailable.
 
         try:
-            await asyncio.to_thread(_audio_player.play, request.filename)
+            await asyncio.to_thread(player.play, request.filename)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except FileNotFoundError as e:
@@ -1762,7 +1692,7 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
-        current = _audio_player.current_file
+        current = player.current_file
         return AudioPlayResponse(
             playing=True,
             filename=Path(current).name if current else request.filename,
@@ -1782,9 +1712,8 @@ def create_app() -> FastAPI:
         AudioPlayStopResponse
             ``success``: true.
         """
-        if _audio_player is None:
-            raise HTTPException(status_code=503, detail="audio not available")
-        await asyncio.to_thread(_audio_player.stop)
+        player = _require_audio_player()
+        await asyncio.to_thread(player.stop)
 
         # Disable speaker amplifier after playback (best-effort).
         if _hat_client is not None:
@@ -1846,14 +1775,7 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware error.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(_hat_client.set_volume, request.volume_pct)
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        await _hat_call("set_volume", request.volume_pct)
         return VolumeResponse(
             volume_pct=request.volume_pct,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -1874,14 +1796,7 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware error.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            pct = await asyncio.to_thread(_hat_client.get_volume)
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        pct = await _hat_call("get_volume")
         return VolumeResponse(
             volume_pct=pct,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -1907,14 +1822,7 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware error.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(_hat_client.set_mic_gain, request.gain_pct)
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        await _hat_call("set_mic_gain", request.gain_pct)
         return MicGainResponse(
             gain_pct=request.gain_pct,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -1935,14 +1843,7 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware error.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            pct = await asyncio.to_thread(_hat_client.get_mic_gain)
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        pct = await _hat_call("get_mic_gain")
         return MicGainResponse(
             gain_pct=pct,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -1957,14 +1858,7 @@ def create_app() -> FastAPI:
     )
     async def get_calibration():
         """Return a full snapshot of the current runtime calibration."""
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            snap = await asyncio.to_thread(_hat_client.get_calibration)
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        snap = await _hat_call("get_calibration")
         return CalibrationSnapshotResponse(
             motors=[
                 MotorCalibrationItem(
@@ -1997,11 +1891,10 @@ def create_app() -> FastAPI:
     )
     async def put_motor_calibration(channel: int, request: MotorCalibrationRequest):
         """Partially update motor calibration for one channel."""
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        hat = _require_hat()
         try:
             entry = await asyncio.to_thread(
-                _hat_client.set_motor_calibration,
+                hat.set_motor_calibration,
                 channel,
                 request.speed_scale,
                 request.deadband_pct,
@@ -2027,12 +1920,9 @@ def create_app() -> FastAPI:
     )
     async def put_servo_calibration(servo_name: str, request: ServoCalibrationRequest):
         """Set the trim offset (µs) for a named servo."""
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        hat = _require_hat()
         try:
-            entry = await asyncio.to_thread(
-                _hat_client.set_servo_calibration, servo_name, request.trim_us
-            )
+            entry = await asyncio.to_thread(hat.set_servo_calibration, servo_name, request.trim_us)
         except HatConnectionError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         except HatError as e:
@@ -2051,12 +1941,9 @@ def create_app() -> FastAPI:
     )
     async def post_calibrate_grayscale(channel: int, request: GrayscaleCaptureRequest):
         """Capture a live ADC reading as the white or black surface reference."""
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        hat = _require_hat()
         try:
-            result = await asyncio.to_thread(
-                _hat_client.calibrate_grayscale, channel, request.surface
-            )
+            result = await asyncio.to_thread(hat.calibrate_grayscale, channel, request.surface)
         except HatConnectionError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         except HatError as e:
@@ -2076,14 +1963,7 @@ def create_app() -> FastAPI:
     )
     async def post_save_calibration():
         """Persist the current in-memory calibration store to disk."""
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            result = await asyncio.to_thread(_hat_client.save_calibration)
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        result = await _hat_call("save_calibration")
         return SaveCalibrationResponse(
             saved=result.saved,
             path=result.path,
@@ -2095,14 +1975,7 @@ def create_app() -> FastAPI:
     )
     async def post_reset_calibration():
         """Revert the in-memory calibration store to factory defaults."""
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            reset = await asyncio.to_thread(_hat_client.reset_calibration)
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        reset = await _hat_call("reset_calibration")
         return ResetCalibrationResponse(
             reset=reset,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -2115,14 +1988,7 @@ def create_app() -> FastAPI:
     )
     async def get_grayscale_normalized():
         """Return per-channel normalised grayscale sensor readings (0.0–1.0)."""
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            result = await asyncio.to_thread(_hat_client.read_grayscale_normalized)
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        result = await _hat_call("read_grayscale_normalized")
         return NormalizedGrayscaleResponse(
             channels=result.channels,
             normalized=result.normalized,
@@ -2148,18 +2014,11 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware read failure.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            voltage = await asyncio.to_thread(_hat_client.get_battery_voltage)
-            return BatteryResponse(
-                voltage_v=voltage,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        voltage = await _hat_call("get_battery_voltage")
+        return BatteryResponse(
+            voltage_v=voltage,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.post("/api/hat/servo", response_model=ServoResponse, tags=["HAT"])
     async def set_servo(request: ServoRequest):
@@ -2181,24 +2040,17 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware write failure.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(
-                _hat_client.set_servo_angle,
-                request.channel,
-                request.angle_deg,
-                request.ttl_ms,
-            )
-            return ServoResponse(
-                channel=request.channel,
-                angle_deg=request.angle_deg,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        await _hat_call(
+            "set_servo_angle",
+            request.channel,
+            request.angle_deg,
+            request.ttl_ms,
+        )
+        return ServoResponse(
+            channel=request.channel,
+            angle_deg=request.angle_deg,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.post("/api/hat/reset", response_model=ResetResponse, tags=["HAT"])
     async def reset_mcu():
@@ -2215,18 +2067,11 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on GPIO failure.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(_hat_client.reset_mcu)
-            return ResetResponse(
-                success=True,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        await _hat_call("reset_mcu")
+        return ResetResponse(
+            success=True,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.get("/api/hat/servo/status", response_model=ServoStatusResponse, tags=["HAT"])
     async def get_servo_status():
@@ -2243,25 +2088,18 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on error.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            status = await asyncio.to_thread(_hat_client.get_servo_status)
-            return ServoStatusResponse(
-                active_leases=[
-                    ServoLeaseItem(
-                        channel=e.channel,
-                        ttl_remaining_ms=e.ttl_remaining_ms,
-                        conn_id=e.conn_id,
-                    )
-                    for e in status.active_leases
-                ],
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        status = await _hat_call("get_servo_status")
+        return ServoStatusResponse(
+            active_leases=[
+                ServoLeaseItem(
+                    channel=e.channel,
+                    ttl_remaining_ms=e.ttl_remaining_ms,
+                    conn_id=e.conn_id,
+                )
+                for e in status.active_leases
+            ],
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.get("/api/hat/mcu/status", response_model=McuStatusResponse, tags=["HAT"])
     async def get_mcu_status():
@@ -2278,19 +2116,12 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on error.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            status = await asyncio.to_thread(_hat_client.get_mcu_status)
-            return McuStatusResponse(
-                resets_since_start=status.resets_since_start,
-                last_reset_s_ago=status.last_reset_s_ago,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        status = await _hat_call("get_mcu_status")
+        return McuStatusResponse(
+            resets_since_start=status.resets_since_start,
+            last_reset_s_ago=status.last_reset_s_ago,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.post("/api/hat/motor", response_model=MotorResponse, tags=["HAT"])
     async def set_motor(request: MotorRequest):
@@ -2312,24 +2143,17 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware write failure.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            await asyncio.to_thread(
-                _hat_client.set_motor_speed,
-                request.channel,
-                request.speed_pct,
-                request.ttl_ms,
-            )
-            return MotorResponse(
-                channel=request.channel,
-                speed_pct=request.speed_pct,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        await _hat_call(
+            "set_motor_speed",
+            request.channel,
+            request.speed_pct,
+            request.ttl_ms,
+        )
+        return MotorResponse(
+            channel=request.channel,
+            speed_pct=request.speed_pct,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.post("/api/hat/motor/stop", response_model=StopMotorsResponse, tags=["HAT"])
     async def stop_motors():
@@ -2346,18 +2170,11 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware failure.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            stopped = await asyncio.to_thread(_hat_client.stop_all_motors)
-            return StopMotorsResponse(
-                stopped=stopped,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        stopped = await _hat_call("stop_all_motors")
+        return StopMotorsResponse(
+            stopped=stopped,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.get("/api/hat/motor/status", response_model=MotorStatusResponse, tags=["HAT"])
     async def get_motor_status():
@@ -2374,25 +2191,18 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on error.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            status = await asyncio.to_thread(_hat_client.get_motor_status)
-            return MotorStatusResponse(
-                active_leases=[
-                    MotorLeaseItem(
-                        channel=e.channel,
-                        ttl_remaining_ms=e.ttl_remaining_ms,
-                        conn_id=e.conn_id,
-                    )
-                    for e in status.active_leases
-                ],
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        status = await _hat_call("get_motor_status")
+        return MotorStatusResponse(
+            active_leases=[
+                MotorLeaseItem(
+                    channel=e.channel,
+                    ttl_remaining_ms=e.ttl_remaining_ms,
+                    conn_id=e.conn_id,
+                )
+                for e in status.active_leases
+            ],
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     @device_router.post("/api/hat/speaker", response_model=SpeakerResponse, tags=["HAT"])
     async def set_speaker(request: SpeakerRequest):
@@ -2417,21 +2227,12 @@ def create_app() -> FastAPI:
             503 if the nomopractic daemon is unavailable.
             500 on hardware error.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            if request.enabled:
-                await asyncio.to_thread(_hat_client.enable_speaker)
-            else:
-                await asyncio.to_thread(_hat_client.disable_speaker)
-            return SpeakerResponse(
-                enabled=request.enabled,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        method = "enable_speaker" if request.enabled else "disable_speaker"
+        await _hat_call(method)
+        return SpeakerResponse(
+            enabled=request.enabled,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
     # ========================================================================
     # Routine Endpoints
@@ -2444,11 +2245,10 @@ def create_app() -> FastAPI:
         Returns 409 if a routine is already running.
         Returns 422 if the routine name is unknown or a parameter is out of range.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        hat = _require_hat()
         try:
             result = await asyncio.to_thread(
-                _hat_client.start_routine,
+                hat.start_routine,
                 request.name,
                 request.speed_pct,
                 request.obstacle_threshold_cm,
@@ -2475,10 +2275,9 @@ def create_app() -> FastAPI:
 
         Returns 409 if no routine is running.
         """
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
+        hat = _require_hat()
         try:
-            result = await asyncio.to_thread(_hat_client.stop_routine)
+            result = await asyncio.to_thread(hat.stop_routine)
         except HatConnectionError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         except HatError as e:
@@ -2499,14 +2298,7 @@ def create_app() -> FastAPI:
     )
     async def get_routine_status():
         """Return the current routine status snapshot."""
-        if _hat_client is None:
-            raise HTTPException(status_code=503, detail="nomopractic daemon not available")
-        try:
-            result = await asyncio.to_thread(_hat_client.get_routine_status)
-        except HatConnectionError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from e
-        except HatError as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        result = await _hat_call("get_routine_status")
         return RoutineStatusResponse(
             running=result.running,
             name=result.name,
@@ -2528,6 +2320,64 @@ def create_app() -> FastAPI:
                 "Tailscale not detected. Device-mode endpoints are unauthenticated — "
                 "network-level access control is required. See ADR-010."
             )
+
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application.
+
+    Route registration is determined by the ``NOMON_API_MODE`` environment
+    variable (see :func:`nomothetic.mode.get_mode`):
+
+    - **device** — hardware endpoints (camera, HAT, vehicle, sensor, stream,
+      audio, calibration, routine).
+    - **central** — auth and fleet management endpoints.
+
+    The health endpoint is available in both modes.
+
+    Returns
+    -------
+    FastAPI
+        Configured FastAPI application with CORS and mode-specific endpoints.
+    """
+    mode = get_mode()
+
+    app = FastAPI(
+        title="nomon Camera API" if mode == Mode.DEVICE else "nomon Central API",
+        description=(
+            "HTTP REST API for Raspberry Pi camera control"
+            if mode == Mode.DEVICE
+            else "HTTP REST API for fleet management and authentication"
+        ),
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+
+    _setup_cors(app, mode)
+
+    @app.get("/", tags=["Health"])
+    async def health():
+        """Health check endpoint."""
+        return {
+            "status": "ok",
+            "service": "nomon-camera-api" if mode == Mode.DEVICE else "nomon-central-api",
+            "version": "0.1.0",
+            "mode": mode.value,
+        }
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request, exc):
+        """Format HTTP exceptions as JSON."""
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ErrorResponse(
+                error=exc.detail, timestamp=datetime.now(timezone.utc).isoformat()
+            ).model_dump(),
+        )
+
+    if mode == Mode.CENTRAL:
+        _setup_central_stores(app)
+    else:
+        _register_device_routes(app, mode)
 
     return app
 
