@@ -273,8 +273,8 @@ make install-pi
 
 # ── Release checks ─────────────────────────────────────────────────────────────
 
-echo "==> Release checks..."
-make check
+echo "==> Running tests..."
+make test
 
 # ── Start servers & verify liveness ───────────────────────────────────────────
 
