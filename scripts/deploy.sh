@@ -41,7 +41,7 @@
 #   2. Records the current git ref so it can be restored on failure.
 #   3. Fetches tags from origin and checks out the target version.
 #   4. Installs Python dependencies (production + dev extras).
-#   5. Runs release checks: lint (ruff), format (black), type-check (mypy), tests.
+#   5. Runs release checks: unit tests only.
 #   6. Starts the API server, waits for readiness, starts the stream via the API,
 #      performs a health check, then stops the stream and API.
 #
