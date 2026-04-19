@@ -127,17 +127,19 @@ class PairingState:
         self.jwt_secret: str = secrets.token_urlsafe(48)
 
     def generate_secret(self) -> str:
-        """Generate a 128-bit pairing secret.
+        """Generate a 6-digit numeric BLE passkey (000000–999999).
 
-        The secret is also written to the shared pairing secret file so
-        that nomopractic can read it for BLE pairing verification.
+        The passkey is written to the shared pairing secret file so that
+        nomopractic's BlueZ passkey agent can read it for OS-level
+        Bluetooth pairing.
 
         Returns
         -------
         str
-            The pairing secret (22-character URL-safe string).
+            The pairing secret (6-digit zero-padded numeric string).
         """
-        self.secret = secrets.token_urlsafe(16)
+        passkey = secrets.randbelow(1_000_000)
+        self.secret = f"{passkey:06d}"
         self.paired = False
         _write_shared_secret(self.secret)
         return self.secret

@@ -5,8 +5,10 @@ Wants=nomopractic.service
 
 [Service]
 Type=simple
-User=nomon
-Group=nomon
+Environment=NOMON_SERVICE_USER=nomon NOMON_SERVICE_GROUP=nomon
+EnvironmentFile=-/etc/nomothetic/nomothetic.env
+User=${NOMON_SERVICE_USER}
+Group=${NOMON_SERVICE_GROUP}
 
 # Ensure the shared pairing secret directory exists with correct ownership.
 # systemd creates /var/lib/nomon owned by User:Group automatically.
@@ -19,8 +21,6 @@ WorkingDirectory=/opt/nomothetic
 # Or provide proper certificates for production.
 ExecStart=/opt/nomothetic/.venv/bin/uvicorn nomothetic.api:create_app --factory --host 0.0.0.0 --port 8443 --ssl-keyfile /etc/nomothetic/tls/key.pem --ssl-certfile /etc/nomothetic/tls/cert.pem
 
-# Optional env file — service starts even if the file is absent.
-EnvironmentFile=-/etc/nomothetic/nomothetic.env
 Environment=NOMON_API_MODE=device
 Environment=NOMON_DEVICE_AUTH=true
 

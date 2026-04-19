@@ -297,62 +297,43 @@ pairing state, users, and tokens live in in-memory stores.
 
 ---
 
-## BLE Pairing & Encrypted Control (Phase 13/18/2)
+## BLE NDJSON Relay (Phase 13.1 / 18.1 / 2.1)
 
 > **Status:** Fully implemented across nomopractic (GATT server),
 > nomothetic (pairing coordination), and nomotactic (BLE client).
-> See nomopractic ADR-001 (GATT server), ADR-002 (binary protocol),
-> and ADR-003 (security model) for design details.
+> See nomopractic ADR-001 (GATT server) and ADR-004 (BLE Simplification — Native OS Pairing + NDJSON Relay) for design details.
+> ADR-002 (binary protocol) and ADR-003 (security model) are superseded by ADR-004.
 
 ### Component Inventory
 
 | Component | Repo | Location | Status |
 |-----------|------|----------|--------|
 | BLE GATT server | nomopractic | `src/ble/mod.rs` | Implemented (behind `ble` feature flag) |
-| Binary protocol codec | nomopractic | `src/ble/protocol.rs` | Implemented + 20 unit tests |
-| Session auth + AES-CCM | nomopractic | `src/ble/session.rs` | Implemented + 8 unit tests |
-| GATT service registration | nomopractic | `src/ble/services.rs` | Implemented |
-| IPC bridge | nomopractic | `src/ble/bridge.rs` | Implemented + 9 mapping tests |
+| GATT service + characteristics | nomopractic | `src/ble/services.rs` | Implemented + tests |
+| NDJSON relay bridge | nomopractic | `src/ble/bridge.rs` | Implemented + 9 mapping tests |
 | WiFi provisioning (nmcli) | nomopractic | `src/ble/wifi.rs` | Implemented + 8 unit tests |
 | BLE config | nomopractic | `src/config.rs` | Implemented + 6 unit tests |
 | Pairing secret file | nomothetic | `src/nomothetic/pairing.py` | Implemented + 25 unit tests |
 | Device auth endpoints | nomothetic | `src/nomothetic/device_auth_routes.py` | Implemented + 17 tests |
 | BLE client (`RealBleService`) | nomotactic | `lib/ble.ts` | Implemented |
-| Binary protocol codec (TS) | nomotactic | `lib/ble-protocol.ts` | Implemented |
-| Session encryption (TS) | nomotactic | `lib/ble-session.ts` | Implemented |
 | Transport layer | nomotactic | `lib/transport.tsx` | Implemented |
 | Connection indicator | nomotactic | `components/ConnectionIndicator.tsx` | Implemented |
 
 ### Unit Tests (Already Passing)
 
-#### nomopractic — Binary Protocol (`ble/protocol.rs`)
+#### nomopractic — NDJSON Relay Bridge (`ble/bridge.rs`)
 
 | Test | Status | Coverage |
 |------|:------:|----------|
-| Round-trip encode/decode for all 10 opcodes | PASS | `Heartbeat`, `GetBattery`, `SetMotorSpeed`, `StopAllMotors`, `SetServoAngle`, `Drive`, `Steer`, `ReadUltrasonic`, `ReadGrayscale`, `GetHealth` |
-| Negative speed encoding (signed i16) | PASS | `set_motor_speed_negative_full` |
-| Speed clamping at ±100 | PASS | `speed_clamp_extremes` |
-| Servo angle maximum (180°) | PASS | `servo_angle_max` |
-| Zero TTL motor | PASS | `zero_ttl_motor` |
-| Zero sequence number | PASS | `zero_seq_nr` |
-| Speed ×100 roundtrip | PASS | `speed_conversion_roundtrip` |
-| Voltage mV conversion | PASS | `voltage_conversion` |
-| Truncated input | PASS | `decode_request_too_short`, `decode_request_bad_opcode` |
-
-#### nomopractic — Session Auth (`ble/session.rs`)
-
-| Test | Status | Coverage |
-|------|:------:|----------|
-| Pair with correct secret | PASS | `pair_succeeds_with_correct_secret` |
-| Pair with wrong secret | PASS | `pair_fails_with_wrong_secret` |
-| Pair with different-length secret | PASS | `pair_fails_with_different_length` |
-| Unique salts per session | PASS | `pair_produces_unique_salts` |
-| Encrypt/decrypt roundtrip | PASS | `encrypt_decrypt_roundtrip` |
-| Replay detection (counter reuse) | PASS | `replay_detection` |
-| Decrypt too-short input | PASS | `decrypt_too_short` |
-| TX counter increments | PASS | `tx_counter_increments` |
-| Session state lifecycle | PASS | `session_state_lifecycle` |
-| Nonce direction byte | PASS | `nonce_includes_direction_byte` |
+| NDJSON command dispatched to IPC handler | PASS | `bridge_dispatches_command` |
+| Chunked write accumulates full request | PASS | `bridge_accumulates_chunks` |
+| Response chunked into MTU-sized frames | PASS | `bridge_chunks_response` |
+| Unknown method returns error response | PASS | `bridge_unknown_method_error` |
+| Concurrent requests handled correctly | PASS | `bridge_concurrent_requests` |
+| Empty / malformed JSON rejected | PASS | `bridge_malformed_json_error` |
+| Large response fits in multiple chunks | PASS | `bridge_large_response_chunks` |
+| IPC error propagated to BLE client | PASS | `bridge_ipc_error_propagated` |
+| Passkey agent reads 6-digit file | PASS | `passkey_agent_reads_file` |
 
 #### nomopractic — Config (`config.rs`)
 
@@ -411,128 +392,117 @@ daemons, or multi-process test harnesses).
 Preconditions:
   - nomothetic running in device mode (NOMON_DEVICE_AUTH=true)
   - nomopractic running with ble.enabled=true
-  - pairing_secret_path shared between both daemons
+  - pairing_secret_path contains a 6-digit numeric passkey
 
 Test Sequence:
-  1. nomothetic starts → generates pairing secret → writes to shared file
-  2. Verify: shared file exists at pairing_secret_path with mode 0640
-  3. nomotactic scans for BLE devices → discovers nomon advertisement
-  4. nomotactic connects to GATT server
-  5. nomotactic writes pairing secret to Pairing Secret characteristic
-  6. nomopractic reads shared file → constant-time compare → derives session key
-  7. nomopractic sends auth notification: salt (16B) || JWT
-  8. nomotactic receives notification → derives same session key via HKDF
-  9. Verify: both sides have identical 16-byte AES session keys
-  10. Verify: JWT is valid (iss=nomon-device, sub=device-owner@local)
-  11. Verify: pairing secret file is deleted after successful pairing
+  1. nomopractic starts → reads 6-digit passkey from pairing_secret_path
+  2. nomotactic scans for BLE devices → discovers nomon advertisement
+  3. nomotactic connects to GATT server
+  4. OS shows native Bluetooth passkey dialog; user enters 6-digit code
+  5. BlueZ completes bonding (link-layer AES-CCM encryption, no app-layer crypto)
+  6. nomotactic calls `authenticate` IPC method over NDJSON relay
+  7. nomopractic dispatches to IPC handler → signs JWT (iss=nomon-device, sub=device-owner@local)
+  8. nomotactic receives JWT → stores in expo-secure-store
+  9. Verify: JWT is valid (iss=nomon-device, sub=device-owner@local)
+  10. Verify: JWT usable for HTTPS auth once WiFi is available
 
 Expected Result:
-  - BLE session established (both sides have session key)
+  - BLE bonding completed via OS passkey entry (no app-layer secret exchange)
   - JWT usable for HTTPS auth (if WiFi available later)
-  - Pairing secret consumed (file deleted, nomothetic state cleared)
+  - Passkey file remains intact (passkey is reusable; not consumed)
 ```
 
 **Test Infrastructure Required:**
 - Raspberry Pi with BlueZ OR `bluer` mock adapter (D-Bus mock)
-- Both daemons running (can share a tmpdir for pairing_secret_path)
-- Mobile device or BLE test client (e.g., `bluez` `gatttool` or Python `bleak`)
+- Both daemons running (nomopractic with pairing_secret_path configured)
+- Mobile device or BLE test client (e.g., `bluez` `bluetoothctl` or Python `bleak`)
 
 **Interim Testability:**
-- Steps 1-2 testable now (nomothetic unit tests)
-- Steps 6-7 testable now (nomopractic session unit tests)
-- Steps 8-9 testable now by verifying HKDF parameters match across repos
+- Steps 1-2 testable now (nomopractic config + pairing file tests)
+- Steps 6-7 testable now (nomopractic IPC handler unit tests)
 - Full flow requires BLE hardware or D-Bus adapter mock
 
-#### E2E-2: Encrypted BLE Command Roundtrip
+#### E2E-2: NDJSON BLE Command Roundtrip
 
-> **Priority: P0** — Validates that encrypted commands reach hardware.
+> **Priority: P0** — Validates that NDJSON commands reach hardware over BLE.
 
 ```
 Preconditions:
-  - BLE session established (from E2E-1)
+  - BLE bonded (from E2E-1), JWT obtained via `authenticate`
   - nomopractic IPC handler running (HAT accessible or mocked)
 
 Test Sequence:
-  1. nomotactic builds GetBattery request frame (opcode=0x02, seq=1)
-  2. nomotactic encrypts frame payload with session key (AES-128-CCM)
-  3. nomotactic writes encrypted frame to Command Write characteristic
-  4. nomopractic decrypts frame → verifies counter > last seen
-  5. nomopractic bridges to IPC handler → handler.dispatch("get_battery")
-  6. nomopractic encodes response (BatteryResult, opcode=0x82)
-  7. nomopractic encrypts response with session key
-  8. nomopractic sends notification on Command Response characteristic
-  9. nomotactic decrypts response → verifies counter > last seen
-  10. nomotactic decodes BatteryResult → displays voltage
+  1. nomotactic sends NDJSON command: {"id":"1","method":"get_battery_voltage","params":{}}
+  2. nomotactic chunks NDJSON into MTU-sized BLE writes to Command Write characteristic
+  3. nomopractic accumulates chunks → reconstructs full NDJSON request
+  4. nomopractic dispatches to IPC handler → handler.dispatch("get_battery_voltage")
+  5. nomopractic sends NDJSON response chunked via Response Notify characteristic
+  6. nomotactic assembles chunks → parses JSON response → displays voltage
 
 Expected Result:
-  - Correct battery voltage returned
-  - Both TX counters incremented by 1
-  - RX counters updated to match received counter values
+  - Correct battery voltage returned as standard NDJSON response
+  - Same JSON format as HTTPS API (no custom codec)
 ```
 
 **Additional Command Tests:**
 | Command | Key Verification |
 |---------|-----------------|
-| SetMotorSpeed(ch=0, speed=50, ttl=500) | Speed encoded as i16 ×100 = 5000 |
-| Drive(speed=75, ttl=1000) | Fixed-point and TTL correct |
-| Steer(angle=45, ttl=500) | Angle encoded as u16 ×10 = 450 |
-| StopAllMotors | Empty payload, all motors stop |
-| SetServoAngle(ch=0, angle=90, ttl=500) | Servo responds correctly |
-| ReadUltrasonic | Distance returned as u16 ×10 |
-| ReadGrayscale | Three u16 values returned |
-| GetHealth | Status byte + uptime u32 |
-| Heartbeat | Echo roundtrip |
+| set_motor_speed(channel=0, speed_pct=50, ttl_ms=500) | Standard NDJSON params |
+| drive(speed_pct=75, ttl_ms=1000) | Standard NDJSON params |
+| steer(angle_deg=45, ttl_ms=500) | Standard NDJSON params |
+| stop_all_motors | Empty params, all motors stop |
+| set_servo_angle(channel=0, angle_deg=90, ttl_ms=500) | Servo responds correctly |
+| read_ultrasonic | Distance returned in cm |
+| read_grayscale | Three u16 values returned |
+| health | {"status":"ok","uptime_s":<N>,...} |
+| health | Echo roundtrip |
 
-#### E2E-3: BLE Replay Attack Rejection
+#### E2E-3: BLE Reconnection Handling
 
-> **Priority: P0** — Security-critical.
+> **Priority: P0** — Validates reconnection and re-bonding after disconnect.
 
 ```
 Test Sequence:
-  1. Establish BLE session
-  2. Send valid encrypted command (counter=0) → succeeds
-  3. Replay exact same encrypted frame (counter=0) → REJECTED
-  4. Send valid command with counter=1 → succeeds
-  5. Send command with counter=1 (replay) → REJECTED
-  6. Send command with counter=0 (out-of-order) → REJECTED
-  7. Send counter=2 → succeeds (gap of 1 is allowed)
+  1. Establish BLE bond, obtain JWT
+  2. Drop BLE connection (simulate disconnect)
+  3. nomotactic detects disconnect → triggers auto-reconnect
+  4. BLE link re-established (OS uses stored bond key, no re-pairing needed)
+  5. nomotactic calls `authenticate` again → receives fresh JWT
+  6. Commands resume over NDJSON relay
 
 Expected Result:
-  - Steps 3, 5, 6 return CryptoError::ReplayDetected
-  - Both sides maintain correct counter state
-  - Security checklist B5 validated
+  - Reconnect uses existing OS bond (no passkey re-entry)
+  - New JWT obtained; NDJSON commands resume normally
+  - Security checklist B5 validated (link-layer encryption maintained)
 ```
 
-#### E2E-4: WiFi Provisioning over BLE
+#### E2E-4: WiFi Provisioning via BLE NDJSON
 
-> **Priority: P1** — Required for BLE → HTTPS upgrade path.
+**Goal:** Verify that `wifi_scan`, `wifi_connect`, and `wifi_status` IPC methods work correctly over the BLE NDJSON relay.
 
-```
-Preconditions:
-  - BLE session established
-  - Pi has WiFi hardware (BCM43436s)
+**Infrastructure:** Pi Zero 2W with `--features ble` build. Mobile device bonded via OS passkey.
 
-Test Sequence:
-  1. nomotactic sends WiFi Scan command (0x01) to WiFi Command char
-  2. nomopractic executes `nmcli dev wifi list` → parses output
-  3. nomopractic encodes scan results → writes to WiFi Result char
-  4. nomotactic receives and parses scan results
-  5. nomotactic sends WiFi Connect (0x02 || ssid_len || ssid || pwd_len || pwd)
-  6. nomopractic executes `nmcli dev wifi connect ...`
-  7. nomopractic sends connect result (0x02 || success_byte)
-  8. nomotactic sends WiFi Status query (0x03)
-  9. nomopractic returns current WiFi state (connected/disconnected + SSID + RSSI)
+**Steps:**
 
-Expected Result:
-  - Pi connects to specified WiFi network
-  - nomotactic can then switch transport to HTTPS
-  - JWT from BLE pairing is reusable for HTTPS auth
-```
+1. Ensure BLE session established (OS passkey bonded, JWT obtained via `authenticate`).
+2. Send `wifi_scan` command over BLE:
+   - Write `{"id":"1","method":"wifi_scan","params":{}}\n` to Command Write characteristic.
+   - Read Response Notify notifications until newline received.
+   - Expected: `{"id":"1","ok":true,"result":{"networks":[...]}}\n`
+3. Select an SSID from the returned list.
+4. Send `wifi_connect` command:
+   - Write `{"id":"2","method":"wifi_connect","params":{"ssid":"MyNetwork","password":"secret"}}\n`
+   - Expected: `{"id":"2","ok":true,"result":{"success":true}}\n`
+5. Send `wifi_status` command:
+   - Write `{"id":"3","method":"wifi_status","params":{}}\n`
+   - Expected: `{"id":"3","ok":true,"result":{"state":"connected","ssid":"MyNetwork","signal":<int>}}\n`
+6. Pi connects to WiFi network. Verify nmcli status shows connected.
+7. Switch nomotactic to HTTPS transport (HTTPS device API now reachable).
+8. Confirm JWT issued over BLE is valid for HTTPS (`Authorization: Bearer <jwt>` → 200).
 
-**Interim Testability:**
-- WiFi command encoding/decoding testable now (unit tests)
-- `nmcli` interaction testable on any Linux with NetworkManager
-- Full flow requires WiFi AP + BLE hardware
+**Pass criteria:** All three WiFi NDJSON methods return `"ok": true`. JWT transitions to HTTPS cleanly.
+
+**Notes:** Uses the same single GATT service as all other BLE commands (ADR-004). No binary encoding or separate WiFi characteristics. The verification in Step 8 mirrors the standard NDJSON relay test.
 
 #### E2E-5: Transport Fallback (BLE → HTTPS)
 
@@ -547,7 +517,7 @@ Test Sequence:
   2. Commands routed via HTTPS to nomothetic → IPC → nomopractic
   3. WiFi signal lost → nomotactic detects disconnect
   4. nomotactic falls back to BLE transport automatically
-  5. Commands resume via BLE binary protocol
+  5. Commands resume via BLE NDJSON relay
   6. WiFi reconnects → nomotactic switches back to HTTPS
 
 Expected Result:
@@ -577,44 +547,43 @@ Expected Result:
   nomopractic (HS256, iss=nomon-device, sub=device-owner@local) and
   verifying nomothetic accepts it. Requires shared JWT secret.
 
-#### E2E-7: BLE Session Termination
+#### E2E-7: BLE Disconnect Resource Cleanup
 
 > **Priority: P2** — Resource cleanup validation.
 
 ```
 Test Sequence:
-  1. Establish BLE session
+  1. Establish BLE bond, obtain JWT
   2. Client disconnects (BLE link loss)
-  3. nomopractic detects disconnect → clears session state
-  4. nomopractic calls on_client_disconnect(BLE_CONN_ID) on handler
+  3. nomopractic detects disconnect → clears connection state
+  4. nomopractic calls on_client_disconnect handler
   5. Verify: all motor/servo leases held by BLE connection are released
-  6. Client reconnects → must re-pair (session is gone)
+  6. Client reconnects → must call `authenticate` again to get new JWT
 
 Expected Result:
   - No orphaned hardware leases after BLE disconnect
-  - Session key zeroed from memory
-  - Reconnection requires full pairing flow
+  - Connection state cleared from memory
+  - Re-authentication via `authenticate` required before commands resume
 ```
 
-#### E2E-8: BLE Counter Overflow
+#### E2E-8: BLE Reconnect After Long Idle
 
-> **Priority: P3** — Edge case at session lifetime boundary.
+> **Priority: P3** — Edge case: OS bond persistence after long disconnect.
 
 ```
 Test Sequence:
-  1. Establish BLE session
-  2. Send 65534 commands (counter reaches 0xFFFE)
-  3. Send command 65535 (counter = 0xFFFF) → succeeds
-  4. Attempt command 65536 → EncryptionFailed error
-  5. Verify: session must be re-established
+  1. Establish BLE bond, obtain JWT
+  2. Disconnect and leave idle for extended period
+  3. Reconnect → OS bond should still be valid
+  4. Call `authenticate` → new JWT returned
+  5. Verify: NDJSON commands resume normally
 
 Expected Result:
-  - Counter overflow returns error (not wrap to 0)
-  - No nonce reuse under any circumstances
+  - OS bond survives idle periods
+  - Re-authentication via `authenticate` is sufficient (no re-pairing)
 ```
 
-**Interim Testability:** Fully testable via unit tests (set counter to
-0xFFFE, attempt encrypt). Already covered in session.rs and ble-session.ts.
+**Interim Testability:** Testable on device by checking BlueZ bond persistence.
 
 ### Cross-Repo Consistency Checks
 
@@ -622,15 +591,11 @@ These are static verification tests that can run without hardware:
 
 | Check | Can Test Now? | How |
 |-------|:------------:|-----|
-| Opcode values match (Rust ↔ TypeScript) | Yes | Compare `ble/protocol.rs` opcodes with `ble-protocol.ts` opcodes |
 | GATT UUIDs match (Rust ↔ TypeScript ↔ docs) | Yes | Compare `services.rs`, `ble.ts`, `project-context.md` |
-| HKDF parameters match (info string, key length) | Yes | Compare `session.rs` and `ble-session.ts` constants |
-| AES-CCM parameters match (tag length, nonce format) | Yes | Compare both session modules |
-| WiFi binary format match (command/result encoding) | Yes | Compare `wifi.rs` and `ble.ts` encode/decode |
-| AAD computation match | Yes | Compare `services.rs` and `ble.ts` frame slicing |
-| JWT claims match (iss, sub) | Yes | Compare `session.rs` and `device_auth_routes.py` |
-| Counter replay logic match | Yes | Compare both session modules |
-| Fixed-point encoding match (speed×100, angle×10, etc.) | Yes | Compare both protocol codecs |
+| NDJSON method names match (Rust ↔ TypeScript) | Yes | Compare `handler.rs` methods with `ble.ts` method strings |
+| WiFi IPC method format match | Yes | Compare `wifi.rs` and `ble.ts` NDJSON method names and param fields match |
+| JWT claims match (iss, sub) | Yes | Compare nomopractic `authenticate` handler and `device_auth_routes.py` |
+| Config field names match | Yes | Compare `config.rs` BLE fields and `config.toml` |
 
 > **Recommendation:** Create a dedicated cross-repo consistency test script
 > that parses constants from both codebases and asserts equality. This
@@ -843,7 +808,7 @@ Run these checks from the Pi shell:
 
 ```bash
 # 1. nomopractic IPC socket is alive
-echo '{"method":"get_battery"}' | socat - UNIX-CONNECT:/run/nomopractic/nomopractic.sock
+echo '{"method":"get_battery_voltage"}' | socat - UNIX-CONNECT:/run/nomopractic/nomopractic.sock
 # Expected: JSON response with battery voltage
 
 # 2. BLE adapter is advertising
@@ -896,46 +861,43 @@ should load and show the login/pairing screen.
 2. Tap **Scan for devices** — the app scans for BLE peripherals advertising the
    nomon GATT service UUID (`e3a10001-1000-2000-3000-e3a1e3a1e3a1`).
 3. Select the device named `nomon` from the scan results.
-4. The app connects and discovers GATT services/characteristics.
-5. Enter the **pairing secret** from Step 4 when prompted.
-6. The app writes the secret to the Pairing characteristic — the Pi verifies it,
-   mints a JWT, and sends it back via a BLE notification.
-7. Both sides derive the AES-128-CCM encryption key from the JWT using
-   HKDF-SHA256.
+4. The OS shows a native Bluetooth passkey dialog — enter the **6-digit passkey**
+   from `/var/lib/nomon/pairing_secret` on the Pi (nomopractic logs it at startup).
+5. BlueZ completes bonding with link-layer encryption (no app-layer crypto).
+6. The app calls the `authenticate` IPC method over the NDJSON relay — nomopractic
+   mints a JWT and returns it.
 
 **Verify pairing succeeded:**
 - The app should show a "Connected" or "Paired" status.
 - On the Pi: `sudo journalctl -u nomopractic --no-pager -n 10` should show a
-  successful pairing log entry.
+  successful authentication log entry.
 
 ### Step 7 — Send Commands over BLE
 
-With BLE paired and encrypted, test the command path:
+With BLE bonded and authenticated, test the command path:
 
-| Action in App | BLE Opcode | Expected Result |
+| Action in App | IPC Method | Expected Result |
 |---------------|-----------|-----------------|
-| Read battery | `0x07` GetBattery | App displays battery voltage |
-| Drive forward | `0x01` SetMotorSpeed | Motors spin (verify physically) |
-| Stop motors | `0x01` SetMotorSpeed (speed=0) | Motors stop |
-| Read ultrasonic | `0x09` GetUltrasonic | App displays distance in cm |
-| Steer servo | `0x03` SetServoAngle | Servo moves to target angle |
+| Read battery | `get_battery_voltage` | App displays battery voltage |
+| Drive forward | `set_motor_speed` | Motors spin (verify physically) |
+| Stop motors | `stop_all_motors` | Motors stop |
+| Read ultrasonic | `read_ultrasonic` | App displays distance in cm |
+| Steer servo | `set_servo_angle` | Servo moves to target angle |
 
-Each command is encrypted with AES-128-CCM. Verify on the Pi that the
-counter increments by checking daemon logs:
+Commands are sent as NDJSON over the BLE GATT characteristics. Verify on the Pi:
 
 ```bash
-sudo journalctl -u nomopractic --no-pager -n 30 | grep -i "counter\|decrypt\|command"
+sudo journalctl -u nomopractic --no-pager -n 30 | grep -i "command\|dispatch\|method"
 ```
 
 ### Step 8 — WiFi Provisioning over BLE
 
 1. In the app, navigate to the WiFi settings screen.
-2. Tap **Scan WiFi** — the app writes a scan request to the WiFi GATT
-   characteristic. The Pi runs `nmcli dev wifi list` and returns available
-   networks as binary-encoded results.
+2. Tap **Scan WiFi** — the app sends a `wifi_scan` IPC method over NDJSON.
+   The Pi runs `nmcli dev wifi list` and returns available networks.
 3. Select a network from the scan results.
 4. Enter the WiFi password when prompted.
-5. The app sends a WiFi Connect command with SSID + password over BLE.
+5. The app sends a `wifi_connect` IPC method with SSID + password over BLE.
 6. The Pi runs `nmcli dev wifi connect ...` and returns the connection status.
 
 **Verify WiFi connected:**
@@ -1082,11 +1044,11 @@ Tests are prioritised by risk and user impact:
 | **P2** | Telemetry publish and retrieval | Data integrity for fleet monitoring |
 | **P2** | CORS configuration | Security — but mitigated by network isolation on device |
 | **P0** | BLE pairing flow (E2E-1) | Security-critical — broken pairing = no device access or unauthorized access |
-| **P0** | BLE replay protection (E2E-3) | Security-critical — replay attack = unauthorized command execution |
-| **P0** | Encrypted command roundtrip (E2E-2) | Core device control path over BLE |
+| **P0** | NDJSON command roundtrip (E2E-2) | Core device control path over BLE |
+| **P0** | BLE reconnection handling (E2E-3) | Reliability — reconnect must work without re-pairing |
 | **P1** | WiFi provisioning (E2E-4) | Required for BLE → HTTPS upgrade; blocked without WiFi hardware |
 | **P1** | Transport fallback (E2E-5) | User experience — seamless connectivity transitions |
 | **P2** | BLE/HTTPS auth consistency (E2E-6) | Token interoperability across transports |
-| **P2** | BLE session termination (E2E-7) | Resource cleanup — orphaned leases |
+| **P2** | BLE disconnect cleanup (E2E-7) | Resource cleanup — orphaned leases |
 | **P2** | ArcadeDB integration | Gremlin stores exist (`db.py`, `user_store.py`, `fleet_store.py`); integration tests against Docker ArcadeDB recommended |
-| **P3** | BLE counter overflow (E2E-8) | Edge case — covered by unit tests already |
+| **P3** | BLE reconnect after long idle (E2E-8) | Edge case — OS bond persistence |

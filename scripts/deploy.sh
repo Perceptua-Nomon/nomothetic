@@ -37,22 +37,23 @@
 #                     defaults to ${HOME}/perceptua-nomon/nomothetic.
 #
 # The script (release mode) connects to the Pi and performs the following steps there:
-#   1. Stops all nomothetic servers.
+#   1. Stops all nomothetic servers, including systemd-managed services if present.
 #   2. Records the current git ref so it can be restored on failure.
 #   3. Fetches tags from origin and checks out the target version.
 #   4. Installs Python dependencies (production + dev extras).
 #   5. Runs release checks: unit tests only.
 #   6. Starts the API server, waits for readiness, starts the stream via the API,
 #      performs a health check, then stops the stream and API.
+#   7. Installs/updates systemd unit files and restarts the nomothetic services.
 #
 # The script (--local mode):
 #   1. Reads the version from pyproject.toml.
 #   2. Syncs the local source tree to the Pi via rsync (skipped if already on Pi).
-#   3. Connects to the Pi and performs steps 1, 4–6 above (skipping git operations).
+#   3. Connects to the Pi and performs steps 1, 4–7 above (skipping git operations).
 #
 # Rollback:
 #   If any step from 3–6 fails the script checks out the previous ref,
-#   reinstalls production deps, and restarts the servers before exiting.
+#   reinstalls production deps, and restarts the previously running services before exiting.
 #
 # Exit codes:
 #   0  Deploy successful.
@@ -140,6 +141,32 @@ else
     RUN_CMD=(bash -ls --)
 fi
 
+# Deploy-only variables that must NOT be written to the on-device env file.
+_DEPLOY_EXCLUDE='^\s*(NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_GITHUB_REPO)\s*='
+
+copy_nomothetic_env() {
+    if [[ ! -f "${ENV_FILE}" ]]; then
+        echo "==> Warning: .env not found; skipping /etc/nomothetic/nomothetic.env creation." >&2
+        return
+    fi
+
+    local filtered
+    filtered="$(grep -vE "${_DEPLOY_EXCLUDE}" "${ENV_FILE}" \
+        | grep -vE '^\s*#' \
+        | grep -vE '^\s*$')"
+
+    if [[ -n "${PI_HOST}" ]]; then
+        echo "==> Writing /etc/nomothetic/nomothetic.env on remote host..."
+        printf '%s\n' "${filtered}" \
+            | ssh "${SSH_OPTS[@]}" "${PI_HOST}" \
+                'sudo mkdir -p /etc/nomothetic && sudo tee /etc/nomothetic/nomothetic.env >/dev/null'
+    else
+        echo "==> Writing /etc/nomothetic/nomothetic.env locally..."
+        sudo mkdir -p /etc/nomothetic
+        printf '%s\n' "${filtered}" | sudo tee /etc/nomothetic/nomothetic.env > /dev/null
+    fi
+}
+
 # ── Local mode: sync source tree to Pi ────────────────────────────────────────
 
 if [[ "${DEPLOY_LOCAL}" == true && -n "${PI_HOST}" ]]; then
@@ -164,6 +191,8 @@ if [[ "${DEPLOY_LOCAL}" == true && -n "${PI_HOST}" ]]; then
     rsync "${RSYNC_OPTS[@]}" "${REPO_DIR}/" "${_rsync_dest}"
     echo "  Sync complete ✓"
 fi
+
+copy_nomothetic_env
 
 # ── Deployment ─────────────────────────────────────────────────────────────────
 # All steps below run on the Pi (remote or local) via a single shell session.
@@ -245,16 +274,48 @@ rollback() {
     echo "  Reinstalling previous version..." >&2
     uv sync --extra pi --extra web --extra api --extra telemetry 2>&1 || true
 
-    echo "  Restarting API server..." >&2
-    NOMON_API_MODE=device NOMON_DEVICE_AUTH=false ./scripts/start.sh api 2>&1 || true
+    if [[ "${SYSTEMD_AVAILABLE}" == "true" ]]; then
+        if [[ "${PREV_API_SERVICE_ACTIVE}" == "true" ]]; then
+            echo "  Restarting nomothetic-api.service..." >&2
+            sudo systemctl restart nomothetic-api.service 2>&1 || true
+        fi
+        if [[ "${PREV_STREAM_SERVICE_ACTIVE}" == "true" ]]; then
+            echo "  Restarting nomothetic-stream.service..." >&2
+            sudo systemctl restart nomothetic-stream.service 2>&1 || true
+        fi
+    else
+        echo "  Restarting API server..." >&2
+        NOMON_API_MODE=device NOMON_DEVICE_AUTH=false ./scripts/start.sh api 2>&1 || true
+    fi
 
-    echo "!! Rollback complete. API server restored to ${PREV_LABEL:-local}." >&2
+    echo "!! Rollback complete. Services restored to ${PREV_LABEL:-local}." >&2
     exit 2
 }
 
 trap rollback ERR
 
-# ── Stop servers ───────────────────────────────────────────────────────────────
+# ── Systemd service state capture ───────────────────────────────────────────────
+
+SYSTEMD_AVAILABLE=false
+PREV_API_SERVICE_ACTIVE=false
+PREV_STREAM_SERVICE_ACTIVE=false
+
+if command -v systemctl >/dev/null 2>&1; then
+    SYSTEMD_AVAILABLE=true
+    for _svc in nomothetic-api nomothetic-stream; do
+        if sudo systemctl list-unit-files --full --no-legend "${_svc}.service" >/dev/null 2>&1; then
+            if sudo systemctl is-active --quiet "${_svc}.service"; then
+                if [[ "${_svc}" == "nomothetic-api" ]]; then
+                    PREV_API_SERVICE_ACTIVE=true
+                else
+                    PREV_STREAM_SERVICE_ACTIVE=true
+                fi
+            fi
+            echo "  Stopping ${_svc}.service if it exists..."
+            sudo systemctl stop "${_svc}.service" 2>/dev/null || true
+        fi
+    done
+fi
 
 echo "==> Stopping servers..."
 ./scripts/stop.sh all
@@ -349,14 +410,30 @@ echo "==> Stopping API server..."
 if command -v systemctl >/dev/null 2>&1; then
     _systemd_changed=false
 
+    # Resolve service identity for template substitution.
+    if ! command -v envsubst >/dev/null 2>&1; then
+        echo "Error: envsubst not found. Install: sudo apt-get install -y gettext-base" >&2
+        exit 1
+    fi
+    if [[ -f /etc/nomothetic/nomothetic.env ]]; then
+        set -o allexport
+        # shellcheck disable=SC1091
+        source /etc/nomothetic/nomothetic.env
+        set +o allexport
+    fi
+    export NOMON_SERVICE_USER="${NOMON_SERVICE_USER:-nomon}"
+    export NOMON_SERVICE_GROUP="${NOMON_SERVICE_GROUP:-nomon}"
+
     for _svc_file in systemd/*.service; do
         [[ -f "${_svc_file}" ]] || continue
         _svc_name="$(basename "${_svc_file}")"
         _dest="/etc/systemd/system/${_svc_name}"
 
-        if [[ ! -f "${_dest}" ]] || ! diff -q "${_svc_file}" "${_dest}" >/dev/null 2>&1; then
+        _expanded="$(envsubst '$NOMON_SERVICE_USER $NOMON_SERVICE_GROUP' < "${_svc_file}")"
+        if [[ ! -f "${_dest}" ]] || [[ "${_expanded}" != "$(cat "${_dest}")" ]]; then
             echo "  Installing ${_svc_name}..."
-            sudo cp "${_svc_file}" "${_dest}"
+            printf '%s\n' "${_expanded}" | sudo tee "${_dest}" > /dev/null
+            sudo chmod 644 "${_dest}"
             _systemd_changed=true
         fi
     done
