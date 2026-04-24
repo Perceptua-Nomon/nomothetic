@@ -1252,7 +1252,7 @@ from the `NOMON_JWT_SECRET` environment variable. Returns a JWT with
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `token` | string | Signed HS256 JWT |
+| `token` / `jwt` | string | Signed HS256 JWT. Clients SHOULD accept either `token` or `jwt` (historical variants). |
 | `expires_at` | string | ISO 8601 / RFC 3339 expiry timestamp |
 
 **JWT claims:**
