@@ -3,9 +3,10 @@
 POST /api/device/network/configure
 """
 
+import asyncio
 import os
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -51,17 +52,23 @@ def _get_token(client: TestClient, app) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _make_mock_proc(returncode: int = 0, stderr: str = "") -> AsyncMock:
+    """Build an AsyncMock that behaves like an asyncio subprocess."""
+    mock_proc = AsyncMock()
+    mock_proc.returncode = returncode
+    mock_proc.communicate = AsyncMock(return_value=(b"", stderr.encode()))
+    mock_proc.kill = MagicMock()
+    return mock_proc
+
+
 def test_configure_wifi_success(device_client):
     """Valid SSID + WPA2 password returns 200 with status=connecting."""
     client, app = device_client
     token = _get_token(client, app)
 
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = "Device 'wlan0' successfully activated"
-    mock_result.stderr = ""
+    mock_proc = _make_mock_proc(returncode=0)
 
-    with patch("nomothetic.api.subprocess.run", return_value=mock_result):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         resp = client.post(
             "/api/device/network/configure",
             json={"ssid": "HomeNetwork", "password": "securepass123"},
@@ -72,17 +79,40 @@ def test_configure_wifi_success(device_client):
     assert resp.json() == {"status": "connecting"}
 
 
+def test_configure_wifi_password_not_in_cmd_args(device_client):
+    """Password must never appear in the subprocess argument list (stdin only)."""
+    client, app = device_client
+    token = _get_token(client, app)
+
+    mock_proc = _make_mock_proc(returncode=0)
+    captured_args: list[str] = []
+
+    async def _capture_exec(*args: str, **kwargs: object) -> AsyncMock:
+        captured_args.extend(args)
+        return mock_proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=_capture_exec):
+        resp = client.post(
+            "/api/device/network/configure",
+            json={"ssid": "HomeNetwork", "password": "securepass123"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert resp.status_code == 200
+    assert "securepass123" not in captured_args, (
+        "Password must not appear in subprocess args; it should be sent via stdin"
+    )
+    assert "--ask" in captured_args, "nmcli must be invoked with --ask for stdin prompting"
+
+
 def test_configure_wifi_open_network(device_client):
     """Valid SSID with empty password (open network) returns 200."""
     client, app = device_client
     token = _get_token(client, app)
 
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = "Device 'wlan0' successfully activated"
-    mock_result.stderr = ""
+    mock_proc = _make_mock_proc(returncode=0)
 
-    with patch("nomothetic.api.subprocess.run", return_value=mock_result):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         resp = client.post(
             "/api/device/network/configure",
             json={"ssid": "OpenCafe", "password": ""},
@@ -148,12 +178,11 @@ def test_configure_wifi_subprocess_failure(device_client):
     client, app = device_client
     token = _get_token(client, app)
 
-    mock_result = MagicMock()
-    mock_result.returncode = 1
-    mock_result.stdout = ""
-    mock_result.stderr = "Error: No network with SSID 'BadSSID' found."
+    mock_proc = _make_mock_proc(
+        returncode=1, stderr="Error: No network with SSID 'BadSSID' found."
+    )
 
-    with patch("nomothetic.api.subprocess.run", return_value=mock_result):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         resp = client.post(
             "/api/device/network/configure",
             json={"ssid": "BadSSID", "password": "securepass123"},
@@ -170,12 +199,9 @@ def test_configure_wifi_rate_limited(device_client):
     client, app = device_client
     token = _get_token(client, app)
 
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = ""
-    mock_result.stderr = ""
+    mock_proc = _make_mock_proc(returncode=0)
 
-    with patch("nomothetic.api.subprocess.run", return_value=mock_result):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         for i in range(5):
             resp = client.post(
                 "/api/device/network/configure",

@@ -2398,45 +2398,47 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
             422 if SSID or password fail Pydantic validation.
             500 if the ``nmcli`` subprocess cannot be launched (OS error).
             429 if the rate limit is exceeded.
+
+        Notes
+        -----
+        The WPA2 password is passed to ``nmcli`` via stdin (``--ask`` mode),
+        never as a CLI argument, to prevent credential exposure in process
+        listings and system logs.
         """
         ssid = request_body.ssid
         password = request_body.password
 
-        if password:
-            cmd = [
-                "nmcli",
-                "--terse",
-                "device",
-                "wifi",
-                "connect",
-                ssid,
-                "password",
-                password,
-                "ifname",
-                "wlan0",
-            ]
-        else:
-            cmd = ["nmcli", "--terse", "device", "wifi", "connect", ssid, "ifname", "wlan0"]
+        # --ask makes nmcli read credentials from stdin so the password is
+        # never visible in the process argument list.
+        cmd = ["nmcli", "--ask", "--terse", "device", "wifi", "connect", ssid, "ifname", "wlan0"]
+        stdin_data = f"{password}\n".encode() if password else b"\n"
 
         async def _connect() -> None:
             try:
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-                if result.returncode != 0:
+                try:
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                        proc.communicate(input=stdin_data),
+                        timeout=30,
+                    )
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.communicate()
+                    logger.warning("nmcli wifi connect timed out for SSID %r", ssid)
+                    return
+                if proc.returncode != 0:
                     logger.warning(
                         "nmcli wifi connect failed (rc=%d): %s",
-                        result.returncode,
-                        result.stderr.strip(),
+                        proc.returncode,
+                        stderr_bytes.decode(errors="replace").strip(),
                     )
                 else:
                     logger.info("nmcli wifi connect succeeded for SSID %r", ssid)
-            except subprocess.TimeoutExpired:
-                logger.warning("nmcli wifi connect timed out for SSID %r", ssid)
             except OSError:
                 logger.warning("nmcli wifi connect OSError for SSID %r", ssid, exc_info=True)
 
