@@ -85,8 +85,9 @@ flow (see nomopractic ADR-005).
 3. User opens app → reaches nomothetic at `https://192.168.4.1:8443`
 4. User submits secret to `POST /api/device/auth/pair` → receives device JWT
 5. App reveals Wi-Fi provisioning form; user enters home SSID + WPA2 password
-6. `POST /api/device/network/configure` → nomothetic calls `nmcli` in a
-   non-blocking background task; NM stores a persistent connection profile
+6. `POST /api/device/network/configure` → nomothetic invokes `nmcli --ask` in a
+   non-blocking background task, writing the WPA2 password to stdin so it never
+   appears in the process argument list; NM stores a persistent connection profile
 7. `nomon-softap-watchdog.service` polls connectivity every 30 s; when
    `nmcli general connectivity` reaches `full`, calls `ap-mode.sh down`
 8. On future boots, device connects to home network directly; AP only activates
