@@ -424,6 +424,20 @@ nmcli con show nomon-ap
 | `https://192.168.4.1:8443` unreachable | nomothetic API not running | `sudo systemctl start nomothetic-api` |
 | Certificate warning | Self-signed cert (expected) | Click through or import `.certs/cert.pem` |
 
+### NetworkManager group access
+
+The `nomothetic-api` service runs as the `nomon` system user. For
+`POST /api/device/network/configure` to call `nmcli` without `sudo`, the
+`nomon` user must be a member of the `netdev` group:
+
+```bash
+sudo usermod -aG netdev nomon
+sudo systemctl restart nomothetic-api
+```
+
+This is done automatically by `scripts/deploy.sh`. If setting up manually,
+run the commands above after creating the `nomon` user.
+
 ---
 
 ## Troubleshooting

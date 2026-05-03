@@ -113,3 +113,13 @@ async def pairing_rate_limit(request: Request) -> None:
     """
     limiter: RateLimiter = request.app.state.pairing_limiter
     limiter.check(_client_ip(request))
+
+
+async def network_rate_limit(request: Request) -> None:
+    """FastAPI dependency that enforces Wi-Fi provisioning rate limiting.
+
+    Reads the ``network_limiter`` from ``app.state`` (created in
+    ``create_app``).  Allows 5 requests per minute per IP address.
+    """
+    limiter: RateLimiter = request.app.state.network_limiter
+    limiter.check(_client_ip(request))

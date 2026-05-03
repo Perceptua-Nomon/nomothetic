@@ -1134,6 +1134,33 @@ Simplification Coordination)
       `wifi_status`, or `authenticate` sections
 - [x] `docs/architecture.md` BLE section replaced with Soft AP description
 
+### Phase 20.4 — Wi-Fi Credential Provisioning ✅
+
+Adds the missing provisioning step to the Soft AP pairing flow. The watchdog
+already handled AP teardown on full connectivity; this phase adds the API
+endpoint, Pydantic models, rate limiter, and UI form that let the user
+supply home Wi-Fi credentials.
+
+- [x] `WifiProvisionRequest` / `WifiProvisionResponse` Pydantic models in `api.py`
+- [x] `network_rate_limit` dependency (5 req / 60 s per IP) in `rate_limit.py`
+- [x] `POST /api/device/network/configure` endpoint — fires `nmcli` as asyncio background task, returns `{"status": "connecting"}` immediately
+- [x] `app.state.network_limiter` initialised in both device-auth-enabled and disabled branches
+- [x] 8 pytest cases in `tests/test_network_provision.py`
+- [x] `scripts/deploy.sh` — adds `nomon` user to `netdev` group
+- [x] `docs/pi_setup.md` — NetworkManager group access subsection
+- [x] nomotactic: `WifiProvisionForm` component rendered inline after pairing
+
+#### Phase 20.4 Exit Criteria
+
+- [x] `pytest && ruff check . && black --check .` — all clean
+- [x] `POST /api/device/network/configure` returns `{"status":"connecting"}` for valid JWT + SSID + password
+- [x] `422` for SSID > 32 chars, empty SSID, or password 1–7 chars
+- [x] `429` after 5 requests within 60 s
+- [x] `401` without Authorization header
+- [x] `WifiProvisionForm` renders inline after successful pairing, no new screens or dependencies
+
+**Cross-repo:** nomopractic Phase 15.8
+
 ---
 
 ### Mobile & Web App (nomotactic)

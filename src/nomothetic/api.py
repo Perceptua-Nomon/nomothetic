@@ -37,7 +37,7 @@ from typing import Literal, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from nomothetic.mode import Mode, get_mode
 
@@ -648,6 +648,35 @@ class CalibrationSnapshotResponse(BaseModel):
     timestamp: str
 
 
+class WifiProvisionRequest(BaseModel):
+    """Request body for POST /api/device/network/configure."""
+
+    ssid: str = Field(
+        ..., min_length=1, max_length=32, description="Target network SSID (1–32 chars)"
+    )
+    password: str = Field(
+        "",
+        max_length=63,
+        description="WPA2 passphrase (8–63 chars) or empty string for open networks",
+    )
+
+    @field_validator("password")
+    @classmethod
+    def _validate_password_length(cls, v: str) -> str:
+        """Reject non-empty passwords shorter than 8 characters."""
+        if v != "" and len(v) < 8:
+            raise ValueError(
+                "WPA2 password must be at least 8 characters (or empty for open networks)"
+            )
+        return v
+
+
+class WifiProvisionResponse(BaseModel):
+    """Response body for POST /api/device/network/configure."""
+
+    status: Literal["connecting"]
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -1102,6 +1131,8 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
 
     from fastapi import APIRouter, Depends
 
+    from nomothetic.rate_limit import network_rate_limit
+
     device_auth_enabled = os.environ.get("NOMON_DEVICE_AUTH", "true").lower() in (
         "1",
         "true",
@@ -1127,6 +1158,7 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
         set_auth_service(auth_service)
         app.state.pairing_state = pairing
         app.state.pairing_limiter = RateLimiter(max_requests=3, window_seconds=60)
+        app.state.network_limiter = RateLimiter(max_requests=5, window_seconds=60)
 
         # PairingState is always constructed fresh here, so is_paired() is
         # always False at this point. The guard is retained for clarity and
@@ -1171,6 +1203,9 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
             "Device auth is disabled (NOMON_DEVICE_AUTH=false). "
             "All device endpoints are unauthenticated."
         )
+        from nomothetic.rate_limit import RateLimiter as _RateLimiter
+
+        app.state.network_limiter = _RateLimiter(max_requests=5, window_seconds=60)
         device_router = APIRouter()
 
     # ========================================================================
@@ -2323,6 +2358,85 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
             cliffs_avoided=result.cliffs_avoided,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
+
+    @device_router.post(
+        "/api/device/network/configure",
+        response_model=WifiProvisionResponse,
+        status_code=200,
+        tags=["Network"],
+        dependencies=[Depends(network_rate_limit)],
+    )
+    async def configure_wifi(request_body: WifiProvisionRequest) -> WifiProvisionResponse:
+        """Provision home Wi-Fi credentials and connect in the background.
+
+        Stores a persistent NetworkManager connection profile for the supplied
+        SSID and initiates an association attempt on ``wlan0``. Returns
+        immediately — the association runs as a background task. The Soft AP
+        watchdog will call ``ap-mode.sh down`` automatically once the device
+        achieves full internet connectivity.
+
+        Parameters
+        ----------
+        request_body : WifiProvisionRequest
+            Target SSID (1–32 chars) and WPA2 password (8–63 chars, or empty
+            for open networks).
+
+        Returns
+        -------
+        WifiProvisionResponse
+            ``{"status": "connecting"}`` — the device has accepted the
+            credentials and is attempting to associate in the background.
+
+        Raises
+        ------
+        HTTPException
+            422 if SSID or password fail Pydantic validation.
+            500 if the ``nmcli`` subprocess cannot be launched (OS error).
+            429 if the rate limit is exceeded.
+        """
+        ssid = request_body.ssid
+        password = request_body.password
+
+        if password:
+            cmd = [
+                "nmcli",
+                "--terse",
+                "device",
+                "wifi",
+                "connect",
+                ssid,
+                "password",
+                password,
+                "ifname",
+                "wlan0",
+            ]
+        else:
+            cmd = ["nmcli", "--terse", "device", "wifi", "connect", ssid, "ifname", "wlan0"]
+
+        async def _connect() -> None:
+            try:
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode != 0:
+                    logger.warning(
+                        "nmcli wifi connect failed (rc=%d): %s",
+                        result.returncode,
+                        result.stderr.strip(),
+                    )
+                else:
+                    logger.info("nmcli wifi connect succeeded for SSID %r", ssid)
+            except subprocess.TimeoutExpired:
+                logger.warning("nmcli wifi connect timed out for SSID %r", ssid)
+            except OSError:
+                logger.warning("nmcli wifi connect OSError for SSID %r", ssid, exc_info=True)
+
+        asyncio.create_task(_connect())
+        return WifiProvisionResponse(status="connecting")
 
     # Include all device endpoints (with or without auth dependency)
     app.include_router(device_router)
