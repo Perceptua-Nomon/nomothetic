@@ -98,9 +98,9 @@ def test_configure_wifi_password_not_in_cmd_args(device_client):
         )
 
     assert resp.status_code == 200
-    assert "securepass123" not in captured_args, (
-        "Password must not appear in subprocess args; it should be sent via stdin"
-    )
+    assert (
+        "securepass123" not in captured_args
+    ), "Password must not appear in subprocess args; it should be sent via stdin"
     assert "--ask" in captured_args, "nmcli must be invoked with --ask for stdin prompting"
 
 
@@ -177,9 +177,7 @@ def test_configure_wifi_subprocess_failure(device_client):
     client, app = device_client
     token = _get_token(client, app)
 
-    mock_proc = _make_mock_proc(
-        returncode=1, stderr="Error: No network with SSID 'BadSSID' found."
-    )
+    mock_proc = _make_mock_proc(returncode=1, stderr="Error: No network with SSID 'BadSSID' found.")
 
     with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         resp = client.post(
