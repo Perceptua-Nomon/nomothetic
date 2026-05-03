@@ -3,7 +3,6 @@
 POST /api/device/network/configure
 """
 
-import asyncio
 import os
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
