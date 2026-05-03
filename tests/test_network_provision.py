@@ -4,7 +4,7 @@ POST /api/device/network/configure
 """
 
 import os
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -86,8 +86,8 @@ def test_configure_wifi_password_not_in_cmd_args(device_client):
     mock_proc = _make_mock_proc(returncode=0)
     captured_args: list[str] = []
 
-    async def _capture_exec(*args: str, **kwargs: object) -> AsyncMock:
-        captured_args.extend(args)
+    async def _capture_exec(*args: object, **kwargs: object) -> Any:
+        captured_args.extend([str(arg) for arg in args])
         return mock_proc
 
     with patch("asyncio.create_subprocess_exec", side_effect=_capture_exec):
