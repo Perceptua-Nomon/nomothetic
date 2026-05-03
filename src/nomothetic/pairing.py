@@ -6,7 +6,7 @@ The device owner enters this secret via the nomotactic UI to claim the
 device and receive JWT tokens.
 
 The pairing secret is also written to a shared file so that nomopractic
-can read it for BLE pairing verification (see nomopractic ADR-003).
+reads it as the WPA2 passphrase for the Wi-Fi Soft AP (see nomopractic ADR-005).
 
 See ADR-014 for design rationale.
 """
@@ -46,7 +46,7 @@ def _write_shared_secret(secret: str) -> None:
 
     If the target directory does not exist or permissions cannot be set,
     a warning is logged but no exception is raised — HTTP pairing still
-    works; only BLE pairing requires the shared file.
+    works; the shared file is used as the Wi-Fi Soft AP passphrase.
 
     Parameters
     ----------
@@ -59,7 +59,7 @@ def _write_shared_secret(secret: str) -> None:
     if not os.path.isdir(target_dir):
         logger.warning(
             "Pairing secret directory %s does not exist; "
-            "BLE pairing will not work until it is created",
+            "Wi-Fi Soft AP will not work until it is created",
             target_dir,
         )
         return
@@ -79,7 +79,7 @@ def _write_shared_secret(secret: str) -> None:
         except (KeyError, PermissionError):
             logger.warning(
                 "Could not set group 'nomon' on pairing secret file; "
-                "nomopractic may not be able to read it"
+                "nomopractic may not be able to read it as the Wi-Fi Soft AP passphrase"
             )
 
         os.rename(tmp_path, path)
@@ -87,7 +87,7 @@ def _write_shared_secret(secret: str) -> None:
         tmp_path = None  # rename succeeded — don't clean up
     except OSError:
         logger.warning(
-            "Failed to write pairing secret to %s; " "BLE pairing will not work",
+            "Failed to write pairing secret to %s; Wi-Fi Soft AP passphrase will not be available",
             path,
             exc_info=True,
         )
@@ -127,11 +127,11 @@ class PairingState:
         self.jwt_secret: str = secrets.token_urlsafe(48)
 
     def generate_secret(self) -> str:
-        """Generate a 6-digit numeric BLE passkey (000000–999999).
+        """Generate a pairing secret for device authentication.
 
-        The passkey is written to the shared pairing secret file so that
-        nomopractic's BlueZ passkey agent can read it for OS-level
-        Bluetooth pairing.
+        The secret is written to the shared pairing secret file so that
+        nomopractic's Wi-Fi Soft AP (`scripts/ap-mode.sh`) can read it
+        as the WPA2 hotspot passphrase (see nomopractic ADR-005).
 
         Returns
         -------
