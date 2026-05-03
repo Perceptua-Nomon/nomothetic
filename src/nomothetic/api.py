@@ -1128,6 +1128,9 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
         app.state.pairing_state = pairing
         app.state.pairing_limiter = RateLimiter(max_requests=3, window_seconds=60)
 
+        # PairingState is always constructed fresh here, so is_paired() is
+        # always False at this point. The guard is retained for clarity and
+        # to make the intent explicit should persistent state be added later.
         if not pairing.is_paired():
             secret = pairing.load_or_generate_secret()
             # Write the secret to a file on tmpfs so the operator can read it
