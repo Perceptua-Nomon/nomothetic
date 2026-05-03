@@ -96,12 +96,26 @@ if [[ -z "${CONFIG_FILE}" ]]; then
   fi
 fi
 
-# ─── Load .env if present (allows central-mode secrets without manual export) ──
+# ─── Load .env defaults without overriding explicit env vars ─────────────────
 if [[ -f "${REPO_DIR}/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "${REPO_DIR}/.env"
-  set +a
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ "${line}" =~ ^# || -z "${line}" ]] && continue
+
+    key="${line%%=*}"
+    val="${line#*=}"
+
+    val="${val%%#*}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+    val="${val#\"}" ; val="${val%\"}"
+    val="${val#\'}" ; val="${val%\'}"
+
+    # Keep explicitly provided environment values (e.g. deploy-time overrides).
+    if [[ -z "${!key+x}" ]]; then
+      export "${key}=${val}"
+    fi
+  done < "${REPO_DIR}/.env"
 fi
 
 # ─── Activate virtual environment if present ─────────────────────────────────

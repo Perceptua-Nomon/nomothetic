@@ -269,7 +269,8 @@ class SqlFleetStore:
         rows = await self._db.execute_sql(count_q, {"vin": vin})
         if _coerce_count(rows) == 0:
             insert_v = (
-                "INSERT INTO Vehicle SET vin = :vin, model = :model, registered_at = sysdate()"
+                "INSERT INTO Vehicle SET vin = :vin, model = :model,"
+                " firmware_version = '', registered_at = sysdate(), last_seen_at = sysdate()"
             )
             await self._db.execute_sql(insert_v, {"vin": vin, "model": model})
 

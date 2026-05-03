@@ -382,20 +382,22 @@ cargo test
 ## 8 — BLE Pairing (Optional)
 
 BLE pairing allows the nomotactic mobile app to pair with the robot without
-an existing WiFi connection. The app writes the pairing secret to the
-nomopractic BLE GATT server, which verifies it and issues a JWT. That JWT
-is then used for subsequent HTTPS requests once WiFi is configured.
+an existing WiFi connection. The robot uses OS-level Bluetooth passkey pairing
+(ADR-004) — no custom secret exchange at the application layer.
 
 > **Note:** BLE and WiFi share the BCM43436s antenna on Pi Zero 2W.
 > Simultaneous operation is supported but may reduce range for both.
 
 ### How it works
 
-1. nomothetic generates a pairing secret at startup and writes it to
-   `/var/lib/nomon/pairing_secret` (configurable via `NOMON_PAIRING_SECRET_PATH`).
-2. The secret is also displayed in the startup log for manual entry if needed.
-3. nomopractic reads the shared file and uses it to verify BLE pairing requests.
-4. On successful BLE pairing, nomopractic issues a JWT that is valid for HTTPS.
+1. nomopractic reads the 6-digit numeric passkey from
+   `/var/lib/nomon/pairing_secret` at startup and prints it in the startup log.
+2. The mobile user selects the device from a BLE scan. The OS shows a native
+   Bluetooth passkey dialog — the user enters the 6-digit code.
+3. The OS completes bonding with link-layer encryption (BlueZ, no custom secret
+   exchange at the application layer).
+4. nomotactic calls the `authenticate` IPC method over BLE → receives a JWT
+   → stores it in expo-secure-store for use over HTTPS after WiFi provisioning.
 
 ### Pairing secret file
 
@@ -429,8 +431,8 @@ ls -la /var/lib/nomon/pairing_secret
 |---------|-------|-----|
 | BLE not advertising | BlueZ service not running | `sudo systemctl start bluetooth` |
 | `Powered: no` in bluetoothctl | Bluetooth disabled in firmware | Add `dtoverlay=disable-bt` is absent from `/boot/config.txt`; reboot |
-| Pairing secret file missing | nomothetic hasn't started or `/var/lib/nomon/` doesn't exist | Start nomothetic; verify directory exists |
-| BLE pairing fails | Secret mismatch or consumed | Restart nomothetic to regenerate the secret |
+| BLE passkey rejected | Wrong 6-digit code entered, or passkey file missing | Check `/var/lib/nomon/pairing_secret` contains exactly 6 digits |
+| `authenticate` returns INTERNAL_ERROR | `NOMON_JWT_SECRET` env var not set | Set `NOMON_JWT_SECRET` in nomopractic's environment |
 | Weak BLE signal | Antenna shared with WiFi | Move app closer to the Pi; reduce WiFi traffic |
 
 ---

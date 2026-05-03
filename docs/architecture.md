@@ -73,11 +73,11 @@ nomothetic runs in one of two mutually exclusive modes, selected by the
 
 **BLE transport note:** On mobile, when WiFi is unavailable, nomotactic
 connects directly to nomopractic's BLE GATT server for basic motor/servo/sensor
-commands using a compact binary protocol. nomothetic is NOT in the BLE data
+commands using NDJSON over a single GATT service (ADR-004). nomothetic is NOT in the BLE data
 path. When WiFi is available, all control goes through nomothetic's HTTPS API.
 BLE pairing issues a JWT (signed with the shared `NOMON_JWT_SECRET`) that is
 valid for subsequent HTTPS authentication — no re-pairing needed after WiFi
-provisioning. See nomopractic ADR-001, ADR-002, ADR-003 for details.
+provisioning. See nomopractic ADR-001 and ADR-004 (ADR-002 and ADR-003 are superseded by ADR-004) for details.
 
 - **Device mode** is the existing configuration — all current endpoints work
   unchanged. Hardware-specific libraries are conditionally imported.

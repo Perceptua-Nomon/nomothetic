@@ -223,8 +223,11 @@ class AuthService:
             return None
         if not self.verify_password(password, user.password_hash):
             return None
-        user.last_login_at = datetime.now(timezone.utc).isoformat()
-        await self._user_store.update_user(normalised, last_login_at=user.last_login_at)
+        now = datetime.now(timezone.utc)
+        user.last_login_at = now.isoformat()
+        await self._user_store.update_user(
+            normalised, last_login_at=now.strftime("%Y-%m-%d %H:%M:%S")
+        )
         return user
 
     async def get_user(self, email: str) -> Optional[UserRecord]:

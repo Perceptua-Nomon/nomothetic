@@ -111,15 +111,14 @@ class SqlTokenStore:
         """Persist a new refresh token."""
         query = (
             "INSERT INTO RefreshToken SET token_hash = :token_hash,"
-            " email = :email, created_at = :created_at, expires_at = :expires_at"
+            " email = :email, created_at = sysdate(), expires_at = :expires_at"
         )
         await self._db.execute_sql(
             query,
             {
                 "token_hash": token_hash,
                 "email": email,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "expires_at": expires_at.isoformat(),
+                "expires_at": expires_at.strftime("%Y-%m-%d %H:%M:%S"),
             },
         )
 

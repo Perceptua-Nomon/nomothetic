@@ -15,8 +15,10 @@ remotely.
 
 > **BLE alternative:** If your Pi is not yet on WiFi, you can use
 > Bluetooth Low Energy (BLE) to pair the nomotactic mobile app directly
-> with the robot. The app writes the pairing secret over BLE to
-> nomopractic, which issues a JWT for subsequent use over HTTPS. See
+> with the robot. The mobile app triggers OS-level Bluetooth passkey pairing
+> (the user enters the 6-digit numeric passkey displayed in nomopractic's startup log).
+> After bonding, the app calls the `authenticate` IPC method over BLE to obtain a JWT
+> for subsequent use over HTTPS. See
 > [pi_setup.md — BLE Pairing](pi_setup.md#8--ble-pairing-optional) for
 > setup details.
 

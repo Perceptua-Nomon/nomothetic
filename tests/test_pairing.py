@@ -19,11 +19,12 @@ def test_generate_secret_returns_string():
     assert len(secret) > 0
 
 
-def test_generate_secret_has_sufficient_entropy():
-    """Pairing secret has at least 128 bits of entropy (22 URL-safe chars)."""
+def test_generate_secret_is_six_digit_numeric():
+    """Pairing secret is a 6-digit zero-padded numeric string."""
     ps = PairingState()
     secret = ps.generate_secret()
-    assert len(secret) >= 22
+    assert len(secret) == 6
+    assert secret.isdigit()
 
 
 def test_generate_secret_unique():

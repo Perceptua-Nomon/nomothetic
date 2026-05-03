@@ -15,7 +15,14 @@ from nomothetic.api import APIServer, create_app
 @pytest.fixture
 def client():
     """Create a test client for the FastAPI app."""
-    with patch.dict(os.environ, {"NOMON_DEVICE_AUTH": "false"}, clear=False):
+    with patch.dict(
+        os.environ,
+        {
+            "NOMON_API_MODE": "device",
+            "NOMON_DEVICE_AUTH": "false",
+        },
+        clear=False,
+    ):
         app = create_app()
         yield TestClient(app)
 

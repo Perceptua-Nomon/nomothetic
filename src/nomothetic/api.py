@@ -1130,20 +1130,33 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
 
         if not pairing.is_paired():
             secret = pairing.generate_secret()
-            # Print directly to stderr to avoid journal persistence.
-            # The secret is single-use and cleared after pairing.
-            import sys
+            # Write the secret to a file on tmpfs so the operator can read it
+            # via SSH without it appearing in the journal.
+            # StandardError=journal captures all stderr output, so printing
+            # the secret value there would persist it in the journal.
+            _secret_display_path = "/run/nomothetic/pairing-secret"
+            try:
+                import os as _os
 
-            print(  # noqa: T201
-                f"\n{'=' * 60}\n"
-                f"  DEVICE PAIRING SECRET: {secret}\n"
-                f"  Enter this in the nomon app to pair.\n"
-                f"  This secret is single-use and will be invalidated after pairing.\n"
-                f"{'=' * 60}\n",
-                file=sys.stderr,
-                flush=True,
-            )
-            logger.info("Pairing secret generated — check stderr output")
+                _fd = _os.open(
+                    _secret_display_path,
+                    _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC,
+                    0o644,
+                )
+                try:
+                    _os.write(_fd, secret.encode())
+                finally:
+                    _os.close(_fd)
+                logger.info(
+                    "Pairing secret written to %s — read it there to pair",
+                    _secret_display_path,
+                )
+            except OSError:
+                logger.warning(
+                    "Could not write pairing secret to %s",
+                    _secret_display_path,
+                    exc_info=True,
+                )
 
         app.include_router(create_device_auth_router())
 

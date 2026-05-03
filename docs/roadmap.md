@@ -23,6 +23,8 @@
 | 16 | Security Hardening | ✅ Complete |
 | 17 | Device-Mode Authentication | ✅ Complete |
 | 18 | BLE Pairing Coordination | ✅ Complete |
+| 18.1 | BLE Simplification Coordination | ✅ Complete |
+| 19 | Service Env-File Hardening | ✅ Complete |
 
 **Test totals (current): 532 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store)
 
@@ -883,6 +885,193 @@ BLE commands go directly from nomotactic to nomopractic. nomothetic's role is:
 - [x] All existing tests pass (no regressions)
 - [x] `uv run pytest tests/` — ≥ 497 passing
 - [x] `uv run ruff check . && uv run black --check .` — clean
+
+---
+
+### Phase 18.1 — BLE Simplification Coordination (P1)
+
+**Goal:** Update nomothetic documentation and pairing secret lifecycle to
+coordinate with the BLE simplification in nomopractic Phase 13.1 and
+nomotactic Phase 2.1. nomothetic is NOT in the BLE data path — its role is
+maintaining the shared pairing secret and documenting the IPC contract.
+
+**Architecture decisions:**
+- nomopractic ADR-004: BLE Simplification — Native OS Pairing + JSON Relay
+
+**Cross-repo dependencies:**
+- nomopractic Phase 13.1: new IPC methods, simplified GATT
+- nomotactic Phase 2.1: simplified BLE client
+
+#### 18.1.1 — Pairing Secret Format Change
+- [ ] `nomothetic/pairing.py`: change `PairingState.generate_secret()` to
+      generate a 6-digit numeric passkey (000000–999999) instead of a
+      `secrets.token_urlsafe` string
+- [ ] File format: plain text, 6 ASCII digits, no trailing newline
+- [ ] Update `verify_and_consume()` — numeric passkey is **not** single-use
+      (OS bonding is persistent; passkey is reused for re-pairing)
+- [ ] Update startup log: `info!("BLE passkey: %s", passkey)` (operator-visible)
+- [ ] Tests: verify 6-digit format, file permissions, overwrite behaviour
+
+#### 18.1.2 — IPC Schema Documentation
+- [ ] `docs/hat_ipc_schema.md`: add `authenticate` method spec:
+      - Params: `{}`
+      - Result: `{ jwt: string, expires_in: integer }`
+      - Error: `BLE_ONLY` (called from Unix socket), `NOT_READY` (no JWT secret)
+- [ ] `docs/hat_ipc_schema.md`: add `wifi_scan` method spec:
+      - Params: `{}`
+      - Result: `{ networks: [{ ssid: string, signal: integer, security: string }] }`
+      - Error: `HARDWARE_ERROR`
+- [ ] `docs/hat_ipc_schema.md`: add `wifi_connect` method spec:
+      - Params: `{ ssid: string, password: string }`
+      - Result: `{ success: boolean }`
+      - Error: `INVALID_PARAMS`, `HARDWARE_ERROR`
+- [ ] `docs/hat_ipc_schema.md`: add `wifi_status` method spec:
+      - Params: `{}`
+      - Result: `{ state: string, ssid: string | null, signal: integer | null }`
+      - Error: `HARDWARE_ERROR`
+- [ ] `docs/hat_ipc_schema.md`: add `BLE_ONLY` to error code table
+- [ ] `docs/hat_ipc_schema.md`: update BLE note — replace binary protocol
+      reference with NDJSON relay description (reference ADR-004)
+- [ ] `docs/hat_ipc_schema.md`: update method count in header (35 → 39)
+
+#### 18.1.3 — Architecture & Roadmap Updates
+- [ ] `docs/architecture.md`: update BLE coordination section — reference
+      NDJSON relay instead of binary protocol
+- [ ] `docs/roadmap.md`: update Phase 18 description — note that the binary
+      protocol coordination is superseded by NDJSON relay (ADR-004)
+
+#### Phase 18.1 Exit Criteria
+- [ ] Pairing secret file contains 6-digit numeric passkey
+- [ ] `hat_ipc_schema.md` documents all 4 new IPC methods
+- [ ] `BLE_ONLY` error code documented
+- [ ] BLE note in IPC schema updated to reference NDJSON relay
+- [ ] All existing tests pass (no regressions)
+- [ ] `uv run pytest tests/` — ≥ 532 passing
+- [ ] `uv run ruff check . && uv run black --check .` — clean
+
+---
+
+### Phase 19 — Service Env-File Hardening ✅
+
+**Goal:** Fix two bugs in `scripts/deploy.sh`:
+(1) `copy_nomothetic_env()` copies the full project `.env` — including
+deploy-machine credentials (`NOMON_PI_HOST`, `NOMON_SSH_KEY`,
+`NOMON_REMOTE_DIR`) — to `/etc/nomothetic/nomothetic.env` on the Pi.
+(2) The systemd service file installation uses plain `cp`, which does not
+expand the `${NOMON_SERVICE_USER}` / `${NOMON_SERVICE_GROUP}` template vars
+in `User=` and `Group=`, causing all three services to fail to start.
+
+**Dependency:** None. No Python code changes. No IPC changes.
+**Cross-repo:** Paired with nomopractic Phase 14 (same pattern, independent fix).
+
+---
+
+#### 19.1 — Filter Deploy Secrets from Runtime Env File
+
+**File:** `nomothetic/scripts/deploy.sh`
+
+The `copy_nomothetic_env()` function (around line 150) currently pipes the
+raw `${ENV_FILE}` to the Pi. Replace it with a filtered version that strips
+all deploy-only variables before writing. Also add `_DEPLOY_EXCLUDE` above
+the function.
+
+**Remove** the current function body and **replace** with:
+
+```bash
+# Variables excluded from the Pi's system env file — deploy secrets only, never runtime config.
+_DEPLOY_EXCLUDE='^\s*(NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_GITHUB_REPO)\s*='
+
+copy_nomothetic_env() {
+    if [[ ! -f "${ENV_FILE}" ]]; then
+        echo "==> Warning: .env not found; skipping /etc/nomothetic/nomothetic.env creation." >&2
+        return
+    fi
+
+    if [[ -n "${PI_HOST}" ]]; then
+        echo "==> Creating /etc/nomothetic/nomothetic.env on remote host..."
+        grep -vE "${_DEPLOY_EXCLUDE}" "${ENV_FILE}" | \
+            ssh "${SSH_OPTS[@]}" "${PI_HOST}" \
+                'sudo mkdir -p /etc/nomothetic && sudo tee /etc/nomothetic/nomothetic.env >/dev/null'
+    else
+        echo "==> Creating /etc/nomothetic/nomothetic.env locally..."
+        sudo mkdir -p /etc/nomothetic
+        grep -vE "${_DEPLOY_EXCLUDE}" "${ENV_FILE}" | sudo tee /etc/nomothetic/nomothetic.env >/dev/null
+    fi
+}
+```
+
+**Verify:** After deploy,
+`grep -E 'NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR' /etc/nomothetic/nomothetic.env`
+returns no output.
+
+---
+
+#### 19.2 — Use `envsubst` for Service File Installation
+
+**File:** `nomothetic/scripts/deploy.sh`, inside the `END_REMOTE` heredoc,
+in the `if command -v systemctl >/dev/null 2>&1; then` block (around line 400).
+
+The current loop uses `sudo cp "${_svc_file}" "${_dest}"`, which writes the
+literal template placeholders to disk. systemd cannot expand `${...}` vars in
+`User=` or `Group=` directives, so the service fails to start.
+
+**Replace** the `_systemd_changed=false` line and the `for` loop with:
+
+```bash
+    _systemd_changed=false
+
+    # Source the runtime env file so envsubst can expand User= and Group= template vars.
+    NOMON_SERVICE_USER="nomon"
+    NOMON_SERVICE_GROUP="nomon"
+    if [[ -f /etc/nomothetic/nomothetic.env ]]; then
+        set -o allexport
+        source /etc/nomothetic/nomothetic.env
+        set +o allexport
+    fi
+    NOMON_SERVICE_USER="${NOMON_SERVICE_USER:-nomon}"
+    NOMON_SERVICE_GROUP="${NOMON_SERVICE_GROUP:-nomon}"
+
+    for _svc_file in systemd/*.service; do
+        [[ -f "${_svc_file}" ]] || continue
+        _svc_name="$(basename "${_svc_file}")"
+        _dest="/etc/systemd/system/${_svc_name}"
+
+        _expanded="$(envsubst '$NOMON_SERVICE_USER $NOMON_SERVICE_GROUP' < "${_svc_file}")"
+        if [[ ! -f "${_dest}" ]] || [[ "${_expanded}" != "$(cat "${_dest}" 2>/dev/null)" ]]; then
+            echo "  Installing ${_svc_name}..."
+            printf '%s' "${_expanded}" | sudo tee "${_dest}" >/dev/null
+            _systemd_changed=true
+        fi
+    done
+```
+
+**Notes:**
+- `envsubst '$NOMON_SERVICE_USER $NOMON_SERVICE_GROUP'` — the explicit variable
+  list prevents accidentally substituting other `$` patterns in the file.
+- `printf '%s'` pipes the envsubst output without adding an extra trailing
+  newline (envsubst already preserves the template's final newline).
+- The `env file sourced → defaults applied` pattern ensures that even a
+  fresh install with no `.env` (and thus no `nomothetic.env`) still produces
+  a valid service file with `User=nomon` / `Group=nomon`.
+
+---
+
+#### Phase 19 Exit Criteria
+
+- `copy_nomothetic_env()` uses `grep -vE "${_DEPLOY_EXCLUDE}"` before writing to the Pi
+- `_DEPLOY_EXCLUDE` covers `NOMON_PI_HOST`, `NOMON_SSH_KEY`, `NOMON_REMOTE_DIR`,
+  `NOMON_GITHUB_REPO`
+- Service file installation loop uses
+  `envsubst '$NOMON_SERVICE_USER $NOMON_SERVICE_GROUP'` with env file sourced
+  before the loop; defaults of `nomon`/`nomon` applied when env file absent
+- After deploy:
+  - `grep -E 'NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR' /etc/nomothetic/nomothetic.env`
+    returns no output
+  - `grep -E '^User=|^Group=' /etc/systemd/system/nomothetic-api.service`
+    returns `User=nomon` and `Group=nomon` (literal values, not template vars)
+  - `systemctl is-active nomothetic-api` → `active`
+  - `systemctl is-active nomothetic-stream` → `active` (if enabled)
+- `pytest && ruff check . && black --check .` — clean (no Python code changes)
 
 ---
 

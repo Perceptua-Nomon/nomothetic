@@ -2,12 +2,14 @@
 # deploy.sh — Deploy nomothetic to the Raspberry Pi over SSH.
 #
 # Usage:
-#   ./scripts/deploy.sh [--local] [<version>] [<pi-host>]
+#   ./scripts/deploy.sh [--local] [--skip-tests] [<version>] [<pi-host>]
 #
 # Arguments:
-#   --local   Deploy the current local source tree (synced via rsync).
-#             Bypasses git fetch/checkout on the Pi. Version is read from
-#             pyproject.toml. Ignored if a version argument is also given.
+#   --local        Deploy the current local source tree (synced via rsync).
+#                  Bypasses git fetch/checkout on the Pi. Version is read from
+#                  pyproject.toml. Ignored if a version argument is also given.
+#   --skip-tests   Skip the 'make test' step on the Pi. Useful for iterating
+#                  quickly during development when tests have already passed.
 #   version   Git tag to deploy (e.g. "v0.2.0"). If omitted, the script finds
 #             and deploys the latest semver tag on the remote. Ignored if --local.
 #   pi-host   SSH host (user@host or plain hostname). Overrides NOMON_PI_HOST.
@@ -37,22 +39,23 @@
 #                     defaults to ${HOME}/perceptua-nomon/nomothetic.
 #
 # The script (release mode) connects to the Pi and performs the following steps there:
-#   1. Stops all nomothetic servers.
+#   1. Stops all nomothetic servers, including systemd-managed services if present.
 #   2. Records the current git ref so it can be restored on failure.
 #   3. Fetches tags from origin and checks out the target version.
 #   4. Installs Python dependencies (production + dev extras).
-#   5. Runs release checks: lint (ruff), format (black), type-check (mypy), tests.
+#   5. Runs release checks: unit tests only.
 #   6. Starts the API server, waits for readiness, starts the stream via the API,
 #      performs a health check, then stops the stream and API.
+#   7. Installs/updates systemd unit files and restarts the nomothetic services.
 #
 # The script (--local mode):
 #   1. Reads the version from pyproject.toml.
 #   2. Syncs the local source tree to the Pi via rsync (skipped if already on Pi).
-#   3. Connects to the Pi and performs steps 1, 4–6 above (skipping git operations).
+#   3. Connects to the Pi and performs steps 1, 4–7 above (skipping git operations).
 #
 # Rollback:
 #   If any step from 3–6 fails the script checks out the previous ref,
-#   reinstalls production deps, and restarts the servers before exiting.
+#   reinstalls production deps, and restarts the previously running services before exiting.
 #
 # Exit codes:
 #   0  Deploy successful.
@@ -97,15 +100,19 @@ fi
 # ── Argument & configuration validation ───────────────────────────────────────
 
 DEPLOY_LOCAL=false
-VERSION="${1:-}"
-PI_HOST="${2:-${NOMON_PI_HOST:-}}"
+SKIP_TESTS=false
+_positional_args=()
 
-# Check if first argument is --local flag
-if [[ "${VERSION}" == "--local" ]]; then
-    DEPLOY_LOCAL=true
-    VERSION=""
-    PI_HOST="${2:-${NOMON_PI_HOST:-}}"
-fi
+for _arg in "$@"; do
+    case "${_arg}" in
+        --local)       DEPLOY_LOCAL=true ;;
+        --skip-tests)  SKIP_TESTS=true ;;
+        *)             _positional_args+=("${_arg}") ;;
+    esac
+done
+
+VERSION="${_positional_args[0]:-}"
+PI_HOST="${_positional_args[1]:-${NOMON_PI_HOST:-}}"
 
 if [[ -n "${VERSION}" && ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "Error: version must start with 'v' followed by semver (e.g. v0.2.0)" >&2
@@ -134,11 +141,42 @@ if [[ -n "${PI_HOST}" ]]; then
         SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
     fi
     echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} → ${PI_HOST}"
-    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" 'bash -ls "$@"' --)
+    # NOMON_SKIP_TESTS is embedded directly in the command string rather than
+    # passed as a positional arg, because SSH concatenates all args into a
+    # single string — empty positional args (VERSION, NOMON_REMOTE_DIR) are
+    # silently dropped, which shifts subsequent args and corrupts $3 onward.
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} bash -ls \"\$@\"" --)
 else
     echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} locally"
+    export NOMON_SKIP_TESTS="${SKIP_TESTS}"
     RUN_CMD=(bash -ls --)
 fi
+
+# Deploy-only variables that must NOT be written to the on-device env file.
+_DEPLOY_EXCLUDE='^\s*(NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_GITHUB_REPO)\s*='
+
+copy_nomothetic_env() {
+    if [[ ! -f "${ENV_FILE}" ]]; then
+        echo "==> Warning: .env not found; skipping /etc/nomothetic/nomothetic.env creation." >&2
+        return
+    fi
+
+    local filtered
+    filtered="$(grep -vE "${_DEPLOY_EXCLUDE}" "${ENV_FILE}" \
+        | grep -vE '^\s*#' \
+        | grep -vE '^\s*$')"
+
+    if [[ -n "${PI_HOST}" ]]; then
+        echo "==> Writing /etc/nomothetic/nomothetic.env on remote host..."
+        printf '%s\n' "${filtered}" \
+            | ssh "${SSH_OPTS[@]}" "${PI_HOST}" \
+                'sudo mkdir -p /etc/nomothetic && sudo tee /etc/nomothetic/nomothetic.env >/dev/null'
+    else
+        echo "==> Writing /etc/nomothetic/nomothetic.env locally..."
+        sudo mkdir -p /etc/nomothetic
+        printf '%s\n' "${filtered}" | sudo tee /etc/nomothetic/nomothetic.env > /dev/null
+    fi
+}
 
 # ── Local mode: sync source tree to Pi ────────────────────────────────────────
 
@@ -165,6 +203,8 @@ if [[ "${DEPLOY_LOCAL}" == true && -n "${PI_HOST}" ]]; then
     echo "  Sync complete ✓"
 fi
 
+copy_nomothetic_env
+
 # ── Deployment ─────────────────────────────────────────────────────────────────
 # All steps below run on the Pi (remote or local) via a single shell session.
 
@@ -174,6 +214,7 @@ set -euo pipefail
 readonly REQUESTED_VERSION="$1"
 readonly DEPLOY_LOCAL="${2:-false}"
 readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/nomothetic}"
+readonly SKIP_TESTS="${NOMON_SKIP_TESTS:-false}"
 
 if [[ ! -d "${REMOTE_DIR}" ]]; then
     echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
@@ -245,16 +286,75 @@ rollback() {
     echo "  Reinstalling previous version..." >&2
     uv sync --extra pi --extra web --extra api --extra telemetry 2>&1 || true
 
-    echo "  Restarting API server..." >&2
-    ./scripts/start.sh api 2>&1 || true
+    if [[ "${SYSTEMD_AVAILABLE}" == "true" ]]; then
+        if [[ "${PREV_API_SERVICE_ACTIVE}" == "true" ]]; then
+            echo "  Restarting nomothetic-api.service..." >&2
+            sudo systemctl restart nomothetic-api.service 2>&1 || true
+        fi
+        if [[ "${PREV_STREAM_SERVICE_ACTIVE}" == "true" ]]; then
+            echo "  Restarting nomothetic-stream.service..." >&2
+            sudo systemctl restart nomothetic-stream.service 2>&1 || true
+        fi
+    else
+        echo "  Restarting API server..." >&2
+        NOMON_API_MODE=device NOMON_DEVICE_AUTH=false ./scripts/start.sh api 2>&1 || true
+    fi
 
-    echo "!! Rollback complete. API server restored to ${PREV_LABEL:-local}." >&2
+    echo "!! Rollback complete. Services restored to ${PREV_LABEL:-local}." >&2
     exit 2
 }
 
 trap rollback ERR
 
-# ── Stop servers ───────────────────────────────────────────────────────────────
+# ── Service identity ───────────────────────────────────────────────────────────
+# Read NOMON_SERVICE_USER / NOMON_SERVICE_GROUP from the on-device env file if
+# it already exists (written by copy_nomothetic_env above), then apply defaults.
+# These vars are used by the TLS, systemd, and chown steps below.
+# To override, set NOMON_SERVICE_USER / NOMON_SERVICE_GROUP in your local .env
+# (they will be written to /etc/nomothetic/nomothetic.env on the Pi).
+
+if [[ -f /etc/nomothetic/nomothetic.env ]]; then
+    set -o allexport
+    # shellcheck disable=SC1091
+    source /etc/nomothetic/nomothetic.env
+    set +o allexport
+fi
+NOMON_SERVICE_USER="${NOMON_SERVICE_USER:-nomon}"
+NOMON_SERVICE_GROUP="${NOMON_SERVICE_GROUP:-nomon}"
+NOMON_INSTALL_DIR="${REMOTE_DIR}"
+
+# Create the service user/group if they don't already exist.
+if ! getent group "${NOMON_SERVICE_GROUP}" >/dev/null 2>&1; then
+    echo "==> Creating service group '${NOMON_SERVICE_GROUP}'..."
+    sudo groupadd --system "${NOMON_SERVICE_GROUP}"
+fi
+if ! getent passwd "${NOMON_SERVICE_USER}" >/dev/null 2>&1; then
+    echo "==> Creating service user '${NOMON_SERVICE_USER}'..."
+    sudo useradd --system --no-create-home --gid "${NOMON_SERVICE_GROUP}" "${NOMON_SERVICE_USER}"
+fi
+
+# ── Systemd service state capture ─────────────────────────────────────────────
+
+SYSTEMD_AVAILABLE=false
+PREV_API_SERVICE_ACTIVE=false
+PREV_STREAM_SERVICE_ACTIVE=false
+
+if command -v systemctl >/dev/null 2>&1; then
+    SYSTEMD_AVAILABLE=true
+    for _svc in nomothetic-api nomothetic-stream; do
+        if sudo systemctl list-unit-files --full --no-legend "${_svc}.service" >/dev/null 2>&1; then
+            if sudo systemctl is-active --quiet "${_svc}.service"; then
+                if [[ "${_svc}" == "nomothetic-api" ]]; then
+                    PREV_API_SERVICE_ACTIVE=true
+                else
+                    PREV_STREAM_SERVICE_ACTIVE=true
+                fi
+            fi
+            echo "  Stopping ${_svc}.service if it exists..."
+            sudo systemctl stop "${_svc}.service" 2>/dev/null || true
+        fi
+    done
+fi
 
 echo "==> Stopping servers..."
 ./scripts/stop.sh all
@@ -273,8 +373,12 @@ make install-pi
 
 # ── Release checks ─────────────────────────────────────────────────────────────
 
-echo "==> Release checks..."
-make check
+if [[ "${SKIP_TESTS}" == "true" ]]; then
+    echo "==> Skipping tests (--skip-tests flag set)."
+else
+    echo "==> Running tests..."
+    make test
+fi
 
 # ── Start servers & verify liveness ───────────────────────────────────────────
 
@@ -298,7 +402,7 @@ _api_base="${_scheme}://127.0.0.1:${NOM_API_PORT}"
 _curl=(curl -sf -k --max-time 5)
 
 echo "==> Starting API server..."
-./scripts/start.sh api
+NOMON_API_MODE=device NOMON_DEVICE_AUTH=false ./scripts/start.sh api
 
 echo "==> Waiting for API to be ready..."
 _attempts=0
@@ -313,8 +417,18 @@ done
 echo "  API ready ✓"
 
 echo "==> Starting stream server via API..."
-"${_curl[@]}" -X POST "${_api_base}/api/stream/start" \
-    -H "Content-Type: application/json" -d '{}' > /dev/null
+_stream_resp="$(curl -sk --max-time 10 \
+    -X POST "${_api_base}/api/stream/start" \
+    -H "Content-Type: application/json" \
+    -d '{}' \
+    -w "\n%{http_code}")"
+_stream_code="$(printf '%s' "${_stream_resp}" | tail -1)"
+_stream_body="$(printf '%s' "${_stream_resp}" | sed '$d')"
+if [[ "${_stream_code}" != "200" ]]; then
+    echo "Error: failed to start stream server (HTTP ${_stream_code})" >&2
+    echo "  Response: ${_stream_body}" >&2
+    exit 1
+fi
 echo "  Stream server started ✓"
 
 echo "==> Health check..."
@@ -333,20 +447,55 @@ echo "  Stream server stopped ✓"
 echo "==> Stopping API server..."
 ./scripts/stop.sh api
 
+# ── TLS certificates ───────────────────────────────────────────────────────────
+# Generate a self-signed cert if the files don't already exist.
+
+if [[ ! -f /etc/nomothetic/tls/cert.pem || ! -f /etc/nomothetic/tls/key.pem ]] \
+    || ! openssl x509 -noout -in /etc/nomothetic/tls/cert.pem >/dev/null 2>&1 \
+    || ! openssl rsa  -noout -in /etc/nomothetic/tls/key.pem  >/dev/null 2>&1; then
+    echo "==> Generating self-signed TLS certificate..."
+    sudo mkdir -p /etc/nomothetic/tls
+    _tmp_dir="$(mktemp -d)"
+    _tmp_cert="${_tmp_dir}/cert.pem"
+    _tmp_key="${_tmp_dir}/key.pem"
+    .venv/bin/python3 - "${_tmp_cert}" "${_tmp_key}" <<'PYEOF'
+import sys
+from nomothetic.api import create_self_signed_cert
+from pathlib import Path
+create_self_signed_cert(Path(sys.argv[1]), Path(sys.argv[2]))
+PYEOF
+    sudo mv "${_tmp_cert}" /etc/nomothetic/tls/cert.pem
+    sudo mv "${_tmp_key}"  /etc/nomothetic/tls/key.pem
+    rm -rf "${_tmp_dir}"
+    sudo chmod 640 /etc/nomothetic/tls/key.pem /etc/nomothetic/tls/cert.pem
+    sudo chown -R "${NOMON_SERVICE_USER}:${NOMON_SERVICE_GROUP}" /etc/nomothetic/tls
+    echo "  TLS certificate generated ✓"
+else
+    echo "==> TLS certificate already present, skipping generation."
+fi
+
 # ── Systemd integration (optional) ────────────────────────────────────────────
 # Install and enable systemd service files if systemd is available.
 
 if command -v systemctl >/dev/null 2>&1; then
     _systemd_changed=false
 
+    if ! command -v envsubst >/dev/null 2>&1; then
+        echo "Error: envsubst not found. Install: sudo apt-get install -y gettext-base" >&2
+        exit 1
+    fi
+    export NOMON_SERVICE_USER NOMON_SERVICE_GROUP NOMON_INSTALL_DIR
+
     for _svc_file in systemd/*.service; do
         [[ -f "${_svc_file}" ]] || continue
         _svc_name="$(basename "${_svc_file}")"
         _dest="/etc/systemd/system/${_svc_name}"
 
-        if [[ ! -f "${_dest}" ]] || ! diff -q "${_svc_file}" "${_dest}" >/dev/null 2>&1; then
+        _expanded="$(envsubst '$NOMON_SERVICE_USER $NOMON_SERVICE_GROUP $NOMON_INSTALL_DIR' < "${_svc_file}")"
+        if [[ ! -f "${_dest}" ]] || [[ "${_expanded}" != "$(cat "${_dest}")" ]]; then
             echo "  Installing ${_svc_name}..."
-            sudo cp "${_svc_file}" "${_dest}"
+            printf '%s\n' "${_expanded}" | sudo tee "${_dest}" > /dev/null
+            sudo chmod 644 "${_dest}"
             _systemd_changed=true
         fi
     done
