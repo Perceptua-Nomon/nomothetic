@@ -6,7 +6,7 @@ The device owner enters this secret via the nomotactic UI to claim the
 device and receive JWT tokens.
 
 The pairing secret is also written to a shared file so that nomopractic
-can read it for BLE pairing verification (see nomopractic ADR-003).
+reads it as the WPA2 passphrase for the Wi-Fi Soft AP (see nomopractic ADR-005).
 
 See ADR-014 for design rationale.
 """
@@ -38,6 +38,26 @@ def get_pairing_secret_path() -> str:
     return os.environ.get("NOMON_PAIRING_SECRET_PATH", _DEFAULT_PAIRING_SECRET_PATH)
 
 
+def _read_shared_secret() -> str | None:
+    """Read the pairing secret from the shared file, if present and valid.
+
+    Returns the stripped secret string if the file exists and contains a
+    non-empty value, otherwise returns ``None``.
+
+    Returns
+    -------
+    str or None
+        The pairing secret read from disk, or ``None`` if the file is absent
+        or cannot be read.
+    """
+    path = get_pairing_secret_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
 def _write_shared_secret(secret: str) -> None:
     """Write the pairing secret to the shared file atomically.
 
@@ -46,7 +66,7 @@ def _write_shared_secret(secret: str) -> None:
 
     If the target directory does not exist or permissions cannot be set,
     a warning is logged but no exception is raised — HTTP pairing still
-    works; only BLE pairing requires the shared file.
+    works; the shared file is used as the Wi-Fi Soft AP passphrase.
 
     Parameters
     ----------
@@ -59,7 +79,7 @@ def _write_shared_secret(secret: str) -> None:
     if not os.path.isdir(target_dir):
         logger.warning(
             "Pairing secret directory %s does not exist; "
-            "BLE pairing will not work until it is created",
+            "Wi-Fi Soft AP will not work until it is created",
             target_dir,
         )
         return
@@ -79,7 +99,7 @@ def _write_shared_secret(secret: str) -> None:
         except (KeyError, PermissionError):
             logger.warning(
                 "Could not set group 'nomon' on pairing secret file; "
-                "nomopractic may not be able to read it"
+                "nomopractic may not be able to read it as the Wi-Fi Soft AP passphrase"
             )
 
         os.rename(tmp_path, path)
@@ -87,7 +107,7 @@ def _write_shared_secret(secret: str) -> None:
         tmp_path = None  # rename succeeded — don't clean up
     except OSError:
         logger.warning(
-            "Failed to write pairing secret to %s; " "BLE pairing will not work",
+            "Failed to write pairing secret to %s; Wi-Fi Soft AP passphrase will not be available",
             path,
             exc_info=True,
         )
@@ -126,12 +146,40 @@ class PairingState:
         self.owner_email: str | None = None
         self.jwt_secret: str = secrets.token_urlsafe(48)
 
-    def generate_secret(self) -> str:
-        """Generate a 6-digit numeric BLE passkey (000000–999999).
+    def load_or_generate_secret(self) -> str:
+        """Load an existing pairing secret or generate a new one.
 
-        The passkey is written to the shared pairing secret file so that
-        nomopractic's BlueZ passkey agent can read it for OS-level
-        Bluetooth pairing.
+        On **first boot** (no file on disk) or when the stored value is
+        invalid, delegates to :meth:`generate_secret` to create and persist a
+        new secret.
+
+        On **subsequent restarts** (valid 6-digit secret already on disk),
+        loads that value without overwriting the file, so the WPA2 Soft AP
+        passphrase stays stable across service restarts.
+
+        Returns
+        -------
+        str
+            The active pairing secret.
+        """
+        existing = _read_shared_secret()
+        if existing is not None and existing.isdigit() and len(existing) == 6:
+            self.secret = existing
+            self.paired = False
+            logger.info(
+                "Loaded existing pairing secret from %s",
+                get_pairing_secret_path(),
+            )
+            return self.secret
+        logger.info("Generated new pairing secret")
+        return self.generate_secret()
+
+    def generate_secret(self) -> str:
+        """Generate a pairing secret for device authentication.
+
+        The secret is written to the shared pairing secret file so that
+        nomopractic's Wi-Fi Soft AP (`scripts/ap-mode.sh`) can read it
+        as the WPA2 hotspot passphrase (see nomopractic ADR-005).
 
         Returns
         -------
@@ -180,10 +228,16 @@ class PairingState:
     def reset(self) -> None:
         """Clear pairing state and regenerate JWT secret.
 
-        After reset the device is unpaired and a new pairing secret must
-        be generated via :meth:`generate_secret`.
+        Deletes the on-disk pairing secret file so the next service startup
+        generates a fresh passphrase.  After reset the device is unpaired and
+        a new pairing secret must be generated via :meth:`generate_secret` or
+        :meth:`load_or_generate_secret`.
         """
         self.paired = False
         self.owner_email = None
         self.secret = None
         self.jwt_secret = secrets.token_urlsafe(48)
+        try:
+            os.unlink(get_pairing_secret_path())
+        except OSError:
+            pass

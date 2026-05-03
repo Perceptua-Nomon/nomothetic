@@ -333,6 +333,14 @@ if ! getent passwd "${NOMON_SERVICE_USER}" >/dev/null 2>&1; then
     sudo useradd --system --no-create-home --gid "${NOMON_SERVICE_GROUP}" "${NOMON_SERVICE_USER}"
 fi
 
+# Add nomon service user to netdev group so nmcli can be called without sudo.
+if getent group netdev >/dev/null 2>&1; then
+    echo "==> Adding '${NOMON_SERVICE_USER}' to netdev group…"
+    sudo usermod -aG netdev "${NOMON_SERVICE_USER}"
+else
+    echo "WARNING: netdev group not found — nmcli wifi provisioning will not work without sudo"
+fi
+
 # ── Systemd service state capture ─────────────────────────────────────────────
 
 SYSTEMD_AVAILABLE=false

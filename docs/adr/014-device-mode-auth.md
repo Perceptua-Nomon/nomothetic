@@ -109,4 +109,3 @@ authentication: `/status` and `/pair` are unauthenticated (by design),
 - Persist pairing state to disk for restart resilience.
 - QR code display on device screen for easier pairing.
 - Multi-user device access with role-based permissions.
-- BLE-based pairing for headless devices.

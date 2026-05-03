@@ -22,9 +22,10 @@
 | 15 | Deploy Hardening | ✅ Complete |
 | 16 | Security Hardening | ✅ Complete |
 | 17 | Device-Mode Authentication | ✅ Complete |
-| 18 | BLE Pairing Coordination | ✅ Complete |
-| 18.1 | BLE Simplification Coordination | ✅ Complete |
+| 18 | BLE Pairing Coordination | ⊘ Superseded by Phase 20 |
+| 18.1 | BLE Simplification Coordination | ⊘ Superseded by Phase 20 |
 | 19 | Service Env-File Hardening | ✅ Complete |
+| 20 | BLE → Wi-Fi Soft AP Migration | ✅ Complete |
 
 **Test totals (current): 532 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store)
 
@@ -1075,7 +1076,92 @@ literal template placeholders to disk. systemd cannot expand `${...}` vars in
 
 ---
 
-## Adjacent Systems
+### Phase 20 — BLE → Wi-Fi Soft AP Migration ✅
+
+**Goal**: Remove all BLE coordination from nomothetic; update documentation to
+reflect the Wi-Fi Soft AP pairing channel introduced in nomopractic Phase 15.
+nomothetic is NOT in the BLE data path — its role in Phases 18/18.1 was
+managing the shared pairing secret and documenting BLE prerequisites. With BLE
+removed, the shared pairing secret is still written to
+`/var/lib/nomon/pairing_secret` (now dual-purpose: startup display + Soft AP
+WPA2 password); only the BLE framing in docs and code comments changes.
+
+**Supersedes**: Phase 18 (BLE Pairing Coordination), Phase 18.1 (BLE
+Simplification Coordination)
+**Cross-repo**: nomopractic Phase 15
+
+#### 20.1 — Update Pairing Module
+
+- [x] `src/nomothetic/pairing.py`: update module docstring — remove reference to
+      nomopractic BLE pairing; replace with note that the shared file is also
+      used as the Soft AP WPA2 password. The `_write_shared_secret()` function
+      and its logic are **unchanged**.
+- [x] `src/nomothetic/pairing.py`: update `_write_shared_secret` inline comment
+      that says "only BLE pairing requires the shared file" — change to "the
+      shared file is required by the nomon-softap watchdog script as the WPA2
+      password for the Soft AP hotspot"
+- Verify: `pytest tests/test_pairing.py` — all 14 tests pass (no logic changes)
+
+#### 20.2 — Update IPC Schema
+
+- [x] `docs/hat_ipc_schema.md`: remove the BLE transport note at the top of the
+      document (the `> **BLE note:** …` block)
+- [x] `docs/hat_ipc_schema.md`: remove the `### wifi_scan`, `### wifi_connect`,
+      `### wifi_status`, and `### authenticate` method sections entirely
+      (these IPC methods are deleted in nomopractic Phase 15.4)
+- [x] `docs/hat_ipc_schema.md`: remove `BLE_ONLY` from the error code table if
+      present
+- Verify: `grep -n 'BLE\|wifi_scan\|wifi_connect\|wifi_status\|authenticate\|BLE_ONLY' docs/hat_ipc_schema.md` — no output
+
+#### 20.3 — Update Architecture Doc
+
+- [x] `docs/architecture.md`: replace the BLE coordination section with a
+      Wi-Fi Soft AP section that describes:
+  - Soft AP managed by `nomon-softap-watchdog` systemd timer (nomopractic Phase 15)
+  - SSID/password derivation from `/var/lib/nomon/pairing_secret`
+  - How nomothetic's HTTPS stack is reachable at `192.168.4.1:8443` when the
+    AP is active
+  - The existing `POST /api/device/auth/pair` endpoint serves AP-mode clients
+    identically to normal Wi-Fi clients
+- Verify: `grep -n 'BLE\|bluer\|bluetooth\|Bluetooth' docs/architecture.md` —
+      no substantive references remain
+
+#### Phase 20 Exit Criteria
+
+- [x] `pytest && ruff check . && black --check .` — all clean
+- [x] `grep -rn 'BLE\|bluer\|bluetooth' src/nomothetic/pairing.py` — no output
+- [x] `docs/hat_ipc_schema.md` contains no `wifi_scan`, `wifi_connect`,
+      `wifi_status`, or `authenticate` sections
+- [x] `docs/architecture.md` BLE section replaced with Soft AP description
+
+### Phase 20.4 — Wi-Fi Credential Provisioning ✅
+
+Adds the missing provisioning step to the Soft AP pairing flow. The watchdog
+already handled AP teardown on full connectivity; this phase adds the API
+endpoint, Pydantic models, rate limiter, and UI form that let the user
+supply home Wi-Fi credentials.
+
+- [x] `WifiProvisionRequest` / `WifiProvisionResponse` Pydantic models in `api.py`
+- [x] `network_rate_limit` dependency (5 req / 60 s per IP) in `rate_limit.py`
+- [x] `POST /api/device/network/configure` endpoint — fires `nmcli` as asyncio background task, returns `{"status": "connecting"}` immediately
+- [x] `app.state.network_limiter` initialised in both device-auth-enabled and disabled branches
+- [x] 8 pytest cases in `tests/test_network_provision.py`
+- [x] `scripts/deploy.sh` — adds `nomon` user to `netdev` group
+- [x] `docs/pi_setup.md` — NetworkManager group access subsection
+- [x] nomotactic: `WifiProvisionForm` component rendered inline after pairing
+
+#### Phase 20.4 Exit Criteria
+
+- [x] `pytest && ruff check . && black --check .` — all clean
+- [x] `POST /api/device/network/configure` returns `{"status":"connecting"}` for valid JWT + SSID + password
+- [x] `422` for SSID > 32 chars, empty SSID, or password 1–7 chars
+- [x] `429` after 5 requests within 60 s
+- [x] `401` without Authorization header
+- [x] `WifiProvisionForm` renders inline after successful pairing, no new screens or dependencies
+
+**Cross-repo:** nomopractic Phase 15.8
+
+---
 
 ### Mobile & Web App (nomotactic)
 
