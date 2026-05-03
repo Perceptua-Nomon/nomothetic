@@ -1129,7 +1129,7 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
         app.state.pairing_limiter = RateLimiter(max_requests=3, window_seconds=60)
 
         if not pairing.is_paired():
-            secret = pairing.generate_secret()
+            secret = pairing.load_or_generate_secret()
             # Write the secret to a file on tmpfs so the operator can read it
             # via SSH without it appearing in the journal.
             # StandardError=journal captures all stderr output, so printing

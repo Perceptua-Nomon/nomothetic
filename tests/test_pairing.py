@@ -4,7 +4,12 @@ import os
 import stat
 from unittest.mock import MagicMock, patch
 
-from nomothetic.pairing import PairingState, _write_shared_secret, get_pairing_secret_path
+from nomothetic.pairing import (
+    PairingState,
+    _read_shared_secret,
+    _write_shared_secret,
+    get_pairing_secret_path,
+)
 
 # ============================================================================
 # Secret generation
@@ -275,3 +280,166 @@ def test_write_shared_secret_overwrites_existing(tmp_path):
 
     with open(secret_path) as f:
         assert f.read() == "second-secret"
+
+
+# ============================================================================
+# _read_shared_secret
+# ============================================================================
+
+
+def test_read_shared_secret_returns_value(tmp_path):
+    """Returns the secret string when file exists with valid content."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with open(secret_path, "w") as fh:
+        fh.write("123456")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        assert _read_shared_secret() == "123456"
+
+
+def test_read_shared_secret_strips_whitespace(tmp_path):
+    """Strips leading/trailing whitespace from the file content."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with open(secret_path, "w") as fh:
+        fh.write("  042000\n")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        assert _read_shared_secret() == "042000"
+
+
+def test_read_shared_secret_absent_returns_none(tmp_path):
+    """Returns None when the file does not exist."""
+    secret_path = str(tmp_path / "no_such_file")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        assert _read_shared_secret() is None
+
+
+def test_read_shared_secret_empty_returns_none(tmp_path):
+    """Returns None when the file exists but is empty."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with open(secret_path, "w") as fh:
+        fh.write("")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        assert _read_shared_secret() is None
+
+
+def test_read_shared_secret_whitespace_only_returns_none(tmp_path):
+    """Returns None when the file contains only whitespace."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with open(secret_path, "w") as fh:
+        fh.write("   \n")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        assert _read_shared_secret() is None
+
+
+# ============================================================================
+# load_or_generate_secret
+# ============================================================================
+
+
+def test_load_or_generate_loads_existing_secret(tmp_path):
+    """Returns and sets the on-disk secret without regenerating the file."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with open(secret_path, "w") as fh:
+        fh.write("042000")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        result = ps.load_or_generate_secret()
+    assert result == "042000"
+    assert ps.secret == "042000"
+    assert ps.paired is False
+
+
+def test_load_or_generate_does_not_overwrite_existing(tmp_path):
+    """Does not rewrite the file when loading an existing valid secret."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with open(secret_path, "w") as fh:
+        fh.write("042000")
+    mtime_before = os.path.getmtime(secret_path)
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        ps.load_or_generate_secret()
+    mtime_after = os.path.getmtime(secret_path)
+    assert mtime_before == mtime_after
+
+
+def test_load_or_generate_creates_file_when_absent(tmp_path):
+    """Generates and writes a new secret when no file exists."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        result = ps.load_or_generate_secret()
+    assert os.path.exists(secret_path)
+    assert result.isdigit() and len(result) == 6
+    assert ps.secret == result
+
+
+def test_load_or_generate_rejects_non_digit_secret(tmp_path):
+    """Generates a new secret when the file contains a non-digit value."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with open(secret_path, "w") as fh:
+        fh.write("abcdef")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        result = ps.load_or_generate_secret()
+    assert result.isdigit() and len(result) == 6
+    assert result != "abcdef"
+
+
+def test_load_or_generate_rejects_wrong_length_secret(tmp_path):
+    """Generates a new secret when the file contains a secret of wrong length."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with open(secret_path, "w") as fh:
+        fh.write("1234")  # only 4 digits
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        result = ps.load_or_generate_secret()
+    assert len(result) == 6
+    assert result != "1234"
+
+
+def test_load_or_generate_logs_loaded_path(tmp_path, caplog):
+    """Logs at INFO level when loading an existing secret."""
+    import logging
+
+    secret_path = str(tmp_path / "pairing_secret")
+    with open(secret_path, "w") as fh:
+        fh.write("007777")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        with caplog.at_level(logging.INFO, logger="nomothetic.pairing"):
+            ps.load_or_generate_secret()
+    assert any("Loaded existing pairing secret" in r.message for r in caplog.records)
+
+
+def test_load_or_generate_logs_generated(tmp_path, caplog):
+    """Logs at INFO level when generating a new secret."""
+    import logging
+
+    secret_path = str(tmp_path / "no_secret")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        with caplog.at_level(logging.INFO, logger="nomothetic.pairing"):
+            ps.load_or_generate_secret()
+    assert any("Generated new pairing secret" in r.message for r in caplog.records)
+
+
+# ============================================================================
+# reset — deletes the on-disk secret file
+# ============================================================================
+
+
+def test_reset_deletes_secret_file(tmp_path):
+    """reset() deletes the on-disk pairing secret file."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        ps.generate_secret()
+        assert os.path.exists(secret_path)
+        ps.reset()
+    assert not os.path.exists(secret_path)
+
+
+def test_reset_tolerates_missing_file():
+    """reset() does not raise if the secret file does not exist."""
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": "/nonexistent/path"}):
+        ps = PairingState()
+        ps.reset()  # Must not raise

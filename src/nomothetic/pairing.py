@@ -38,6 +38,26 @@ def get_pairing_secret_path() -> str:
     return os.environ.get("NOMON_PAIRING_SECRET_PATH", _DEFAULT_PAIRING_SECRET_PATH)
 
 
+def _read_shared_secret() -> str | None:
+    """Read the pairing secret from the shared file, if present and valid.
+
+    Returns the stripped secret string if the file exists and contains a
+    non-empty value, otherwise returns ``None``.
+
+    Returns
+    -------
+    str or None
+        The pairing secret read from disk, or ``None`` if the file is absent
+        or cannot be read.
+    """
+    path = get_pairing_secret_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
 def _write_shared_secret(secret: str) -> None:
     """Write the pairing secret to the shared file atomically.
 
@@ -126,6 +146,34 @@ class PairingState:
         self.owner_email: str | None = None
         self.jwt_secret: str = secrets.token_urlsafe(48)
 
+    def load_or_generate_secret(self) -> str:
+        """Load an existing pairing secret or generate a new one.
+
+        On **first boot** (no file on disk) or when the stored value is
+        invalid, delegates to :meth:`generate_secret` to create and persist a
+        new secret.
+
+        On **subsequent restarts** (valid 6-digit secret already on disk),
+        loads that value without overwriting the file, so the WPA2 Soft AP
+        passphrase stays stable across service restarts.
+
+        Returns
+        -------
+        str
+            The active pairing secret.
+        """
+        existing = _read_shared_secret()
+        if existing is not None and existing.isdigit() and len(existing) == 6:
+            self.secret = existing
+            self.paired = False
+            logger.info(
+                "Loaded existing pairing secret from %s",
+                get_pairing_secret_path(),
+            )
+            return self.secret
+        logger.info("Generated new pairing secret")
+        return self.generate_secret()
+
     def generate_secret(self) -> str:
         """Generate a pairing secret for device authentication.
 
@@ -180,10 +228,16 @@ class PairingState:
     def reset(self) -> None:
         """Clear pairing state and regenerate JWT secret.
 
-        After reset the device is unpaired and a new pairing secret must
-        be generated via :meth:`generate_secret`.
+        Deletes the on-disk pairing secret file so the next service startup
+        generates a fresh passphrase.  After reset the device is unpaired and
+        a new pairing secret must be generated via :meth:`generate_secret` or
+        :meth:`load_or_generate_secret`.
         """
         self.paired = False
         self.owner_email = None
         self.secret = None
         self.jwt_secret = secrets.token_urlsafe(48)
+        try:
+            os.unlink(get_pairing_secret_path())
+        except OSError:
+            pass
