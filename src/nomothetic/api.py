@@ -87,6 +87,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Module-level set that retains strong references to fire-and-forget asyncio
+# Tasks.  Without this, CPython's GC may collect a task before it completes.
+# Each task removes itself on completion via the done-callback.
+_background_tasks: set["asyncio.Task[None]"] = set()
+
 # ============================================================================
 # Data Models
 # ============================================================================
@@ -2435,7 +2440,9 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
             except OSError:
                 logger.warning("nmcli wifi connect OSError for SSID %r", ssid, exc_info=True)
 
-        asyncio.create_task(_connect())
+        _t = asyncio.create_task(_connect())
+        _background_tasks.add(_t)
+        _t.add_done_callback(_background_tasks.discard)
         return WifiProvisionResponse(status="connecting")
 
     # Include all device endpoints (with or without auth dependency)
