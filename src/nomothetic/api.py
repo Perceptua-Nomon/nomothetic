@@ -1137,6 +1137,7 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
             _secret_display_path = "/run/nomothetic/pairing-secret"
             try:
                 import os as _os
+
                 _fd = _os.open(
                     _secret_display_path,
                     _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC,
