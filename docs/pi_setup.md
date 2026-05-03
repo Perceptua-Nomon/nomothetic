@@ -18,24 +18,6 @@ and installing `nomothetic` on the Raspberry Pi.
   curl -LsSf https://astral.sh/uv/install.sh | sh
   ```
 - **Rust toolchain** — install with `rustup` (see [Installing Rust on the Pi](#installing-rust-on-the-pi) below)
-- **BlueZ** — Bluetooth stack for BLE GATT server (usually pre-installed on
-  Raspberry Pi OS). Required if BLE is enabled in nomopractic:
-  ```bash
-  # Verify BlueZ is installed
-  bluetoothctl --version
-
-  # If not installed:
-  sudo apt install -y bluez
-
-  # Enable and start the Bluetooth service
-  sudo systemctl enable --now bluetooth
-
-  # Verify the controller is powered on
-  bluetoothctl show | grep Powered
-  # → Powered: yes
-  ```
-  **Note:** On Pi Zero 2W, WiFi and BLE share the BCM43436s antenna.
-  Simultaneous WiFi + BLE is supported but may reduce range for both.
 - **Both repos cloned**: `Perceptua-Nomon/nomothetic` and `Perceptua-Nomon/nomopractic`
 
 ### Software — on your dev machine (optional, for cross-compilation)
@@ -379,25 +361,34 @@ cargo test
 
 ---
 
-## 8 — BLE Pairing (Optional)
+## 8 — Wi-Fi Soft AP Pairing
 
-BLE pairing allows the nomotactic mobile app to pair with the robot without
-an existing WiFi connection. The robot uses OS-level Bluetooth passkey pairing
-(ADR-004) — no custom secret exchange at the application layer.
-
-> **Note:** BLE and WiFi share the BCM43436s antenna on Pi Zero 2W.
-> Simultaneous operation is supported but may reduce range for both.
+When the Pi cannot reach a known Wi-Fi network, the Soft AP watchdog
+automatically broadcasts a WPA2 hotspot so any browser or the nomotactic app
+can reach nomothetic at `192.168.4.1:8443` to complete HTTP pairing — no
+Bluetooth, no native modules required.
 
 ### How it works
 
-1. nomopractic reads the 6-digit numeric passkey from
-   `/var/lib/nomon/pairing_secret` at startup and prints it in the startup log.
-2. The mobile user selects the device from a BLE scan. The OS shows a native
-   Bluetooth passkey dialog — the user enters the 6-digit code.
-3. The OS completes bonding with link-layer encryption (BlueZ, no custom secret
-   exchange at the application layer).
-4. nomotactic calls the `authenticate` IPC method over BLE → receives a JWT
-   → stores it in expo-secure-store for use over HTTPS after WiFi provisioning.
+1. At startup, nomothetic generates (or reads) a random pairing secret from
+   `/var/lib/nomon/pairing_secret` and logs it to the journal:
+   ```
+   INFO  DEVICE PAIRING SECRET: <22-char-url-safe-string>
+   ```
+2. If the Pi has no internet connectivity, the `nomon-softap-watchdog.timer`
+   systemd unit calls `scripts/ap-mode.sh up` (in nomopractic) to activate a
+   WPA2 hotspot:
+   ```
+   SSID:       nomon-<last4-of-MAC>
+   Passphrase: same value as /var/lib/nomon/pairing_secret
+   Device IP:  192.168.4.1
+   ```
+3. The user connects their phone or laptop to `nomon-<last4-of-MAC>`.
+4. They open `https://192.168.4.1:8443` in any browser (accept the
+   self-signed certificate) and follow the pairing prompt — enter the secret
+   shown in step 1 to obtain a device-scoped JWT.
+5. The watchdog calls `scripts/ap-mode.sh down` automatically once the Pi
+   acquires full internet connectivity.
 
 ### Pairing secret file
 
@@ -405,35 +396,33 @@ an existing WiFi connection. The robot uses OS-level Bluetooth passkey pairing
 |----------|-------|
 | Path | `/var/lib/nomon/pairing_secret` (default) |
 | Mode | `0640` (`rw-r-----`) |
-| Owner | `nomon:nomon` |
+| Owner | `root:nomon` |
 | Env override | `NOMON_PAIRING_SECRET_PATH` |
 
-The systemd service (`nomothetic-api.service`) automatically creates
-`/var/lib/nomon/` on startup.
+The `nomothetic-api.service` systemd unit creates `/var/lib/nomon/` on startup.
 
-### Verify BLE is working
+### Verify the Soft AP is working
 
 ```bash
-# Check BlueZ is running
-sudo systemctl status bluetooth
+# Check the watchdog timer is active
+sudo systemctl status nomon-softap-watchdog.timer
 
-# Check the controller is powered on
-bluetoothctl show | grep Powered
-# → Powered: yes
+# Check connectivity (triggers AP if 'none' or 'limited')
+nmcli general connectivity
 
-# Verify the pairing secret file exists
-ls -la /var/lib/nomon/pairing_secret
+# Verify the AP connection appears when triggered
+nmcli con show nomon-ap
 ```
 
-### Troubleshooting BLE
+### Troubleshooting Soft AP
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| BLE not advertising | BlueZ service not running | `sudo systemctl start bluetooth` |
-| `Powered: no` in bluetoothctl | Bluetooth disabled in firmware | Add `dtoverlay=disable-bt` is absent from `/boot/config.txt`; reboot |
-| BLE passkey rejected | Wrong 6-digit code entered, or passkey file missing | Check `/var/lib/nomon/pairing_secret` contains exactly 6 digits |
-| `authenticate` returns INTERNAL_ERROR | `NOMON_JWT_SECRET` env var not set | Set `NOMON_JWT_SECRET` in nomopractic's environment |
-| Weak BLE signal | Antenna shared with WiFi | Move app closer to the Pi; reduce WiFi traffic |
+| AP not appearing | Watchdog timer not running | `sudo systemctl start nomon-softap-watchdog.timer` |
+| `nomon-ap` missing after `ap-mode.sh up` | NetworkManager not installed | `sudo apt install -y network-manager` |
+| Passphrase rejected | Pairing secret file missing | Check `/var/lib/nomon/pairing_secret` exists; restart nomothetic to regenerate |
+| `https://192.168.4.1:8443` unreachable | nomothetic API not running | `sudo systemctl start nomothetic-api` |
+| Certificate warning | Self-signed cert (expected) | Click through or import `.certs/cert.pem` |
 
 ---
 

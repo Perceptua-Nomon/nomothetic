@@ -25,7 +25,7 @@
 | 18 | BLE Pairing Coordination | ⊘ Superseded by Phase 20 |
 | 18.1 | BLE Simplification Coordination | ⊘ Superseded by Phase 20 |
 | 19 | Service Env-File Hardening | ✅ Complete |
-| 20 | BLE → Wi-Fi Soft AP Migration | 🔲 Planned |
+| 20 | BLE → Wi-Fi Soft AP Migration | ✅ Complete |
 
 **Test totals (current): 532 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store)
 
@@ -1076,7 +1076,7 @@ literal template placeholders to disk. systemd cannot expand `${...}` vars in
 
 ---
 
-### Phase 20 — BLE → Wi-Fi Soft AP Migration 🔲
+### Phase 20 — BLE → Wi-Fi Soft AP Migration ✅
 
 **Goal**: Remove all BLE coordination from nomothetic; update documentation to
 reflect the Wi-Fi Soft AP pairing channel introduced in nomopractic Phase 15.
@@ -1092,11 +1092,11 @@ Simplification Coordination)
 
 #### 20.1 — Update Pairing Module
 
-- [ ] `src/nomothetic/pairing.py`: update module docstring — remove reference to
+- [x] `src/nomothetic/pairing.py`: update module docstring — remove reference to
       nomopractic BLE pairing; replace with note that the shared file is also
       used as the Soft AP WPA2 password. The `_write_shared_secret()` function
       and its logic are **unchanged**.
-- [ ] `src/nomothetic/pairing.py`: update `_write_shared_secret` inline comment
+- [x] `src/nomothetic/pairing.py`: update `_write_shared_secret` inline comment
       that says "only BLE pairing requires the shared file" — change to "the
       shared file is required by the nomon-softap watchdog script as the WPA2
       password for the Soft AP hotspot"
@@ -1104,18 +1104,18 @@ Simplification Coordination)
 
 #### 20.2 — Update IPC Schema
 
-- [ ] `docs/hat_ipc_schema.md`: remove the BLE transport note at the top of the
+- [x] `docs/hat_ipc_schema.md`: remove the BLE transport note at the top of the
       document (the `> **BLE note:** …` block)
-- [ ] `docs/hat_ipc_schema.md`: remove the `### wifi_scan`, `### wifi_connect`,
+- [x] `docs/hat_ipc_schema.md`: remove the `### wifi_scan`, `### wifi_connect`,
       `### wifi_status`, and `### authenticate` method sections entirely
       (these IPC methods are deleted in nomopractic Phase 15.4)
-- [ ] `docs/hat_ipc_schema.md`: remove `BLE_ONLY` from the error code table if
+- [x] `docs/hat_ipc_schema.md`: remove `BLE_ONLY` from the error code table if
       present
 - Verify: `grep -n 'BLE\|wifi_scan\|wifi_connect\|wifi_status\|authenticate\|BLE_ONLY' docs/hat_ipc_schema.md` — no output
 
 #### 20.3 — Update Architecture Doc
 
-- [ ] `docs/architecture.md`: replace the BLE coordination section with a
+- [x] `docs/architecture.md`: replace the BLE coordination section with a
       Wi-Fi Soft AP section that describes:
   - Soft AP managed by `nomon-softap-watchdog` systemd timer (nomopractic Phase 15)
   - SSID/password derivation from `/var/lib/nomon/pairing_secret`
@@ -1128,11 +1128,11 @@ Simplification Coordination)
 
 #### Phase 20 Exit Criteria
 
-- [ ] `pytest && ruff check . && black --check .` — all clean
-- [ ] `grep -rn 'BLE\|bluer\|bluetooth' src/nomothetic/pairing.py` — no output
-- [ ] `docs/hat_ipc_schema.md` contains no `wifi_scan`, `wifi_connect`,
+- [x] `pytest && ruff check . && black --check .` — all clean
+- [x] `grep -rn 'BLE\|bluer\|bluetooth' src/nomothetic/pairing.py` — no output
+- [x] `docs/hat_ipc_schema.md` contains no `wifi_scan`, `wifi_connect`,
       `wifi_status`, or `authenticate` sections
-- [ ] `docs/architecture.md` BLE section replaced with Soft AP description
+- [x] `docs/architecture.md` BLE section replaced with Soft AP description
 
 ---
 

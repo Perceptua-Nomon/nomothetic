@@ -13,14 +13,12 @@ remotely.
 - **Camera module** attached (CSI ribbon or USB)
 - A workstation with SSH access to the Pi
 
-> **BLE alternative:** If your Pi is not yet on WiFi, you can use
-> Bluetooth Low Energy (BLE) to pair the nomotactic mobile app directly
-> with the robot. The mobile app triggers OS-level Bluetooth passkey pairing
-> (the user enters the 6-digit numeric passkey displayed in nomopractic's startup log).
-> After bonding, the app calls the `authenticate` IPC method over BLE to obtain a JWT
-> for subsequent use over HTTPS. See
-> [pi_setup.md — BLE Pairing](pi_setup.md#8--ble-pairing-optional) for
-> setup details.
+> **Soft AP pairing:** If your Pi is not yet on WiFi, the nomon Soft AP
+> watchdog will broadcast a WPA2 hotspot (`nomon-<last4-of-MAC>`) automatically.
+> Connect to it with the passphrase shown in the nomothetic startup log, then
+> open `https://192.168.4.1:8443` in a browser or the nomotactic app to pair
+> the device over HTTP. No Bluetooth required.
+> See [pi_setup.md — Wi-Fi Soft AP Pairing](pi_setup.md#8--wi-fi-soft-ap-pairing).
 
 ---
 
@@ -207,8 +205,7 @@ open http://$PI:8000    # macOS; use xdg-open on Linux
 | `Connection refused` on port 8000 | Streaming server not running — `make start-stream`; check `logs/stream.log` |
 | `503 Service Unavailable` from HAT endpoint | nomopractic daemon not running — `sudo systemctl start nomopractic` |
 | `HARDWARE_ERROR` from battery/servo | HAT not connected or I2C not detected — `sudo i2cdetect -y 1` should show `0x14` |
-| BLE not advertising | BlueZ not running — `sudo systemctl start bluetooth`; check `bluetoothctl show` |
-| BLE pairing fails | Pairing secret mismatch — check `/var/lib/nomon/pairing_secret`; restart nomothetic to regenerate |
+| Soft AP not appearing | Watchdog service not running — `sudo systemctl status nomon-softap-watchdog.timer`; check connectivity with `nmcli general connectivity` |
 | Certificate warning in browser | Expected for self-signed certs — click through or import `.certs/cert.pem` |
 
 For deeper troubleshooting, see [pi_setup.md](pi_setup.md#troubleshooting).

@@ -27,7 +27,6 @@ today and what infrastructure is required.
 | Tool | Purpose | When Needed |
 |------|---------|-------------|
 | **ArcadeDB test instance** (Docker) | Integration tests for `GremlinUserStore`, `GremlinFleetStore`, and `DatabaseClient` | Available now — central via `nomographic/docker-compose.yml` + `scripts/init-db.sh central`; local via `scripts/migrate-local.sh` |
-| **BLE simulator / mock** | End-to-end BLE GATT pairing and command tests without hardware | For on-device integration testing (see BLE section) |
 | **MQTT test broker** (Mosquitto Docker) | Telemetry publish integration tests | For end-to-end telemetry validation |
 | **pytest-asyncio** | If async test patterns are introduced | If test coverage expands to async flows |
 
@@ -299,307 +298,33 @@ pairing state, users, and tokens live in in-memory stores.
 
 ## BLE NDJSON Relay (Phase 13.1 / 18.1 / 2.1)
 
-> **Status:** Fully implemented across nomopractic (GATT server),
-> nomothetic (pairing coordination), and nomotactic (BLE client).
-> See nomopractic ADR-001 (GATT server) and ADR-004 (BLE Simplification — Native OS Pairing + NDJSON Relay) for design details.
-> ADR-002 (binary protocol) and ADR-003 (security model) are superseded by ADR-004.
+> ⚠️ **SUPERSEDED — BLE pairing has been removed.**
+> Phases 13, 13.1 (nomopractic), 18, 18.1 (nomothetic), and 2, 2.1, 2.2
+> (nomotactic) described a Bluetooth Low Energy GATT pairing channel that has
+> been replaced by the Wi-Fi Soft AP flow in Phase 15 (nomopractic) /
+> Phase 20 (nomothetic). See [nomopractic ADR-005](../../nomopractic/docs/adr/005-wifi-soft-ap.md)
+> for the full migration rationale.
+>
+> The BLE test inventory below is retained as a historical record.
+> All BLE source modules, IPC methods (`authenticate`, `wifi_scan`,
+> `wifi_connect`, `wifi_status`), and native dependencies
+> (`react-native-ble-plx`, `bluer`) have been removed from the codebase.
 
-### Component Inventory
+### Wi-Fi Soft AP Pairing — Integration Tests
 
-| Component | Repo | Location | Status |
-|-----------|------|----------|--------|
-| BLE GATT server | nomopractic | `src/ble/mod.rs` | Implemented (behind `ble` feature flag) |
-| GATT service + characteristics | nomopractic | `src/ble/services.rs` | Implemented + tests |
-| NDJSON relay bridge | nomopractic | `src/ble/bridge.rs` | Implemented + 9 mapping tests |
-| WiFi provisioning (nmcli) | nomopractic | `src/ble/wifi.rs` | Implemented + 8 unit tests |
-| BLE config | nomopractic | `src/config.rs` | Implemented + 6 unit tests |
-| Pairing secret file | nomothetic | `src/nomothetic/pairing.py` | Implemented + 25 unit tests |
-| Device auth endpoints | nomothetic | `src/nomothetic/device_auth_routes.py` | Implemented + 17 tests |
-| BLE client (`RealBleService`) | nomotactic | `lib/ble.ts` | Implemented |
-| Transport layer | nomotactic | `lib/transport.tsx` | Implemented |
-| Connection indicator | nomotactic | `components/ConnectionIndicator.tsx` | Implemented |
+The Soft AP pairing flow is exercised by the existing nomothetic device-auth
+tests plus manual on-device verification:
 
-### Unit Tests (Already Passing)
-
-#### nomopractic — NDJSON Relay Bridge (`ble/bridge.rs`)
-
-| Test | Status | Coverage |
-|------|:------:|----------|
-| NDJSON command dispatched to IPC handler | PASS | `bridge_dispatches_command` |
-| Chunked write accumulates full request | PASS | `bridge_accumulates_chunks` |
-| Response chunked into MTU-sized frames | PASS | `bridge_chunks_response` |
-| Unknown method returns error response | PASS | `bridge_unknown_method_error` |
-| Concurrent requests handled correctly | PASS | `bridge_concurrent_requests` |
-| Empty / malformed JSON rejected | PASS | `bridge_malformed_json_error` |
-| Large response fits in multiple chunks | PASS | `bridge_large_response_chunks` |
-| IPC error propagated to BLE client | PASS | `bridge_ipc_error_propagated` |
-| Passkey agent reads 6-digit file | PASS | `passkey_agent_reads_file` |
-
-#### nomopractic — Config (`config.rs`)
-
-| Test | Status | Coverage |
-|------|:------:|----------|
-| BLE defaults (enabled=false, name="nomon") | PASS | `ble_config_defaults` |
-| BLE config from TOML | PASS | `ble_config_from_toml` |
-| Partial TOML uses defaults | PASS | `ble_config_partial_toml_uses_defaults` |
-| Device name empty rejected | PASS | `ble_device_name_empty_rejected` |
-| Device name too long rejected (>29 bytes) | PASS | `ble_device_name_too_long_rejected` |
-| Environment overrides | PASS | `ble_env_overrides` |
-
-#### nomothetic — Pairing (`test_pairing.py`)
-
-| Test | Status | Coverage |
-|------|:------:|----------|
-| Secret has sufficient entropy (≥128 bits) | PASS | `test_generate_secret_has_sufficient_entropy` |
-| Verify and consume succeeds | PASS | `test_verify_and_consume_success` |
-| Consumed secret cannot reuse | PASS | `test_consumed_secret_cannot_reuse` |
-| Wrong secret rejected | PASS | `test_verify_and_consume_wrong_secret` |
-| Constant-time comparison | PASS | `test_verify_uses_constant_time_compare` |
-| Reset clears paired state | PASS | `test_reset_clears_paired_state` |
-| Reset regenerates JWT secret | PASS | `test_reset_regenerates_jwt_secret` |
-| Shared secret file written | PASS | `test_shared_secret_file_written` |
-| Shared secret file permissions | PASS | `test_shared_secret_file_permissions` |
-| Atomic write (no partial reads) | PASS | `test_atomic_write` |
-| Cross-issuer token rejection | PASS | `test_cross_issuer_rejection` |
-
-#### nomothetic — Device Auth Endpoints (`test_device_auth.py`)
-
-| Test | Status | Coverage |
-|------|:------:|----------|
-| Status before pairing | PASS | `test_status_unpaired` |
-| Status after pairing | PASS | `test_status_after_pairing` |
-| Pair success → tokens returned | PASS | `test_pair_success` |
-| Wrong secret → 401 | PASS | `test_pair_wrong_secret` |
-| Already paired → 409 | PASS | `test_pair_already_paired` |
-| Rate limited → 429 | PASS | `test_pair_rate_limited` |
-| Refresh success | PASS | `test_refresh_success` |
-| Invalid refresh → 401 | PASS | `test_refresh_invalid_token` |
-| Profile with valid token | PASS | `test_me_returns_profile` |
-| Profile without token → 401 | PASS | `test_me_requires_auth` |
-| Device endpoint requires auth | PASS | `test_device_endpoint_requires_token` |
-
-### Integration Tests — Needed
-
-These tests validate cross-component behavior that unit tests cannot cover.
-They require coordinated infrastructure (BLE hardware or simulator, running
-daemons, or multi-process test harnesses).
-
-#### E2E-1: Full BLE Pairing Flow (nomopractic + nomothetic + nomotactic)
-
-> **Priority: P0** — This is THE critical path for device setup.
-
-```
-Preconditions:
-  - nomothetic running in device mode (NOMON_DEVICE_AUTH=true)
-  - nomopractic running with ble.enabled=true
-  - pairing_secret_path contains a 6-digit numeric passkey
-
-Test Sequence:
-  1. nomopractic starts → reads 6-digit passkey from pairing_secret_path
-  2. nomotactic scans for BLE devices → discovers nomon advertisement
-  3. nomotactic connects to GATT server
-  4. OS shows native Bluetooth passkey dialog; user enters 6-digit code
-  5. BlueZ completes bonding (link-layer AES-CCM encryption, no app-layer crypto)
-  6. nomotactic calls `authenticate` IPC method over NDJSON relay
-  7. nomopractic dispatches to IPC handler → signs JWT (iss=nomon-device, sub=device-owner@local)
-  8. nomotactic receives JWT → stores in expo-secure-store
-  9. Verify: JWT is valid (iss=nomon-device, sub=device-owner@local)
-  10. Verify: JWT usable for HTTPS auth once WiFi is available
-
-Expected Result:
-  - BLE bonding completed via OS passkey entry (no app-layer secret exchange)
-  - JWT usable for HTTPS auth (if WiFi available later)
-  - Passkey file remains intact (passkey is reusable; not consumed)
-```
-
-**Test Infrastructure Required:**
-- Raspberry Pi with BlueZ OR `bluer` mock adapter (D-Bus mock)
-- Both daemons running (nomopractic with pairing_secret_path configured)
-- Mobile device or BLE test client (e.g., `bluez` `bluetoothctl` or Python `bleak`)
-
-**Interim Testability:**
-- Steps 1-2 testable now (nomopractic config + pairing file tests)
-- Steps 6-7 testable now (nomopractic IPC handler unit tests)
-- Full flow requires BLE hardware or D-Bus adapter mock
-
-#### E2E-2: NDJSON BLE Command Roundtrip
-
-> **Priority: P0** — Validates that NDJSON commands reach hardware over BLE.
-
-```
-Preconditions:
-  - BLE bonded (from E2E-1), JWT obtained via `authenticate`
-  - nomopractic IPC handler running (HAT accessible or mocked)
-
-Test Sequence:
-  1. nomotactic sends NDJSON command: {"id":"1","method":"get_battery_voltage","params":{}}
-  2. nomotactic chunks NDJSON into MTU-sized BLE writes to Command Write characteristic
-  3. nomopractic accumulates chunks → reconstructs full NDJSON request
-  4. nomopractic dispatches to IPC handler → handler.dispatch("get_battery_voltage")
-  5. nomopractic sends NDJSON response chunked via Response Notify characteristic
-  6. nomotactic assembles chunks → parses JSON response → displays voltage
-
-Expected Result:
-  - Correct battery voltage returned as standard NDJSON response
-  - Same JSON format as HTTPS API (no custom codec)
-```
-
-**Additional Command Tests:**
-| Command | Key Verification |
-|---------|-----------------|
-| set_motor_speed(channel=0, speed_pct=50, ttl_ms=500) | Standard NDJSON params |
-| drive(speed_pct=75, ttl_ms=1000) | Standard NDJSON params |
-| steer(angle_deg=45, ttl_ms=500) | Standard NDJSON params |
-| stop_all_motors | Empty params, all motors stop |
-| set_servo_angle(channel=0, angle_deg=90, ttl_ms=500) | Servo responds correctly |
-| read_ultrasonic | Distance returned in cm |
-| read_grayscale | Three u16 values returned |
-| health | {"status":"ok","uptime_s":<N>,...} |
-| health | Echo roundtrip |
-
-#### E2E-3: BLE Reconnection Handling
-
-> **Priority: P0** — Validates reconnection and re-bonding after disconnect.
-
-```
-Test Sequence:
-  1. Establish BLE bond, obtain JWT
-  2. Drop BLE connection (simulate disconnect)
-  3. nomotactic detects disconnect → triggers auto-reconnect
-  4. BLE link re-established (OS uses stored bond key, no re-pairing needed)
-  5. nomotactic calls `authenticate` again → receives fresh JWT
-  6. Commands resume over NDJSON relay
-
-Expected Result:
-  - Reconnect uses existing OS bond (no passkey re-entry)
-  - New JWT obtained; NDJSON commands resume normally
-  - Security checklist B5 validated (link-layer encryption maintained)
-```
-
-#### E2E-4: WiFi Provisioning via BLE NDJSON
-
-**Goal:** Verify that `wifi_scan`, `wifi_connect`, and `wifi_status` IPC methods work correctly over the BLE NDJSON relay.
-
-**Infrastructure:** Pi Zero 2W with `--features ble` build. Mobile device bonded via OS passkey.
-
-**Steps:**
-
-1. Ensure BLE session established (OS passkey bonded, JWT obtained via `authenticate`).
-2. Send `wifi_scan` command over BLE:
-   - Write `{"id":"1","method":"wifi_scan","params":{}}\n` to Command Write characteristic.
-   - Read Response Notify notifications until newline received.
-   - Expected: `{"id":"1","ok":true,"result":{"networks":[...]}}\n`
-3. Select an SSID from the returned list.
-4. Send `wifi_connect` command:
-   - Write `{"id":"2","method":"wifi_connect","params":{"ssid":"MyNetwork","password":"secret"}}\n`
-   - Expected: `{"id":"2","ok":true,"result":{"success":true}}\n`
-5. Send `wifi_status` command:
-   - Write `{"id":"3","method":"wifi_status","params":{}}\n`
-   - Expected: `{"id":"3","ok":true,"result":{"state":"connected","ssid":"MyNetwork","signal":<int>}}\n`
-6. Pi connects to WiFi network. Verify nmcli status shows connected.
-7. Switch nomotactic to HTTPS transport (HTTPS device API now reachable).
-8. Confirm JWT issued over BLE is valid for HTTPS (`Authorization: Bearer <jwt>` → 200).
-
-**Pass criteria:** All three WiFi NDJSON methods return `"ok": true`. JWT transitions to HTTPS cleanly.
-
-**Notes:** Uses the same single GATT service as all other BLE commands (ADR-004). No binary encoding or separate WiFi characteristics. The verification in Step 8 mirrors the standard NDJSON relay test.
-
-#### E2E-5: Transport Fallback (BLE → HTTPS)
-
-> **Priority: P1** — Validates the hybrid transport model.
-
-```
-Preconditions:
-  - BLE paired, WiFi provisioned
-
-Test Sequence:
-  1. nomotactic detects WiFi connectivity → switches to HTTPS transport
-  2. Commands routed via HTTPS to nomothetic → IPC → nomopractic
-  3. WiFi signal lost → nomotactic detects disconnect
-  4. nomotactic falls back to BLE transport automatically
-  5. Commands resume via BLE NDJSON relay
-  6. WiFi reconnects → nomotactic switches back to HTTPS
-
-Expected Result:
-  - Seamless transport switching without user intervention
-  - No command loss during transitions
-  - HTTPS JWT matches BLE-issued JWT
-```
-
-#### E2E-6: Concurrent BLE + HTTPS Auth Consistency
-
-> **Priority: P2** — Ensures token interoperability.
-
-```
-Test Sequence:
-  1. Pair via BLE → receive JWT (iss=nomon-device, sub=device-owner@local)
-  2. Use same JWT for HTTPS request to nomothetic device API
-  3. Verify: JWT accepted by nomothetic device auth middleware
-  4. Refresh token via HTTPS → verify new token works on both transports
-
-Expected Result:
-  - JWT issued by nomopractic is valid for nomothetic HTTPS auth
-  - Token refresh doesn't break BLE session
-```
-
-**Interim Testability:**
-- Testable now by generating a JWT with the same algorithm + claims as
-  nomopractic (HS256, iss=nomon-device, sub=device-owner@local) and
-  verifying nomothetic accepts it. Requires shared JWT secret.
-
-#### E2E-7: BLE Disconnect Resource Cleanup
-
-> **Priority: P2** — Resource cleanup validation.
-
-```
-Test Sequence:
-  1. Establish BLE bond, obtain JWT
-  2. Client disconnects (BLE link loss)
-  3. nomopractic detects disconnect → clears connection state
-  4. nomopractic calls on_client_disconnect handler
-  5. Verify: all motor/servo leases held by BLE connection are released
-  6. Client reconnects → must call `authenticate` again to get new JWT
-
-Expected Result:
-  - No orphaned hardware leases after BLE disconnect
-  - Connection state cleared from memory
-  - Re-authentication via `authenticate` required before commands resume
-```
-
-#### E2E-8: BLE Reconnect After Long Idle
-
-> **Priority: P3** — Edge case: OS bond persistence after long disconnect.
-
-```
-Test Sequence:
-  1. Establish BLE bond, obtain JWT
-  2. Disconnect and leave idle for extended period
-  3. Reconnect → OS bond should still be valid
-  4. Call `authenticate` → new JWT returned
-  5. Verify: NDJSON commands resume normally
-
-Expected Result:
-  - OS bond survives idle periods
-  - Re-authentication via `authenticate` is sufficient (no re-pairing)
-```
-
-**Interim Testability:** Testable on device by checking BlueZ bond persistence.
-
-### Cross-Repo Consistency Checks
-
-These are static verification tests that can run without hardware:
-
-| Check | Can Test Now? | How |
-|-------|:------------:|-----|
-| GATT UUIDs match (Rust ↔ TypeScript ↔ docs) | Yes | Compare `services.rs`, `ble.ts`, `project-context.md` |
-| NDJSON method names match (Rust ↔ TypeScript) | Yes | Compare `handler.rs` methods with `ble.ts` method strings |
-| WiFi IPC method format match | Yes | Compare `wifi.rs` and `ble.ts` NDJSON method names and param fields match |
-| JWT claims match (iss, sub) | Yes | Compare nomopractic `authenticate` handler and `device_auth_routes.py` |
-| Config field names match | Yes | Compare `config.rs` BLE fields and `config.toml` |
-
-> **Recommendation:** Create a dedicated cross-repo consistency test script
-> that parses constants from both codebases and asserts equality. This
-> prevents drift as either side evolves independently.
+| Test | Can Test Now? | How |
+|------|:------------:|-----|
+| Pairing secret file written on first boot | Yes | `test_shared_secret_file_written` in `test_pairing.py` |
+| Secret has sufficient entropy | Yes | `test_generate_secret_has_sufficient_entropy` |
+| `POST /api/device/auth/pair` accepts secret → JWT | Yes | `test_pair_success` in `test_device_auth.py` |
+| Wrong secret → 401 | Yes | `test_pair_wrong_secret` |
+| Already paired → 409 | Yes | `test_pair_already_paired` |
+| Rate limiting (3 req/min) | Yes | `test_pair_rate_limited` |
+| On-device: AP appears within 30 s when offline | Pi only | `nmcli con show nomon-ap` after disconnecting from known network |
+| On-device: AP deactivates when Pi gets internet | Pi only | `nomon-softap-watchdog.timer` cycles; `nmcli general connectivity` → `full` |
 
 ---
 
@@ -625,16 +350,15 @@ These are static verification tests that can run without hardware:
 | Command dispatch | App sends motor/servo/camera commands with auth | Partially | API functions defined; needs mock device server |
 | Camera streaming | App displays MJPEG stream from device | No | Requires running StreamServer or mock stream source |
 
-### nomotactic ↔ nomopractic (BLE)
+### nomotactic ↔ nomopractic (Soft AP pairing)
 
 | Area | Test | Can Test Now? | Notes |
 |------|------|:-------------:|-------|
-| BLE scan + connect | Discover nomon by GATT service UUID, connect | No | Requires BLE hardware or D-Bus mock |
-| BLE pairing | Write secret → receive auth notification → derive key | No | Individual steps unit-testable; full flow needs BLE stack |
-| Encrypted commands | Send/receive AES-CCM-encrypted binary frames | No | Protocol codec and crypto unit-testable; GATT transport needs hardware |
-| WiFi provisioning | Scan/Connect/Status over BLE GATT characteristics | No | Binary format unit-testable; nmcli + BLE needs hardware |
-| Transport switching | BLE → HTTPS fallback and recovery | No | TransportProvider logic testable; actual switch needs both transports |
-| JWT interop | BLE-issued JWT accepted by nomothetic HTTPS auth | Partially | Testable by minting JWT with matching claims/secret |
+| Soft AP visibility | `nomon-<last4>` SSID appears when Pi has no internet | Pi only | `nmcli dev wifi list` from a phone; watchdog must be running |
+| HTTP pairing | `POST /api/device/auth/pair` returns JWT | Yes | `test_pair_success` in `test_device_auth.py` |
+| Wrong secret → 401 | Pairing rejects wrong secret | Yes | `test_pair_wrong_secret` |
+| JWT interop | Device JWT accepted by nomothetic device endpoints | Yes | `test_device_endpoint_requires_token` |
+| AP auto-deactivation | AP disappears after Pi joins home network | Pi only | Watchdog polls `nmcli general connectivity` every 30 s |
 
 ### nomothetic ↔ nomopractic (IPC)
 
@@ -659,312 +383,173 @@ These are static verification tests that can run without hardware:
 
 ## End-to-End Hardware Walkthrough
 
-Step-by-step instructions for running the full BLE pairing → command → WiFi
-provisioning workflow on real hardware. This covers every service across all
-repos and validates the complete data path from phone to motors.
+Step-by-step instructions for running the full Wi-Fi Soft AP pairing → command
+workflow on real hardware. This covers every service across all repos and
+validates the complete data path from phone to motors.
 
 ### Prerequisites
 
 | Item | Requirement |
 |------|-------------|
-| **Raspberry Pi** | Pi Zero 2W (or any Pi with Bluetooth) running Raspberry Pi OS (64-bit) |
+| **Raspberry Pi** | Pi Zero 2W running Raspberry Pi OS (64-bit) |
 | **Robot HAT** | SunFounder Robot HAT V4 connected via I2C (address `0x14`) |
 | **Dev machine** | macOS or Linux with Rust cross-compile toolchain, Python 3.11+, Node.js 18+ |
-| **Phone** | Android or iOS device with Expo Go installed (same WiFi as dev machine) |
-| **Network** | Pi and dev machine on the same local network (Pi via Ethernet or pre-configured WiFi) |
+| **Phone or laptop** | Any device with a browser; no native app or Bluetooth required |
 
 ### Step 1 — Prepare the Pi
 
-Ensure BlueZ, I2C, and the `nomon` system user/group are configured:
-
 ```bash
-# SSH into the Pi
 ssh pi@<PI_IP>
 
 # Enable I2C (if not already)
 sudo raspi-config nonint do_i2c 0
 
-# Install BlueZ
-sudo apt update && sudo apt install -y bluez
-
-# Start and enable Bluetooth
-sudo systemctl enable --now bluetooth
-
-# Verify the adapter is up
-bluetoothctl show   # should show "Powered: yes"
+# Install NetworkManager (provides nmcli + hotspot support)
+sudo apt update && sudo apt install -y network-manager
 
 # Create the nomon group and state directory
 sudo groupadd -f nomon
 sudo useradd -r -s /usr/sbin/nologin -g nomon nomon 2>/dev/null || true
 sudo mkdir -p /var/lib/nomon
-sudo chown nomon:nomon /var/lib/nomon
+sudo chown root:nomon /var/lib/nomon
 sudo chmod 750 /var/lib/nomon
 ```
 
 ### Step 2 — Build and Deploy nomopractic
 
-On the **dev machine**, cross-compile with the `ble` feature enabled:
+On the **dev machine**:
 
 ```bash
 cd nomopractic
-
-# Install cross if needed
 cargo install cross
-
-# Build for Pi (aarch64) with BLE support
-cross build --target aarch64-unknown-linux-gnu --release --features ble
-```
-
-Deploy to the Pi:
-
-```bash
-# Copy binary
+cross build --target aarch64-unknown-linux-gnu --release
 scp target/aarch64-unknown-linux-gnu/release/nomopractic pi@<PI_IP>:/tmp/
+ssh pi@<PI_IP> "sudo mv /tmp/nomopractic /usr/local/bin/ && sudo chmod 755 /usr/local/bin/nomopractic"
 
-# SSH in and install
-ssh pi@<PI_IP> << 'EOF'
-  sudo systemctl stop nomopractic 2>/dev/null || true
-  sudo mv /tmp/nomopractic /usr/local/bin/nomopractic
-  sudo chmod 755 /usr/local/bin/nomopractic
-EOF
+# Deploy config and systemd units (nomopractic + Soft AP watchdog)
+scp config.toml                         pi@<PI_IP>:/tmp/nomopractic.config.toml
+scp systemd/nomopractic.service         pi@<PI_IP>:/tmp/
+scp systemd/nomon-softap.service        pi@<PI_IP>:/tmp/
+scp systemd/nomon-softap-watchdog.service pi@<PI_IP>:/tmp/
+scp systemd/nomon-softap-watchdog.timer pi@<PI_IP>:/tmp/
+scp scripts/ap-mode.sh                  pi@<PI_IP>:/tmp/
 
-# Copy config (first time only)
-scp config.toml pi@<PI_IP>:/tmp/config.toml
 ssh pi@<PI_IP> << 'EOF'
   sudo mkdir -p /etc/nomopractic
-  sudo cp /tmp/config.toml /etc/nomopractic/config.toml
-EOF
-```
-
-**Enable BLE in the config** — add a `[ble]` section to
-`/etc/nomopractic/config.toml` on the Pi:
-
-```toml
-[ble]
-enabled = true
-device_name = "nomon"
-pairing_secret_path = "/var/lib/nomon/pairing_secret"
-jwt_secret_env = "NOMON_JWT_SECRET"
-```
-
-Install and start the systemd service:
-
-```bash
-scp systemd/nomopractic.service pi@<PI_IP>:/tmp/
-ssh pi@<PI_IP> << 'EOF'
-  sudo cp /tmp/nomopractic.service /etc/systemd/system/
+  sudo mv /tmp/nomopractic.config.toml /etc/nomopractic/config.toml
+  sudo mv /tmp/nomopractic.service /etc/systemd/system/
+  sudo mv /tmp/nomon-softap*.service /tmp/nomon-softap*.timer /etc/systemd/system/
+  sudo mv /tmp/ap-mode.sh /usr/local/bin/ap-mode.sh && sudo chmod +x /usr/local/bin/ap-mode.sh
   sudo systemctl daemon-reload
   sudo systemctl enable --now nomopractic
-  sudo systemctl status nomopractic   # should show "active (running)"
+  sudo systemctl enable --now nomon-softap-watchdog.timer
 EOF
 ```
 
 ### Step 3 — Install and Start nomothetic
 
-On the **Pi**, install nomothetic in device mode:
+On the **Pi**:
 
 ```bash
-ssh pi@<PI_IP>
-
 cd /opt/nomothetic   # or wherever you cloned the repo
+uv sync --extra pi --extra api
 
-# Create venv and install with Pi extras
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[pi]"
-
-# Generate a self-signed TLS cert (first time only)
-mkdir -p certs
-openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem \
-  -out certs/cert.pem -days 365 -nodes \
-  -subj "/CN=nomon-device"
-```
-
-Set environment variables and start:
-
-```bash
-export NOMON_API_MODE=device
-export NOMON_DEVICE_AUTH=true
-export NOMON_JWT_SECRET="<matching-secret>"  # must match nomopractic's JWT secret
-export NOMON_TLS_CERT=certs/cert.pem
-export NOMON_TLS_KEY=certs/key.pem
-
-# Start the API server
-uvicorn nomothetic.api:app --host 0.0.0.0 --port 8443 \
-  --ssl-keyfile "$NOMON_TLS_KEY" --ssl-certfile "$NOMON_TLS_CERT"
-```
-
-Or install and use the systemd service for a persistent setup:
-
-```bash
+# Copy systemd unit
 sudo cp systemd/nomothetic-api.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now nomothetic-api
 ```
 
-### Step 4 — Verify Both Daemons on the Pi
-
-Run these checks from the Pi shell:
+**Record the pairing secret** shown in the nomothetic startup log:
 
 ```bash
-# 1. nomopractic IPC socket is alive
-echo '{"method":"get_battery_voltage"}' | socat - UNIX-CONNECT:/run/nomopractic/nomopractic.sock
-# Expected: JSON response with battery voltage
+sudo journalctl -u nomothetic-api -n 30 | grep "DEVICE PAIRING SECRET"
+# → INFO  DEVICE PAIRING SECRET: <22-char string>
+```
 
-# 2. BLE adapter is advertising
-bluetoothctl show | grep -A2 "Powered"
-# Expected: Powered: yes
+### Step 4 — Verify Both Daemons
 
-# Look for the GATT service registration in the journal
-sudo journalctl -u nomopractic --no-pager -n 20 | grep -i ble
-# Expected: lines showing BLE GATT server started
+```bash
+# nomopractic IPC socket is alive
+echo '{"method":"health","params":{},"id":"1"}' | socat - UNIX-CONNECT:/run/nomopractic/nomopractic.sock
 
-# 3. nomothetic HTTPS is responding
+# nomothetic HTTPS is responding
 curl -sk https://localhost:8443/
-# Expected: {"status":"ok"} or similar health response
+# Expected: {"status":"ok"}
 
-# 4. Pairing secret file exists
+# Pairing secret file exists
 ls -la /var/lib/nomon/pairing_secret
-# Expected: -rw-r----- 1 root nomon ... pairing_secret
-# Read the secret — you'll need this for the phone
-sudo cat /var/lib/nomon/pairing_secret
 ```
 
-**Record the pairing secret** — you will enter this in the app during Step 6.
+### Step 5 — Trigger and Connect to the Soft AP
 
-### Step 5 — Start the Mobile App
-
-On the **dev machine**:
+Simulate the device being offline (or simply disconnect Pi from its home network):
 
 ```bash
-cd nomotactic
-
-# Install dependencies
-npm install
-
-# Set the device API URL to point at the Pi
-export EXPO_PUBLIC_DEVICE_API_URL="https://<PI_IP>:8443"
-
-# Start the Expo dev server
-npx expo start
+sudo nmcli connection down <HOME_SSID>
 ```
 
-On the **phone**, open Expo Go and scan the QR code from the terminal. The app
-should load and show the login/pairing screen.
-
-> **Note:** For BLE testing, you must use a development build or Expo Go on a
-> physical device — BLE does not work in simulators/emulators.
-
-### Step 6 — BLE Pairing
-
-1. In the app, navigate to the device connection screen.
-2. Tap **Scan for devices** — the app scans for BLE peripherals advertising the
-   nomon GATT service UUID (`e3a10001-1000-2000-3000-e3a1e3a1e3a1`).
-3. Select the device named `nomon` from the scan results.
-4. The OS shows a native Bluetooth passkey dialog — enter the **6-digit passkey**
-   from `/var/lib/nomon/pairing_secret` on the Pi (nomopractic logs it at startup).
-5. BlueZ completes bonding with link-layer encryption (no app-layer crypto).
-6. The app calls the `authenticate` IPC method over the NDJSON relay — nomopractic
-   mints a JWT and returns it.
-
-**Verify pairing succeeded:**
-- The app should show a "Connected" or "Paired" status.
-- On the Pi: `sudo journalctl -u nomopractic --no-pager -n 10` should show a
-  successful authentication log entry.
-
-### Step 7 — Send Commands over BLE
-
-With BLE bonded and authenticated, test the command path:
-
-| Action in App | IPC Method | Expected Result |
-|---------------|-----------|-----------------|
-| Read battery | `get_battery_voltage` | App displays battery voltage |
-| Drive forward | `set_motor_speed` | Motors spin (verify physically) |
-| Stop motors | `stop_all_motors` | Motors stop |
-| Read ultrasonic | `read_ultrasonic` | App displays distance in cm |
-| Steer servo | `set_servo_angle` | Servo moves to target angle |
-
-Commands are sent as NDJSON over the BLE GATT characteristics. Verify on the Pi:
+Wait up to 30 s for the watchdog to activate the AP:
 
 ```bash
-sudo journalctl -u nomopractic --no-pager -n 30 | grep -i "command\|dispatch\|method"
+nmcli connection show nomon-ap
+# Expected: appears as an active connection
 ```
 
-### Step 8 — WiFi Provisioning over BLE
-
-1. In the app, navigate to the WiFi settings screen.
-2. Tap **Scan WiFi** — the app sends a `wifi_scan` IPC method over NDJSON.
-   The Pi runs `nmcli dev wifi list` and returns available networks.
-3. Select a network from the scan results.
-4. Enter the WiFi password when prompted.
-5. The app sends a `wifi_connect` IPC method with SSID + password over BLE.
-6. The Pi runs `nmcli dev wifi connect ...` and returns the connection status.
-
-**Verify WiFi connected:**
-
-```bash
-# On the Pi
-nmcli connection show --active
-# Expected: the WiFi network appears with an IP address
-
-ip addr show wlan0
-# Expected: an IP on the target WiFi network
+On the **phone or laptop**, connect to:
+```
+SSID:       nomon-<last4-of-MAC>
+Passphrase: same value as /var/lib/nomon/pairing_secret
 ```
 
-### Step 9 — Send Commands over HTTPS
+### Step 6 — Pair via HTTP
 
-Once the Pi is on WiFi, the app's `TransportProvider` should automatically
-switch from BLE to HTTPS (or you can manually test HTTPS):
+Open a browser or run:
 
 ```bash
-# From the dev machine — verify HTTPS is reachable over WiFi
-curl -sk https://<PI_WIFI_IP>:8443/
-# Expected: health response
+curl -sk https://192.168.4.1:8443/api/device/auth/status
+# Expected: {"paired": false}
 
-# Send an authenticated command (use the JWT from BLE pairing)
-curl -sk -H "Authorization: Bearer <JWT>" \
-  -X POST https://<PI_WIFI_IP>:8443/api/hat/motor \
+curl -sk -X POST https://192.168.4.1:8443/api/device/auth/pair \
   -H "Content-Type: application/json" \
-  -d '{"motor": 1, "speed": 50}'
-# Expected: 200 OK — motor spins
-
-# Stop the motor
-curl -sk -H "Authorization: Bearer <JWT>" \
-  -X POST https://<PI_WIFI_IP>:8443/api/hat/motor \
-  -d '{"motor": 1, "speed": 0}'
+  -d '{"secret": "<pairing-secret>", "display_name": "My nomon"}'
+# Expected: 200 OK with { access_token, refresh_token }
 ```
 
-In the app, send the same commands through the UI — verify the transport
-indicator shows HTTPS instead of BLE.
+Store the `access_token` — this JWT is used for all subsequent API calls.
 
-### Step 10 — Transport Fallback
-
-Test that the app falls back to BLE when WiFi drops:
-
-1. **Disconnect the Pi from WiFi:**
-   ```bash
-   ssh pi@<PI_IP_ETHERNET> "sudo nmcli connection down <WIFI_SSID>"
-   ```
-2. In the app, send a command — the `TransportProvider` should detect the HTTPS
-   failure and fall back to BLE.
-3. Verify the command still executes (motors respond).
-4. **Reconnect WiFi:**
-   ```bash
-   ssh pi@<PI_IP_ETHERNET> "sudo nmcli connection up <WIFI_SSID>"
-   ```
-5. After a short delay, the next command should route over HTTPS again.
-
-### Step 11 — Cleanup
+### Step 7 — Send Commands over HTTPS
 
 ```bash
-# On the Pi — stop services
+JWT="<access_token from Step 6>"
+
+# Battery voltage
+curl -sk -H "Authorization: Bearer $JWT" https://192.168.4.1:8443/api/hat/battery
+
+# Drive forward for 1 s
+curl -sk -H "Authorization: Bearer $JWT" \
+  -X POST https://192.168.4.1:8443/api/hat/drive \
+  -H "Content-Type: application/json" \
+  -d '{"speed_pct": 50, "ttl_ms": 1000}'
+```
+
+### Step 8 — Restore Home Network and Verify AP Deactivates
+
+```bash
+sudo nmcli connection up <HOME_SSID>
+```
+
+After 30–60 s (one watchdog cycle):
+
+```bash
+nmcli connection show nomon-ap
+# Expected: no such connection (AP deactivated)
+```
+
+### Step 9 — Cleanup
+
+```bash
 sudo systemctl stop nomopractic nomothetic-api
-
-# Verify no orphaned BLE advertisements
-bluetoothctl show | grep "Discovering"
-# Expected: no — advertising should have stopped with the daemon
-
-# Verify IPC socket is cleaned up
 ls /run/nomopractic/nomopractic.sock 2>/dev/null && echo "WARN: socket still exists"
 ```
 
@@ -972,14 +557,12 @@ ls /run/nomopractic/nomopractic.sock 2>/dev/null && echo "WARN: socket still exi
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| BLE scan finds nothing | BlueZ not running or adapter powered off | `sudo systemctl restart bluetooth && bluetoothctl power on` |
-| Pairing fails with "invalid secret" | Secret mismatch or file not readable | `sudo cat /var/lib/nomon/pairing_secret` and re-enter exactly |
-| `socat` to IPC socket hangs | nomopractic not running or socket path wrong | `sudo systemctl status nomopractic` — check for crash in journal |
-| HTTPS connection refused | nomothetic not running or wrong port | `sudo systemctl status nomothetic-api` — verify port 8443 |
-| Motor commands return OK but nothing moves | Robot HAT not connected or I2C disabled | `sudo i2cdetect -y 1` — should show device at `0x14` |
-| WiFi scan returns empty | Pi has no WiFi hardware or antenna contention | Run `nmcli dev wifi list` manually — BCM43436s shares antenna with BLE |
-| Transport does not fall back to BLE | TransportProvider not detecting failure | Check app logs for timeout errors; verify BLE is still connected |
-| `cross build` fails for `ble` feature | Missing `dbus` cross-compile deps | Ensure the Cross.toml has `pkg-config` and `libdbus-1-dev` for aarch64 |
+| Soft AP not appearing | Watchdog timer not active | `sudo systemctl start nomon-softap-watchdog.timer` |
+| Wrong SSID or no AP | `ap-mode.sh` failed to read MAC | Check `journalctl -u nomon-softap` for errors |
+| Pairing returns 401 | Wrong secret entered | `sudo cat /var/lib/nomon/pairing_secret` and re-enter exactly |
+| `socat` to IPC socket hangs | nomopractic not running | `sudo systemctl status nomopractic` |
+| HTTPS connection refused | nomothetic not running or wrong port | `sudo systemctl status nomothetic-api` |
+| Motor commands return OK but nothing moves | HAT not connected or I2C disabled | `sudo i2cdetect -y 1` — should show `0x14` |
 
 ---
 
@@ -1043,12 +626,7 @@ Tests are prioritised by risk and user impact:
 | **P2** | Camera/audio/calibration/streaming endpoints | Important but lower blast radius |
 | **P2** | Telemetry publish and retrieval | Data integrity for fleet monitoring |
 | **P2** | CORS configuration | Security — but mitigated by network isolation on device |
-| **P0** | BLE pairing flow (E2E-1) | Security-critical — broken pairing = no device access or unauthorized access |
-| **P0** | NDJSON command roundtrip (E2E-2) | Core device control path over BLE |
-| **P0** | BLE reconnection handling (E2E-3) | Reliability — reconnect must work without re-pairing |
-| **P1** | WiFi provisioning (E2E-4) | Required for BLE → HTTPS upgrade; blocked without WiFi hardware |
-| **P1** | Transport fallback (E2E-5) | User experience — seamless connectivity transitions |
-| **P2** | BLE/HTTPS auth consistency (E2E-6) | Token interoperability across transports |
-| **P2** | BLE disconnect cleanup (E2E-7) | Resource cleanup — orphaned leases |
+| **P0** | Soft AP pairing flow (E2E-1) | Security-critical — broken pairing = no device access |
+| **P0** | HTTPS command roundtrip via Soft AP | Core device control path |
+| **P1** | AP auto-deactivation on internet restored | Reliability — AP must not linger after Wi-Fi reconnects |
 | **P2** | ArcadeDB integration | Gremlin stores exist (`db.py`, `user_store.py`, `fleet_store.py`); integration tests against Docker ArcadeDB recommended |
-| **P3** | BLE reconnect after long idle (E2E-8) | Edge case — OS bond persistence |
