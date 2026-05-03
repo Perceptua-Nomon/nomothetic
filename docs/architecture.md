@@ -78,6 +78,20 @@ network, `nomopractic/scripts/ap-mode.sh` activates a WPA2 hotspot
 nomothetic generates on first boot. This replaces the former BLE provisioning
 flow (see nomopractic ADR-005).
 
+**End-to-end provisioning sequence:**
+
+1. Device boots off-network → `nomon-softap.service` starts AP at `192.168.4.1`
+2. User connects to `nomon-<last4>` AP using the 6-digit pairing secret
+3. User opens app → reaches nomothetic at `https://192.168.4.1:8443`
+4. User submits secret to `POST /api/device/auth/pair` → receives device JWT
+5. App reveals Wi-Fi provisioning form; user enters home SSID + WPA2 password
+6. `POST /api/device/network/configure` → nomothetic calls `nmcli` in a
+   non-blocking background task; NM stores a persistent connection profile
+7. `nomon-softap-watchdog.service` polls connectivity every 30 s; when
+   `nmcli general connectivity` reaches `full`, calls `ap-mode.sh down`
+8. On future boots, device connects to home network directly; AP only activates
+   if home network is unreachable
+
 - **Device mode** is the existing configuration — all current endpoints work
   unchanged. Hardware-specific libraries are conditionally imported.
 - **Central mode** never imports hardware libraries (picamera2, pyaudio,
