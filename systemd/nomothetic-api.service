@@ -5,21 +5,24 @@ Wants=nomopractic.service
 
 [Service]
 Type=simple
-Environment=NOMON_SERVICE_USER=nomon NOMON_SERVICE_GROUP=nomon
-EnvironmentFile=-/etc/nomothetic/nomothetic.env
+# ${NOMON_SERVICE_USER}, ${NOMON_SERVICE_GROUP}, and ${NOMON_INSTALL_DIR} are
+# template variables expanded by envsubst at deploy time (scripts/deploy.sh).
+# The installed /etc/systemd/system/ file contains the literal resolved values,
+# e.g. User=nomon — systemd never sees the $ placeholders.
+# To override, set NOMON_SERVICE_USER / NOMON_SERVICE_GROUP in your local .env.
 User=${NOMON_SERVICE_USER}
 Group=${NOMON_SERVICE_GROUP}
+EnvironmentFile=-/etc/nomothetic/nomothetic.env
 
-# Ensure the shared pairing secret directory exists with correct ownership.
 # systemd creates /var/lib/nomon owned by User:Group automatically.
 StateDirectory=nomon
+# /run/nomothetic is tmpfs; recreate on every start for the operator secret display.
+RuntimeDirectory=nomothetic
+RuntimeDirectoryMode=0755
 
-# Adjust these paths to match your deployment:
-WorkingDirectory=/opt/nomothetic
-# TLS: Generate self-signed certs with:
-#   python3 -c "from nomothetic.api import create_self_signed_cert; from pathlib import Path; create_self_signed_cert(Path('/etc/nomothetic/tls/cert.pem'), Path('/etc/nomothetic/tls/key.pem'))"
-# Or provide proper certificates for production.
-ExecStart=/opt/nomothetic/.venv/bin/uvicorn nomothetic.api:create_app --factory --host 0.0.0.0 --port 8443 --ssl-keyfile /etc/nomothetic/tls/key.pem --ssl-certfile /etc/nomothetic/tls/cert.pem
+WorkingDirectory=${NOMON_INSTALL_DIR}
+ExecStart=${NOMON_INSTALL_DIR}/.venv/bin/uvicorn nomothetic.api:create_app --factory --host 0.0.0.0 --port 8443 \
+  --ssl-keyfile /etc/nomothetic/tls/key.pem --ssl-certfile /etc/nomothetic/tls/cert.pem
 
 Environment=NOMON_API_MODE=device
 Environment=NOMON_DEVICE_AUTH=true
