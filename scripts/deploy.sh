@@ -35,6 +35,8 @@
 #   NOMON_SSH_KEY     Path to SSH private key (optional; if set it is passed to
 #                     ssh with -i. If unset, SSH may prompt for a password or
 #                     use the ssh-agent / default identity.)
+#   NOMON_SUDO_PASS   Optional sudo password for non-interactive remote sudo
+#                     operations. Leave unset to use interactive sudo prompts.
 #   NOMON_REMOTE_DIR  Absolute path to the repo directory on the Pi. Optional;
 #                     defaults to ${HOME}/perceptua-nomon/nomothetic.
 #
@@ -92,10 +94,14 @@ if [[ -f "${ENV_FILE}" ]]; then
         val="${val#\"}" ; val="${val%\"}"
         val="${val#\'}" ; val="${val%\'}"
         case "${key}" in
-            NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR) export "${key}=${val}" ;;
+            NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_SUDO_PASS) export "${key}=${val}" ;;
         esac
     done < "${ENV_FILE}"
 fi
+
+# Remove CR/LF from optional sudo password in case .env was edited on Windows.
+NOMON_SUDO_PASS="$(printf '%s' "${NOMON_SUDO_PASS:-}" | tr -d '\r\n')"
+_NOMON_SUDO_PASS_QUOTED="$(printf '%q' "${NOMON_SUDO_PASS}")"
 
 # ── Argument & configuration validation ───────────────────────────────────────
 
@@ -145,7 +151,7 @@ if [[ -n "${PI_HOST}" ]]; then
     # passed as a positional arg, because SSH concatenates all args into a
     # single string — empty positional args (VERSION, NOMON_REMOTE_DIR) are
     # silently dropped, which shifts subsequent args and corrupts $3 onward.
-    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} bash -ls \"\$@\"" --)
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} bash -ls \"\$@\"" --)
 else
     echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} locally"
     export NOMON_SKIP_TESTS="${SKIP_TESTS}"
@@ -153,7 +159,7 @@ else
 fi
 
 # Deploy-only variables that must NOT be written to the on-device env file.
-_DEPLOY_EXCLUDE='^\s*(NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_GITHUB_REPO)\s*='
+_DEPLOY_EXCLUDE='^\s*(NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_GITHUB_REPO|NOMON_SUDO_PASS)\s*='
 
 copy_nomothetic_env() {
     if [[ ! -f "${ENV_FILE}" ]]; then
@@ -168,9 +174,32 @@ copy_nomothetic_env() {
 
     if [[ -n "${PI_HOST}" ]]; then
         echo "==> Writing /etc/nomothetic/nomothetic.env on remote host..."
-        printf '%s\n' "${filtered}" \
-            | ssh "${SSH_OPTS[@]}" "${PI_HOST}" \
-                'sudo mkdir -p /etc/nomothetic && sudo tee /etc/nomothetic/nomothetic.env >/dev/null'
+        local tmp_env_file
+        local remote_env_tmp
+        tmp_env_file="$(mktemp)"
+        remote_env_tmp="/tmp/nomothetic_env.${RANDOM}.$$"
+        printf '%s\n' "${filtered}" > "${tmp_env_file}"
+        scp "${SSH_OPTS[@]}" "${tmp_env_file}" "${PI_HOST}:${remote_env_tmp}"
+        ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} REMOTE_ENV_TMP=${remote_env_tmp} bash -s" <<'EO_NOMOTHETIC_ENV'
+set -euo pipefail
+if [[ -n "${NOMON_SUDO_PASS:-}" ]]; then
+    _askpass_script="$(mktemp)"
+    chmod 700 "${_askpass_script}"
+    cat > "${_askpass_script}" <<EOSUDOPASS
+#!/usr/bin/env sh
+printf '%s\n' "${NOMON_SUDO_PASS}"
+EOSUDOPASS
+    export SUDO_ASKPASS="${_askpass_script}"
+    trap 'rm -f "${_askpass_script}"' EXIT
+    sudo() { command sudo -A "$@"; }
+else
+    sudo() { command sudo "$@"; }
+fi
+sudo mkdir -p /etc/nomothetic
+sudo mv -f "${REMOTE_ENV_TMP}" /etc/nomothetic/nomothetic.env
+sudo chmod 644 /etc/nomothetic/nomothetic.env
+EO_NOMOTHETIC_ENV
+        rm -f "${tmp_env_file}"
     else
         echo "==> Writing /etc/nomothetic/nomothetic.env locally..."
         sudo mkdir -p /etc/nomothetic
@@ -182,6 +211,7 @@ copy_nomothetic_env() {
 
 if [[ "${DEPLOY_LOCAL}" == true && -n "${PI_HOST}" ]]; then
     _remote_dir="${NOMON_REMOTE_DIR:-}"
+    _remote_dir_for_ssh="${_remote_dir:-~/perceptua-nomon/nomothetic}"
     # We can't expand $HOME for the remote side here, so default to a literal path
     # the remote script will also accept. Use a placeholder that ssh can resolve.
     _rsync_dest="${PI_HOST}:${_remote_dir:-~/perceptua-nomon/nomothetic/}"
@@ -198,6 +228,17 @@ if [[ "${DEPLOY_LOCAL}" == true && -n "${PI_HOST}" ]]; then
     else
         RSYNC_OPTS+=(-e "ssh -o StrictHostKeyChecking=accept-new")
     fi
+    echo "==> Ensuring remote deploy directory exists: ${_remote_dir_for_ssh}"
+    ssh "${SSH_OPTS[@]}" "${PI_HOST}" "bash -s" -- "${_remote_dir_for_ssh}" <<'EO_MKREMOTE'
+set -euo pipefail
+_dest="$1"
+if [[ "${_dest}" == "~" ]]; then
+    _dest="${HOME}"
+elif [[ "${_dest}" == ~/* ]]; then
+    _dest="${HOME}/${_dest#~/}"
+fi
+mkdir -p "${_dest}"
+EO_MKREMOTE
     echo "==> Syncing local source → ${_rsync_dest}..."
     rsync "${RSYNC_OPTS[@]}" "${REPO_DIR}/" "${_rsync_dest}"
     echo "  Sync complete ✓"
@@ -210,6 +251,20 @@ copy_nomothetic_env
 
 "${RUN_CMD[@]}" "${VERSION}" "${DEPLOY_LOCAL}" "${NOMON_REMOTE_DIR:-}" << 'END_REMOTE'
 set -euo pipefail
+
+if [[ -n "${NOMON_SUDO_PASS:-}" ]]; then
+    _askpass_script="$(mktemp)"
+    chmod 700 "${_askpass_script}"
+    cat > "${_askpass_script}" <<EOSUDOPASS
+#!/usr/bin/env sh
+printf '%s\n' "${NOMON_SUDO_PASS}"
+EOSUDOPASS
+    export SUDO_ASKPASS="${_askpass_script}"
+    trap 'rm -f "${_askpass_script}"' EXIT
+    sudo() { command sudo -A "$@"; }
+else
+    sudo() { command sudo "$@"; }
+fi
 
 readonly REQUESTED_VERSION="$1"
 readonly DEPLOY_LOCAL="${2:-false}"
@@ -291,6 +346,10 @@ rollback() {
             echo "  Restarting nomothetic-api.service..." >&2
             sudo systemctl restart nomothetic-api.service 2>&1 || true
         fi
+        if [[ "${PREV_AP_SERVICE_ACTIVE}" == "true" ]]; then
+            echo "  Restarting nomothetic-ap.service..." >&2
+            sudo systemctl restart nomothetic-ap.service 2>&1 || true
+        fi
         if [[ "${PREV_STREAM_SERVICE_ACTIVE}" == "true" ]]; then
             echo "  Restarting nomothetic-stream.service..." >&2
             sudo systemctl restart nomothetic-stream.service 2>&1 || true
@@ -345,15 +404,18 @@ fi
 
 SYSTEMD_AVAILABLE=false
 PREV_API_SERVICE_ACTIVE=false
+PREV_AP_SERVICE_ACTIVE=false
 PREV_STREAM_SERVICE_ACTIVE=false
 
 if command -v systemctl >/dev/null 2>&1; then
     SYSTEMD_AVAILABLE=true
-    for _svc in nomothetic-api nomothetic-stream; do
+    for _svc in nomothetic-api nomothetic-ap nomothetic-stream; do
         if sudo systemctl list-unit-files --full --no-legend "${_svc}.service" >/dev/null 2>&1; then
             if sudo systemctl is-active --quiet "${_svc}.service"; then
                 if [[ "${_svc}" == "nomothetic-api" ]]; then
                     PREV_API_SERVICE_ACTIVE=true
+                elif [[ "${_svc}" == "nomothetic-ap" ]]; then
+                    PREV_AP_SERVICE_ACTIVE=true
                 else
                     PREV_STREAM_SERVICE_ACTIVE=true
                 fi
@@ -372,6 +434,27 @@ echo "==> Stopping servers..."
 if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
     echo "==> Checking out ${TARGET}..."
     git checkout --quiet "${TARGET}"
+fi
+
+# ── System build dependencies ─────────────────────────────────────────────────
+# Several Pi extras require native libraries at build time:
+#   picamera2 → python-prctl  needs libcap-dev
+#   picamera2                 needs libcamera-dev, python3-libcamera
+#   pyaudio                   needs portaudio19-dev
+
+_sys_pkgs=()
+for _pkg in libcap-dev libcamera-dev python3-libcamera portaudio19-dev; do
+    if ! dpkg-query -W --showformat='${Status}' "${_pkg}" 2>/dev/null \
+            | grep -q "install ok installed"; then
+        _sys_pkgs+=("${_pkg}")
+    fi
+done
+if [[ ${#_sys_pkgs[@]} -gt 0 ]]; then
+    echo "==> Installing missing system build packages: ${_sys_pkgs[*]}..."
+    sudo apt-get install -y "${_sys_pkgs[@]}"
+    echo "  System packages installed ✓"
+else
+    echo "==> System build packages already present ✓"
 fi
 
 # ── Install dependencies ───────────────────────────────────────────────────────
@@ -456,31 +539,29 @@ echo "==> Stopping API server..."
 ./scripts/stop.sh api
 
 # ── TLS certificates ───────────────────────────────────────────────────────────
-# Generate a self-signed cert if the files don't already exist.
+# Provision TLS certificates via provision_tls_cert(): prefers a Tailscale-issued
+# Let's Encrypt cert (browser-trusted), falls back to self-signed.
+# Re-runs on every deploy so expiring certs are renewed automatically.
 
-if [[ ! -f /etc/nomothetic/tls/cert.pem || ! -f /etc/nomothetic/tls/key.pem ]] \
-    || ! openssl x509 -noout -in /etc/nomothetic/tls/cert.pem >/dev/null 2>&1 \
-    || ! openssl rsa  -noout -in /etc/nomothetic/tls/key.pem  >/dev/null 2>&1; then
-    echo "==> Generating self-signed TLS certificate..."
-    sudo mkdir -p /etc/nomothetic/tls
-    _tmp_dir="$(mktemp -d)"
-    _tmp_cert="${_tmp_dir}/cert.pem"
-    _tmp_key="${_tmp_dir}/key.pem"
-    .venv/bin/python3 - "${_tmp_cert}" "${_tmp_key}" <<'PYEOF'
+echo "==> Provisioning TLS certificate..."
+sudo mkdir -p /etc/nomothetic/tls
+_tmp_dir="$(mktemp -d)"
+_tmp_cert="${_tmp_dir}/cert.pem"
+_tmp_key="${_tmp_dir}/key.pem"
+_cert_source="$(.venv/bin/python3 - "${_tmp_cert}" "${_tmp_key}" <<'PYEOF'
 import sys
-from nomothetic.api import create_self_signed_cert
+from nomothetic.api import provision_tls_cert
 from pathlib import Path
-create_self_signed_cert(Path(sys.argv[1]), Path(sys.argv[2]))
+source = provision_tls_cert(Path(sys.argv[1]), Path(sys.argv[2]))
+print(source)
 PYEOF
-    sudo mv "${_tmp_cert}" /etc/nomothetic/tls/cert.pem
-    sudo mv "${_tmp_key}"  /etc/nomothetic/tls/key.pem
-    rm -rf "${_tmp_dir}"
-    sudo chmod 640 /etc/nomothetic/tls/key.pem /etc/nomothetic/tls/cert.pem
-    sudo chown -R "${NOMON_SERVICE_USER}:${NOMON_SERVICE_GROUP}" /etc/nomothetic/tls
-    echo "  TLS certificate generated ✓"
-else
-    echo "==> TLS certificate already present, skipping generation."
-fi
+)"
+sudo mv "${_tmp_cert}" /etc/nomothetic/tls/cert.pem
+sudo mv "${_tmp_key}"  /etc/nomothetic/tls/key.pem
+rm -rf "${_tmp_dir}"
+sudo chmod 640 /etc/nomothetic/tls/key.pem /etc/nomothetic/tls/cert.pem
+sudo chown -R "${NOMON_SERVICE_USER}:${NOMON_SERVICE_GROUP}" /etc/nomothetic/tls
+echo "  TLS certificate provisioned (source: ${_cert_source}) ✓"
 
 # ── Systemd integration (optional) ────────────────────────────────────────────
 # Install and enable systemd service files if systemd is available.
@@ -513,7 +594,10 @@ if command -v systemctl >/dev/null 2>&1; then
         sudo systemctl daemon-reload
     fi
 
-    # Enable and restart the device-mode services.
+    # Enable and restart the main device-mode services.
+    # nomothetic-ap is installed (unit file copied above) but NOT enabled —
+    # it is started/stopped exclusively by ap-mode.sh when the Soft AP goes
+    # up or down (see nomothetic ADR-015).
     for _svc in nomothetic-api nomothetic-stream; do
         if [[ -f "/etc/systemd/system/${_svc}.service" ]]; then
             sudo systemctl enable "${_svc}.service" 2>/dev/null || true
@@ -521,6 +605,11 @@ if command -v systemctl >/dev/null 2>&1; then
             sudo systemctl restart "${_svc}.service"
         fi
     done
+    if [[ -f "/etc/systemd/system/nomothetic-ap.service" ]]; then
+        # Ensure it is disabled at boot; ap-mode.sh controls it at runtime.
+        sudo systemctl disable nomothetic-ap.service 2>/dev/null || true
+        echo "  nomothetic-ap.service installed (not boot-enabled; managed by ap-mode.sh) ✓"
+    fi
 
     echo "  systemd services updated ✓"
 else

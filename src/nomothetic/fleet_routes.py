@@ -5,7 +5,10 @@ All endpoints require JWT authentication and are tagged ``Fleet``
 in the OpenAPI docs.
 """
 
+import base64
+import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -14,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from nomothetic.auth import TokenPayload, jwt_required
 from nomothetic.fleet_store import DeviceItem, FleetStore
+from nomothetic.rate_limit import register_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,14 @@ class DeviceRegisterRequest(BaseModel):
 
     vin: str = Field(..., min_length=1, max_length=64, description="Vehicle identification number")
     model: str = Field(..., min_length=1, max_length=64, description="Vehicle model name")
+    registration_proof: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Short-lived proof token from GET /api/device/auth/identity. "
+            "Binds this registration request to recent device access."
+        ),
+    )
 
 
 class DeviceRegisterResponse(BaseModel):
@@ -64,6 +76,58 @@ class DeviceRemoveResponse(BaseModel):
     vin: str
     removed: bool
     timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Proof validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_registration_proof(proof: str, vin: str) -> bool:
+    """Validate the structural integrity of a registration proof token.
+
+    .. note::
+        Cryptographic signature verification is intentionally omitted.
+        The device and central fleet services use separate JWT secrets, so
+        the fleet server cannot verify the device-issued signature.
+        Full ownership proof requires asymmetric device certificates
+        (planned future work).
+
+    This function checks:
+
+    - The token is a well-formed three-part JWT structure.
+    - The ``exp`` claim is in the future (prevents replay attacks).
+    - The ``sub`` claim matches the submitted VIN (VIN-binding).
+    - The ``aud`` claim is ``"nomon-fleet"`` (audience restriction).
+
+    Parameters
+    ----------
+    proof : str
+        The proof JWT returned by ``GET /api/device/auth/identity``.
+    vin : str
+        The VIN submitted for registration; must match ``sub`` in the proof.
+
+    Returns
+    -------
+    bool
+        ``True`` if the proof is structurally valid and non-expired.
+    """
+    try:
+        parts = proof.split(".")
+        if len(parts) != 3:
+            return False
+        # Decode payload (base64url — add padding as required)
+        padding = "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + padding))
+        if payload.get("exp", 0) < time.time():
+            return False
+        if payload.get("sub") != vin:
+            return False
+        if payload.get("aud") != "nomon-fleet":
+            return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # Module-level store (set by create_app).
@@ -105,7 +169,8 @@ def create_fleet_router() -> APIRouter:
             )
         return store
 
-    @router.post("/devices", response_model=DeviceRegisterResponse, status_code=201)
+    @router.post("/devices", response_model=DeviceRegisterResponse, status_code=201,
+                 dependencies=[Depends(register_rate_limit)])
     async def register_device(
         request: DeviceRegisterRequest,
         claims: TokenPayload = Depends(jwt_required),
@@ -120,13 +185,28 @@ def create_fleet_router() -> APIRouter:
         Raises
         ------
         HTTPException
+            400 if the registration proof is missing or structurally invalid.
             409 if the device is already registered.
+            429 if the rate limit is exceeded.
         """
+        if not _validate_registration_proof(request.registration_proof, request.vin):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Invalid or expired registration proof. "
+                    "Fetch a fresh proof from the device and retry."
+                ),
+            )
         store = _require_store()
         try:
             item = await store.register_device(claims.sub, request.vin, request.model)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            logger.error("Device registration internal error: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+            ) from exc
         return DeviceRegisterResponse(
             vin=item.vin,
             model=item.model,

@@ -208,11 +208,14 @@ class SqlFleetStore:
 
     async def get_devices(self, owner_email: str) -> list[DeviceItem]:
         """List devices owned by the user via OwnsDevice edges."""
+        # ArcadeDB does not support WHERE out.property / in.property filtering
+        # on edge-class queries.  Traverse from User → outE(OwnsDevice) and
+        # access the target Vehicle properties via @in.property.
         query = (
-            "SELECT in.vin as vin, in.model as model,"
-            " in.firmware_version as firmware_version,"
-            " in.last_seen_at as last_seen_at, registered_at, role"
-            " FROM OwnsDevice WHERE out.email = :email"
+            "SELECT @in.vin as vin, @in.model as model,"
+            " @in.firmware_version as firmware_version,"
+            " @in.last_seen_at as last_seen_at, role, registered_at"
+            " FROM (SELECT expand(outE('OwnsDevice')) FROM User WHERE email = :email)"
         )
         rows = await self._db.execute_sql(query, {"email": owner_email})
         items: list[DeviceItem] = []
@@ -232,10 +235,11 @@ class SqlFleetStore:
     async def get_device(self, owner_email: str, vin: str) -> Optional[DeviceItem]:
         """Fetch a single device by VIN scoped to the owner."""
         query = (
-            "SELECT in.vin as vin, in.model as model,"
-            " in.firmware_version as firmware_version,"
-            " in.last_seen_at as last_seen_at, registered_at, role"
-            " FROM OwnsDevice WHERE out.email = :email AND in.vin = :vin"
+            "SELECT @in.vin as vin, @in.model as model,"
+            " @in.firmware_version as firmware_version,"
+            " @in.last_seen_at as last_seen_at, role, registered_at"
+            " FROM (SELECT expand(outE('OwnsDevice')) FROM User WHERE email = :email)"
+            " WHERE @in.vin = :vin LIMIT 1"
         )
         rows = await self._db.execute_sql(query, {"email": owner_email, "vin": vin})
         if not rows:
@@ -256,11 +260,32 @@ class SqlFleetStore:
         Raises
         ------
         ValueError
-            If the device is already registered for this owner.
+            If the device is already registered for this owner, or if the
+            User vertex cannot be found in the database.
+        RuntimeError
+            If the OwnsDevice edge was not created (e.g. due to a missing
+            Vehicle or User vertex after all checks passed).
         """
         existing = await self.get_device(owner_email, vin)
         if existing is not None:
             raise ValueError(f"Device {vin} already registered")
+
+        # Guard: the User vertex must exist before we attempt edge creation.
+        # If absent (e.g. stale JWT from an in-memory session after a store
+        # migration), CREATE EDGE silently creates 0 edges and we'd return a
+        # spurious 201 while nothing is persisted.
+        user_check_q = "SELECT count(*) as count FROM User WHERE email = :email"
+        user_rows = await self._db.execute_sql(user_check_q, {"email": owner_email})
+        if _coerce_count(user_rows) == 0:
+            logger.error(
+                "register_device: User vertex not found for email=%s; "
+                "cannot create OwnsDevice edge",
+                owner_email,
+            )
+            raise ValueError(
+                "User account not found in the database. "
+                "Please log out and log in again, then retry registration."
+            )
 
         now = datetime.now(timezone.utc).isoformat()
 
@@ -273,6 +298,7 @@ class SqlFleetStore:
                 " firmware_version = '', registered_at = sysdate(), last_seen_at = sysdate()"
             )
             await self._db.execute_sql(insert_v, {"vin": vin, "model": model})
+            logger.debug("register_device: created Vehicle record for vin=%s", vin)
 
         # Create OwnsDevice edge
         edge_q = (
@@ -280,7 +306,22 @@ class SqlFleetStore:
             " TO (SELECT FROM Vehicle WHERE vin = :vin)"
             " SET role = 'owner', registered_at = sysdate()"
         )
-        await self._db.execute_sql(edge_q, {"email": owner_email, "vin": vin})
+        edge_result = await self._db.execute_sql(edge_q, {"email": owner_email, "vin": vin})
+        if not edge_result:
+            logger.error(
+                "register_device: CREATE EDGE produced 0 results for email=%s vin=%s",
+                owner_email,
+                vin,
+            )
+            raise RuntimeError(
+                f"Failed to link device {vin} to account. "
+                "The Vehicle or User vertex may be missing. Check server logs."
+            )
+        logger.debug(
+            "register_device: OwnsDevice edge created for email=%s vin=%s",
+            owner_email,
+            vin,
+        )
 
         return DeviceItem(
             vin=vin,
@@ -294,7 +335,13 @@ class SqlFleetStore:
         existing = await self.get_device(owner_email, vin)
         if existing is None:
             return False
-        query = "DELETE EDGE OwnsDevice WHERE out.email = :email AND in.vin = :vin"
+        # ArcadeDB does not support DELETE EDGE ... WHERE out.property = ...;
+        # delete by selecting the matching edge RIDs first.
+        query = (
+            "DELETE FROM"
+            " (SELECT @rid FROM (SELECT expand(outE('OwnsDevice')) FROM User WHERE email = :email)"
+            " WHERE @in.vin = :vin)"
+        )
         await self._db.execute_sql(query, {"email": owner_email, "vin": vin})
         return True
 

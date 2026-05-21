@@ -16,8 +16,8 @@ remotely.
 > **Soft AP pairing:** If your Pi is not yet on WiFi, the nomon Soft AP
 > watchdog will broadcast a WPA2 hotspot (`nomon-<last4-of-MAC>`) automatically.
 > Connect to it with the passphrase shown in the nomothetic startup log, then
-> open `https://192.168.4.1:8443` in a browser or the nomotactic app to pair
-> the device over HTTP. No Bluetooth required.
+> open `http://192.168.4.1:8080` in the nomotactic app to pair
+> the device. No Bluetooth required.
 > See [pi_setup.md — Wi-Fi Soft AP Pairing](pi_setup.md#8--wi-fi-soft-ap-pairing).
 
 ---

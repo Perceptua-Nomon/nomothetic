@@ -73,17 +73,23 @@ nomothetic runs in one of two mutually exclusive modes, selected by the
 
 **Wi-Fi Soft AP note:** When the device is not connected to a known Wi-Fi
 network, `nomopractic/scripts/ap-mode.sh` activates a WPA2 hotspot
-(`nomon-<last4-of-MAC>`), allowing any browser to reach nomothetic at
-`192.168.4.1:8443`. The passphrase is the same shared pairing secret that
-nomothetic generates on first boot. This replaces the former BLE provisioning
-flow (see nomopractic ADR-005).
+(`nomon-<last4-of-MAC>`).  The passphrase is the shared pairing secret
+generated on first boot.  One service starts on the AP interface:
+
+- **`nomothetic-ap.service`** — plain HTTP on `192.168.4.1:8080`; full
+  device API bound exclusively to the AP gateway address so it is unreachable
+  from other interfaces (see ADR-016).  Cleartext is acceptable: the AP is a
+  closed WPA2 hotspot on an isolated `192.168.4.0/24` subnet.
 
 **End-to-end provisioning sequence:**
 
-1. Device boots off-network → `nomon-softap.service` starts AP at `192.168.4.1`
-2. User connects to `nomon-<last4>` AP using the 6-digit pairing secret
-3. User opens app → reaches nomothetic at `https://192.168.4.1:8443`
-4. User submits secret to `POST /api/device/auth/pair` → receives device JWT
+1. Device boots off-network → `nomon-softap.service` starts AP at `192.168.4.1`;
+   `nomothetic-ap.service` starts at `192.168.4.1:8080` (plain HTTP)
+2. User connects to `nomon-<last4>` AP using the 6-digit pairing secret (WPA2 PSK)
+3. App probes `GET http://192.168.4.1:8080/api/device/auth/status`; detects AP
+4. App submits pairing request to `POST /api/device/auth/pair/ap` → receives
+   device JWT (JWT signing secret persisted in `/var/lib/nomon/device_jwt_secret`;
+   survives AP → Wi-Fi mode switch — no re-pairing required)
 5. App reveals Wi-Fi provisioning form; user enters home SSID + WPA2 password
 6. `POST /api/device/network/configure` → nomothetic invokes `nmcli --ask` in a
    non-blocking background task, writing the WPA2 password to stdin so it never
@@ -93,6 +99,13 @@ flow (see nomopractic ADR-005).
 8. On future boots, device connects to home network directly; AP only activates
    if home network is unreachable
 
+`POST /api/device/wifi/ap` provides manual control over the AP
+(`{ "subcommand": "up" | "down" }`). It invokes `ap-mode.sh <subcommand>` via
+`subprocess.run` in a thread-pool executor. The script path is configured via
+`NOMON_AP_MODE_SCRIPT` (default: `/opt/nomon/scripts/ap-mode.sh`). The
+subcommand is validated against the `{"up", "down"}` allowlist before being
+passed to the script — it is never taken verbatim from user input.
+
 - **Device mode** is the existing configuration — all current endpoints work
   unchanged. Hardware-specific libraries are conditionally imported.
 - **Central mode** never imports hardware libraries (picamera2, pyaudio,
@@ -100,6 +113,35 @@ flow (see nomopractic ADR-005).
 - The health endpoint (`GET /`) is available in both modes.
 - Route registration is conditional — each mode's `create_app()` only mounts
   its own route group. No "dead" endpoints returning errors on the wrong server.
+
+### Central Fleet Registration
+
+After pairing via Soft AP, an authenticated central user can register the
+device to their fleet account using a two-step flow:
+
+**Step 1 — Obtain device identity and proof**
+
+The client calls `GET /api/device/auth/identity` with a valid device JWT.
+The device returns:
+- `vin` — the hardware vehicle identification number
+- `model` — the device model string
+- `hostname` — the device mDNS hostname (e.g. `nomon-abcd.local`)
+- `registration_proof` — a short-lived JWT (5-minute TTL) signed by the
+  device secret, with claims `iss=nomon-device`, `sub=<vin>`,
+  `aud=nomon-fleet`, and a unique `jti`
+
+**Step 2 — Register with the central API**
+
+The client calls the central `POST /api/fleet/devices` with a valid central
+JWT and the body `{ vin, model, registration_proof }`. The central API
+validates the proof structurally: expiry (`exp`), VIN binding
+(`sub == submitted vin`), and audience (`aud == "nomon-fleet"`).
+
+**Note on cryptographic verification:** The central server validates the
+proof structurally but cannot verify the device's HMAC signature — the
+device and central services use separate JWT secrets. Full cryptographic
+ownership verification is planned for a future phase using asymmetric device
+certificates. See ADR-017 for the design rationale and trade-offs.
 
 ---
 
@@ -216,6 +258,8 @@ The primary remote control interface. Mobile app and management server talk to t
 | `POST` | `/api/routine/start` | Routine | Start a named autonomous routine (currently: `explore`) |
 | `POST` | `/api/routine/stop` | Routine | Stop the active routine; returns run statistics |
 | `GET` | `/api/routine/status` | Routine | Query active routine state: running, elapsed time, avoidance counts |
+| `POST` | `/api/device/wifi/ap` | Device | Toggle Soft AP up or down (`up`/`down`) |
+| `GET` | `/api/device/auth/identity` | Device | Return device hardware VIN, model, hostname, and a short-lived registration proof JWT for fleet registration |
 | `GET` | `/docs` | — | Interactive Swagger UI |
 | `GET` | `/redoc` | — | ReDoc API docs |
 

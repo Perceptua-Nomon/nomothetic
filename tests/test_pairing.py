@@ -24,11 +24,11 @@ def test_generate_secret_returns_string():
     assert len(secret) > 0
 
 
-def test_generate_secret_is_six_digit_numeric():
-    """Pairing secret is a 6-digit zero-padded numeric string."""
+def test_generate_secret_is_eight_digit_numeric():
+    """Pairing secret is an 8-digit zero-padded numeric string."""
     ps = PairingState()
     secret = ps.generate_secret()
-    assert len(secret) == 6
+    assert len(secret) == 8
     assert secret.isdigit()
 
 
@@ -78,6 +78,18 @@ def test_consume_once_only():
     assert ps.verify_and_consume(secret) is False
 
 
+def test_verify_secret_uses_shared_secret_after_pairing(tmp_path):
+    """verify_secret still works after in-memory consumption."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        secret = ps.generate_secret()
+        assert ps.verify_and_consume(secret) is True
+        assert ps.secret is None
+        assert ps.has_pairing_secret() is True
+        assert ps.verify_secret(secret) is True
+
+
 def test_verify_no_secret_returns_false():
     """verify_and_consume returns False when no secret has been generated."""
     ps = PairingState()
@@ -121,20 +133,43 @@ def test_is_paired_after_pairing():
 # ============================================================================
 
 
-def test_reset_clears_state():
-    """reset clears paired state and owner."""
-    ps = PairingState()
-    secret = ps.generate_secret()
-    ps.verify_and_consume(secret)
-    ps.owner_email = "test@local"
-    old_jwt = ps.jwt_secret
+def test_reset_session_preserves_pairing_secret(tmp_path):
+    """reset_session rotates auth state without deleting the shared secret."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        secret = ps.generate_secret()
+        ps.verify_and_consume(secret)
+        old_jwt = ps.jwt_secret
 
-    ps.reset()
+        ps.reset_session()
 
-    assert ps.paired is False
-    assert ps.owner_email is None
-    assert ps.secret is None
-    assert ps.jwt_secret != old_jwt
+        assert ps.paired is False
+        assert ps.owner_email is None
+        assert ps.secret is None
+        assert ps.jwt_secret != old_jwt
+        assert os.path.exists(secret_path)
+        assert ps.has_pairing_secret() is True
+        assert ps.verify_secret(secret) is True
+
+
+def test_reset_clears_state(tmp_path):
+    """reset clears paired state, owner, and the shared pairing secret."""
+    secret_path = str(tmp_path / "pairing_secret")
+    with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
+        ps = PairingState()
+        secret = ps.generate_secret()
+        ps.verify_and_consume(secret)
+        ps.owner_email = "test@local"
+        old_jwt = ps.jwt_secret
+
+        ps.reset()
+
+        assert ps.paired is False
+        assert ps.owner_email is None
+        assert ps.secret is None
+        assert ps.jwt_secret != old_jwt
+        assert not os.path.exists(secret_path)
 
 
 # ============================================================================
@@ -149,11 +184,13 @@ def test_jwt_secret_generated_on_init():
     assert len(ps.jwt_secret) >= 32
 
 
-def test_jwt_secret_unique_per_instance():
-    """Each PairingState gets a unique JWT secret."""
-    a = PairingState()
-    b = PairingState()
-    assert a.jwt_secret != b.jwt_secret
+def test_jwt_secret_shared_across_instances(tmp_path):
+    """PairingState instances on the same device share the persisted JWT secret."""
+    secret_path = str(tmp_path / "device_jwt_secret")
+    with patch.dict(os.environ, {"NOMON_DEVICE_JWT_SECRET_PATH": secret_path}):
+        a = PairingState()
+        b = PairingState()
+        assert a.jwt_secret == b.jwt_secret
 
 
 # ============================================================================
@@ -291,18 +328,18 @@ def test_read_shared_secret_returns_value(tmp_path):
     """Returns the secret string when file exists with valid content."""
     secret_path = str(tmp_path / "pairing_secret")
     with open(secret_path, "w") as fh:
-        fh.write("123456")
+        fh.write("12345678")
     with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
-        assert _read_shared_secret() == "123456"
+        assert _read_shared_secret() == "12345678"
 
 
 def test_read_shared_secret_strips_whitespace(tmp_path):
     """Strips leading/trailing whitespace from the file content."""
     secret_path = str(tmp_path / "pairing_secret")
     with open(secret_path, "w") as fh:
-        fh.write("  042000\n")
+        fh.write("  04200077\n")
     with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
-        assert _read_shared_secret() == "042000"
+        assert _read_shared_secret() == "04200077"
 
 
 def test_read_shared_secret_absent_returns_none(tmp_path):
@@ -339,12 +376,12 @@ def test_load_or_generate_loads_existing_secret(tmp_path):
     """Returns and sets the on-disk secret without regenerating the file."""
     secret_path = str(tmp_path / "pairing_secret")
     with open(secret_path, "w") as fh:
-        fh.write("042000")
+        fh.write("04200077")
     with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
         ps = PairingState()
         result = ps.load_or_generate_secret()
-    assert result == "042000"
-    assert ps.secret == "042000"
+    assert result == "04200077"
+    assert ps.secret == "04200077"
     assert ps.paired is False
 
 
@@ -352,7 +389,7 @@ def test_load_or_generate_does_not_overwrite_existing(tmp_path):
     """Does not rewrite the file when loading an existing valid secret."""
     secret_path = str(tmp_path / "pairing_secret")
     with open(secret_path, "w") as fh:
-        fh.write("042000")
+        fh.write("04200077")
     mtime_before = os.path.getmtime(secret_path)
     with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
         ps = PairingState()
@@ -368,7 +405,7 @@ def test_load_or_generate_creates_file_when_absent(tmp_path):
         ps = PairingState()
         result = ps.load_or_generate_secret()
     assert os.path.exists(secret_path)
-    assert result.isdigit() and len(result) == 6
+    assert result.isdigit() and len(result) == 8
     assert ps.secret == result
 
 
@@ -380,7 +417,7 @@ def test_load_or_generate_rejects_non_digit_secret(tmp_path):
     with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
         ps = PairingState()
         result = ps.load_or_generate_secret()
-    assert result.isdigit() and len(result) == 6
+    assert result.isdigit() and len(result) == 8
     assert result != "abcdef"
 
 
@@ -392,7 +429,7 @@ def test_load_or_generate_rejects_wrong_length_secret(tmp_path):
     with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
         ps = PairingState()
         result = ps.load_or_generate_secret()
-    assert len(result) == 6
+    assert len(result) == 8
     assert result != "1234"
 
 
@@ -402,7 +439,7 @@ def test_load_or_generate_logs_loaded_path(tmp_path, caplog):
 
     secret_path = str(tmp_path / "pairing_secret")
     with open(secret_path, "w") as fh:
-        fh.write("007777")
+        fh.write("00077777")
     with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
         ps = PairingState()
         with caplog.at_level(logging.INFO, logger="nomothetic.pairing"):
