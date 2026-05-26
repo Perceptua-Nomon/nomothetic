@@ -169,8 +169,12 @@ def create_fleet_router() -> APIRouter:
             )
         return store
 
-    @router.post("/devices", response_model=DeviceRegisterResponse, status_code=201,
-                 dependencies=[Depends(register_rate_limit)])
+    @router.post(
+        "/devices",
+        response_model=DeviceRegisterResponse,
+        status_code=201,
+        dependencies=[Depends(register_rate_limit)],
+    )
     async def register_device(
         request: DeviceRegisterRequest,
         claims: TokenPayload = Depends(jwt_required),

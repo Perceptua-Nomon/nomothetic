@@ -154,10 +154,10 @@ class TestSqlFleetStore:
         # get_device → not found, User check → exists, vehicle count → 0,
         # INSERT vehicle, CREATE EDGE → created
         mock_db.execute_sql.side_effect = [
-            [],              # get_device → not found
+            [],  # get_device → not found
             [{"count": 1}],  # User check → exists
             [{"count": 0}],  # vehicle count → new
-            [],              # INSERT INTO Vehicle
+            [],  # INSERT INTO Vehicle
             [{"@rid": "#1:1"}],  # CREATE EDGE → created
         ]
         item = await store.register_device("alice@example.com", "N001", "explorer-v1")
@@ -175,7 +175,7 @@ class TestSqlFleetStore:
     async def test_register_device_existing_vehicle(self, store, mock_db):
         """register_device skips vehicle INSERT when vehicle already exists."""
         mock_db.execute_sql.side_effect = [
-            [],              # get_device → not found
+            [],  # get_device → not found
             [{"count": 1}],  # User check → exists
             [{"count": 1}],  # vehicle already exists
             [{"@rid": "#1:1"}],  # CREATE EDGE → created
@@ -188,7 +188,7 @@ class TestSqlFleetStore:
     async def test_register_device_user_not_found(self, store, mock_db):
         """register_device raises ValueError when User vertex is absent."""
         mock_db.execute_sql.side_effect = [
-            [],              # get_device → not found
+            [],  # get_device → not found
             [{"count": 0}],  # User check → missing
         ]
         with pytest.raises(ValueError, match="User account not found"):
@@ -198,10 +198,10 @@ class TestSqlFleetStore:
     async def test_register_device_edge_not_created(self, store, mock_db):
         """register_device raises RuntimeError when CREATE EDGE returns empty."""
         mock_db.execute_sql.side_effect = [
-            [],              # get_device → not found
+            [],  # get_device → not found
             [{"count": 1}],  # User check → exists
             [{"count": 1}],  # vehicle already exists
-            [],              # CREATE EDGE → no edge created (silent DB failure)
+            [],  # CREATE EDGE → no edge created (silent DB failure)
         ]
         with pytest.raises(RuntimeError, match="Failed to link device"):
             await store.register_device("alice@example.com", "N001", "explorer-v1")

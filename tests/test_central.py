@@ -23,9 +23,11 @@ def _make_registration_proof(vin: str) -> str:
     signature (it cannot — separate JWT secrets per service). This helper
     produces a three-part JWT-like token that passes those checks.
     """
-    header = base64.urlsafe_b64encode(
-        json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
-    ).rstrip(b"=").decode()
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
     payload_data = {
         "iss": "nomon-device",
         "sub": vin,
@@ -34,9 +36,7 @@ def _make_registration_proof(vin: str) -> str:
         "exp": int(time.time()) + 300,
         "jti": "test-jti-fixed",
     }
-    payload = base64.urlsafe_b64encode(
-        json.dumps(payload_data).encode()
-    ).rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(json.dumps(payload_data).encode()).rstrip(b"=").decode()
     # Signature is not verified by the central API
     return f"{header}.{payload}.test_sig_not_verified"
 
@@ -343,7 +343,11 @@ def test_register_device(central_client):
 def test_register_duplicate_device(central_client):
     """Duplicate device registration returns 409."""
     token = _register_and_auth(central_client)
-    payload = {"vin": "DUP001", "model": "explorer-v1", "registration_proof": _make_registration_proof("DUP001")}
+    payload = {
+        "vin": "DUP001",
+        "model": "explorer-v1",
+        "registration_proof": _make_registration_proof("DUP001"),
+    }
     central_client.post(
         "/api/fleet/devices",
         json=payload,
@@ -362,7 +366,11 @@ def test_list_devices(central_client):
     token = _register_and_auth(central_client)
     central_client.post(
         "/api/fleet/devices",
-        json={"vin": "LIST001", "model": "explorer-v1", "registration_proof": _make_registration_proof("LIST001")},
+        json={
+            "vin": "LIST001",
+            "model": "explorer-v1",
+            "registration_proof": _make_registration_proof("LIST001"),
+        },
         headers={"Authorization": f"Bearer {token}"},
     )
     response = central_client.get(
@@ -380,7 +388,11 @@ def test_get_device_detail(central_client):
     token = _register_and_auth(central_client)
     central_client.post(
         "/api/fleet/devices",
-        json={"vin": "DET001", "model": "explorer-v1", "registration_proof": _make_registration_proof("DET001")},
+        json={
+            "vin": "DET001",
+            "model": "explorer-v1",
+            "registration_proof": _make_registration_proof("DET001"),
+        },
         headers={"Authorization": f"Bearer {token}"},
     )
     response = central_client.get(
@@ -408,7 +420,11 @@ def test_remove_device(central_client):
     token = _register_and_auth(central_client)
     central_client.post(
         "/api/fleet/devices",
-        json={"vin": "REM001", "model": "explorer-v1", "registration_proof": _make_registration_proof("REM001")},
+        json={
+            "vin": "REM001",
+            "model": "explorer-v1",
+            "registration_proof": _make_registration_proof("REM001"),
+        },
         headers={"Authorization": f"Bearer {token}"},
     )
     response = central_client.delete(
@@ -459,8 +475,13 @@ def test_register_device_expired_proof(central_client):
     import json as _json
 
     header = _b64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode()
-    payload_data = {"iss": "nomon-device", "sub": "EXP001", "aud": "nomon-fleet",
-                    "exp": 1000000, "iat": 999000}  # exp far in the past
+    payload_data = {
+        "iss": "nomon-device",
+        "sub": "EXP001",
+        "aud": "nomon-fleet",
+        "exp": 1000000,
+        "iat": 999000,
+    }  # exp far in the past
     payload = _b64.urlsafe_b64encode(_json.dumps(payload_data).encode()).rstrip(b"=").decode()
     expired_proof = f"{header}.{payload}.fake_sig"
 
