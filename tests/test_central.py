@@ -4,13 +4,41 @@ These tests create the FastAPI app in central mode and exercise the
 full register → login → manage devices → refresh flow.
 """
 
+import base64
+import json
 import os
+import time
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 _TEST_SECRET = "test-secret-key-that-is-at-least-32-bytes-long!"
+
+
+def _make_registration_proof(vin: str) -> str:
+    """Generate a structurally valid registration proof for use in tests.
+
+    The central API validates proof structure and expiry but NOT the
+    signature (it cannot — separate JWT secrets per service). This helper
+    produces a three-part JWT-like token that passes those checks.
+    """
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    payload_data = {
+        "iss": "nomon-device",
+        "sub": vin,
+        "aud": "nomon-fleet",
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 300,
+        "jti": "test-jti-fixed",
+    }
+    payload = base64.urlsafe_b64encode(json.dumps(payload_data).encode()).rstrip(b"=").decode()
+    # Signature is not verified by the central API
+    return f"{header}.{payload}.test_sig_not_verified"
 
 
 @pytest.fixture
@@ -299,7 +327,11 @@ def test_register_device(central_client):
     token = _register_and_auth(central_client)
     response = central_client.post(
         "/api/fleet/devices",
-        json={"vin": "NOMON001", "model": "explorer-v1"},
+        json={
+            "vin": "NOMON001",
+            "model": "explorer-v1",
+            "registration_proof": _make_registration_proof("NOMON001"),
+        },
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 201
@@ -311,7 +343,11 @@ def test_register_device(central_client):
 def test_register_duplicate_device(central_client):
     """Duplicate device registration returns 409."""
     token = _register_and_auth(central_client)
-    payload = {"vin": "DUP001", "model": "explorer-v1"}
+    payload = {
+        "vin": "DUP001",
+        "model": "explorer-v1",
+        "registration_proof": _make_registration_proof("DUP001"),
+    }
     central_client.post(
         "/api/fleet/devices",
         json=payload,
@@ -330,7 +366,11 @@ def test_list_devices(central_client):
     token = _register_and_auth(central_client)
     central_client.post(
         "/api/fleet/devices",
-        json={"vin": "LIST001", "model": "explorer-v1"},
+        json={
+            "vin": "LIST001",
+            "model": "explorer-v1",
+            "registration_proof": _make_registration_proof("LIST001"),
+        },
         headers={"Authorization": f"Bearer {token}"},
     )
     response = central_client.get(
@@ -348,7 +388,11 @@ def test_get_device_detail(central_client):
     token = _register_and_auth(central_client)
     central_client.post(
         "/api/fleet/devices",
-        json={"vin": "DET001", "model": "explorer-v1"},
+        json={
+            "vin": "DET001",
+            "model": "explorer-v1",
+            "registration_proof": _make_registration_proof("DET001"),
+        },
         headers={"Authorization": f"Bearer {token}"},
     )
     response = central_client.get(
@@ -376,7 +420,11 @@ def test_remove_device(central_client):
     token = _register_and_auth(central_client)
     central_client.post(
         "/api/fleet/devices",
-        json={"vin": "REM001", "model": "explorer-v1"},
+        json={
+            "vin": "REM001",
+            "model": "explorer-v1",
+            "registration_proof": _make_registration_proof("REM001"),
+        },
         headers={"Authorization": f"Bearer {token}"},
     )
     response = central_client.delete(
@@ -408,6 +456,42 @@ def test_fleet_unauthenticated(central_client):
     """Fleet endpoints require authentication."""
     response = central_client.get("/api/fleet/devices")
     assert response.status_code in (401, 403)
+
+
+def test_register_device_invalid_proof(central_client):
+    """Registration with an invalid or missing proof returns 400."""
+    token = _register_and_auth(central_client)
+    response = central_client.post(
+        "/api/fleet/devices",
+        json={"vin": "BAD001", "model": "nomon", "registration_proof": "not.a.valid.proof"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 400
+
+
+def test_register_device_expired_proof(central_client):
+    """Registration with an expired proof returns 400."""
+    import base64 as _b64
+    import json as _json
+
+    header = _b64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode()
+    payload_data = {
+        "iss": "nomon-device",
+        "sub": "EXP001",
+        "aud": "nomon-fleet",
+        "exp": 1000000,
+        "iat": 999000,
+    }  # exp far in the past
+    payload = _b64.urlsafe_b64encode(_json.dumps(payload_data).encode()).rstrip(b"=").decode()
+    expired_proof = f"{header}.{payload}.fake_sig"
+
+    token = _register_and_auth(central_client)
+    response = central_client.post(
+        "/api/fleet/devices",
+        json={"vin": "EXP001", "model": "nomon", "registration_proof": expired_proof},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 400
 
 
 # ============================================================================

@@ -682,6 +682,19 @@ class WifiProvisionResponse(BaseModel):
     status: Literal["connecting"]
 
 
+class WifiApRequest(BaseModel):
+    """Request body for POST /api/device/wifi/ap."""
+
+    enabled: bool = Field(..., description="True to activate the Soft AP, False to deactivate")
+
+
+class WifiApResponse(BaseModel):
+    """Response body for POST /api/device/wifi/ap."""
+
+    status: Literal["up", "down"]
+    timestamp: str
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -856,10 +869,23 @@ def provision_tls_cert(cert_path: Path, key_path: Path) -> str:
             text=True,
             timeout=5,
         )
-        if ts_status.returncode == 0:
+        if ts_status.returncode != 0:
+            logger.warning(
+                "tailscale status failed (exit %d) — cannot provision Tailscale cert.\n"
+                "  stdout: %s\n  stderr: %s",
+                ts_status.returncode,
+                ts_status.stdout.strip(),
+                ts_status.stderr.strip(),
+            )
+        else:
             status = json.loads(ts_status.stdout)
             fqdn = status.get("Self", {}).get("DNSName", "").rstrip(".")
-            if fqdn:
+            if not fqdn:
+                logger.warning(
+                    "tailscale status returned no DNSName — is MagicDNS enabled "
+                    "in the Tailscale admin console?"
+                )
+            else:
                 cert_path.parent.mkdir(parents=True, exist_ok=True)
                 ts_cert = subprocess.run(
                     [
@@ -882,17 +908,22 @@ def provision_tls_cert(cert_path: Path, key_path: Path) -> str:
                         fqdn,
                     )
                     return "tailscale"
+                # Tailscale writes errors to stdout or stderr depending on version
+                combined = "\n".join(filter(None, [ts_cert.stdout.strip(), ts_cert.stderr.strip()]))
                 logger.warning(
-                    "tailscale cert failed (exit %d): %s",
+                    "tailscale cert failed (exit %d) for %s:\n  %s\n"
+                    "  Hint: the process may need elevated permissions — "
+                    "try running as root or add your user to the 'tailscale' group.",
                     ts_cert.returncode,
-                    ts_cert.stderr.strip(),
+                    fqdn,
+                    combined or "(no output)",
                 )
     except FileNotFoundError:
-        logger.debug("Tailscale CLI not found.")
+        logger.warning("Tailscale CLI not found — cannot provision Tailscale cert.")
     except subprocess.TimeoutExpired:
-        logger.debug("Tailscale CLI timed out.")
+        logger.warning("Tailscale CLI timed out during cert provisioning.")
     except Exception as exc:
-        logger.debug("Tailscale cert provisioning error: %s", exc)
+        logger.warning("Tailscale cert provisioning error: %s", exc)
 
     # ── 3. Fallback to self-signed ───────────────────────────────────────
     # Remove partial files from a failed Tailscale attempt before generating
@@ -2447,6 +2478,80 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
         _t.add_done_callback(_background_tasks.discard)
         return WifiProvisionResponse(status="connecting")
 
+    @device_router.post(
+        "/api/device/wifi/ap",
+        response_model=WifiApResponse,
+        status_code=200,
+        tags=["Network"],
+        dependencies=[Depends(network_rate_limit)],
+    )
+    async def set_wifi_ap(request_body: WifiApRequest) -> WifiApResponse:
+        """Enable or disable the nomon Wi-Fi Soft AP.
+
+        Invokes ``ap-mode.sh up`` or ``ap-mode.sh down`` synchronously in a
+        thread-pool executor. The script is idempotent.
+
+        Parameters
+        ----------
+        request_body : WifiApRequest
+            ``enabled``: true to bring the AP up, false to bring it down.
+
+        Returns
+        -------
+        WifiApResponse
+            ``status``: ``"up"`` or ``"down"`` confirming the new state.
+
+        Raises
+        ------
+        HTTPException
+            503 if the ap-mode script is not found (OS not configured).
+            500 if the script exits non-zero (nmcli error).
+            429 if the rate limit is exceeded.
+        """
+        subcommand: Literal["up", "down"] = "up" if request_body.enabled else "down"
+        script_path = os.environ.get(
+            "NOMON_AP_MODE_SCRIPT",
+            "/usr/local/bin/ap-mode.sh",
+        )
+
+        def _run_script() -> Literal["up", "down"]:
+            try:
+                result = subprocess.run(
+                    [script_path, subcommand],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            except FileNotFoundError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="ap-mode.sh not found (check NOMON_AP_MODE_SCRIPT)",
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="ap-mode.sh timed out",
+                ) from exc
+            if result.returncode != 0:
+                logger.warning(
+                    "ap-mode.sh %s failed (rc=%d): %s",
+                    subcommand,
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"AP mode toggle failed: {result.stderr.strip() or result.stdout.strip()}",
+                )
+            logger.info("ap-mode.sh %s succeeded: %s", subcommand, result.stdout.strip())
+            return subcommand
+
+        ap_status = await asyncio.to_thread(_run_script)
+        return WifiApResponse(
+            status=ap_status,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
     # Include all device endpoints (with or without auth dependency)
     app.include_router(device_router)
 
@@ -2565,6 +2670,14 @@ class APIServer:
         self.use_ssl = use_ssl
         self.cert_dir = Path(cert_dir or ".certs")
         self.app = create_app()
+
+        # Ensure cert provisioning logs are visible before uvicorn takes over
+        # logging configuration.  No-op if a handler is already attached.
+        if not logging.root.handlers:
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(levelname)s: %(message)s",
+            )
 
         if self.use_ssl:
             self.cert_file = self.cert_dir / "cert.pem"

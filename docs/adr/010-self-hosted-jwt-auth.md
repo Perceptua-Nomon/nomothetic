@@ -58,11 +58,15 @@ for OAuth2 providers but no implementation yet.
 
 ### Known Limitations
 
-- **Web token storage:** On web platforms, tokens are stored in
-  `localStorage` (see nomotactic `lib/auth.tsx`). This is accessible to any
-  JavaScript on the same origin. Mitigation: Content Security Policy headers
-  will be added in a future phase to restrict script sources. On mobile
-  platforms, `expo-secure-store` provides hardware-backed key storage.
+- **Web token storage:** ~~Resolved in Phase 23 — see ADR-018.~~ Access
+  tokens are now **memory-only** (never written to any browser storage);
+  refresh tokens use **`sessionStorage`** (tab-scoped, cleared on tab close),
+  mitigating XSS-based token extraction. The previous `localStorage` storage
+  for all tokens has been removed. On mobile platforms, `expo-secure-store`
+  continues to provide hardware-backed key storage. CSP headers remain a
+  recommended defence-in-depth measure but are no longer the primary
+  remediation for the token storage concern. See ADR-018 for the full web
+  token storage strategy decision.
 
 ## Trade-offs
 

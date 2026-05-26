@@ -270,6 +270,48 @@ class AuthService:
         token = _authlib_jwt.encode(header, payload, self._secret)
         return token.decode("utf-8") if isinstance(token, bytes) else str(token)
 
+    def create_registration_proof(self, vin: str, ttl_seconds: int = 300) -> str:
+        """Create a short-lived registration proof token for VIN ownership.
+
+        The proof is a JWT signed with this service's secret. The caller
+        submits it to the central fleet API alongside the VIN. The fleet API
+        validates structural integrity (expiry, VIN binding, audience) but
+        **cannot verify the signature** because the device and central services
+        use separate secrets.
+
+        Full cryptographic ownership verification requires asymmetric device
+        certificates; this is planned for a future phase. The current proof
+        provides time-binding and VIN-binding that raises the bar for VIN
+        squatting attacks without requiring shared secrets.
+
+        Parameters
+        ----------
+        vin : str
+            Vehicle identification number to bind to this proof.
+        ttl_seconds : int
+            Validity window in seconds (default 300 = 5 minutes).
+
+        Returns
+        -------
+        str
+            Encoded JWT proof string.
+        """
+        import uuid
+        from datetime import timedelta
+
+        now = datetime.now(timezone.utc)
+        payload = {
+            "iss": self._issuer,
+            "sub": vin,
+            "aud": "nomon-fleet",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(seconds=ttl_seconds)).timestamp()),
+            "jti": str(uuid.uuid4()),
+        }
+        header = {"alg": _JWT_ALGORITHM}
+        token = _authlib_jwt.encode(header, payload, self._secret)
+        return token.decode("utf-8") if isinstance(token, bytes) else str(token)
+
     async def create_refresh_token(self, email: str) -> str:
         """Create an opaque refresh token and store its hash.
 
@@ -308,6 +350,14 @@ class AuthService:
             "token_type": "bearer",
             "expires_in": int(_ACCESS_TOKEN_TTL.total_seconds()),
         }
+
+    def update_signing_secret(self, secret: str) -> None:
+        """Replace the JWT signing secret used for access tokens."""
+        if len(secret) < _MIN_SECRET_LENGTH:
+            raise ValueError(
+                f"JWT signing secret must be at least {_MIN_SECRET_LENGTH} characters long"
+            )
+        self._secret = secret
 
     # -- token verification -------------------------------------------------
 
@@ -379,6 +429,24 @@ class AuthService:
         """Revoke a refresh token. Returns True if it existed."""
         token_hash = hashlib.sha256(raw_refresh.encode()).hexdigest()
         return await self._token_store.delete_token(token_hash)
+
+    async def revoke_all_tokens(self, email: str) -> int:
+        """Revoke all refresh tokens for a user.
+
+        Called during re-pairing to invalidate any sessions from the
+        previous pairing cycle.
+
+        Parameters
+        ----------
+        email : str
+            The user whose tokens should be revoked.
+
+        Returns
+        -------
+        int
+            Number of tokens revoked.
+        """
+        return await self._token_store.delete_tokens_for_user(email.strip().lower())
 
 
 # ---------------------------------------------------------------------------

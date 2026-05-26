@@ -118,7 +118,8 @@ class TestSqlFleetStore:
         assert len(devices) == 1
         assert devices[0].vin == "N001"
         query = mock_db.execute_sql.call_args[0][0]
-        assert "FROM OwnsDevice" in query
+        assert "outE" in query
+        assert "OwnsDevice" in query
 
     @pytest.mark.asyncio
     async def test_get_devices_empty(self, store, mock_db):
@@ -150,20 +151,24 @@ class TestSqlFleetStore:
     @pytest.mark.asyncio
     async def test_register_device(self, store, mock_db):
         """register_device creates Vehicle record and OwnsDevice edge."""
-        # get_device check → not found, vehicle count → 0, INSERT vehicle, CREATE EDGE
+        # get_device → not found, User check → exists, vehicle count → 0,
+        # INSERT vehicle, CREATE EDGE → created
         mock_db.execute_sql.side_effect = [
             [],  # get_device → not found
-            [{"count": 0}],  # vehicle count
+            [{"count": 1}],  # User check → exists
+            [{"count": 0}],  # vehicle count → new
             [],  # INSERT INTO Vehicle
-            [],  # CREATE EDGE
+            [{"@rid": "#1:1"}],  # CREATE EDGE → created
         ]
         item = await store.register_device("alice@example.com", "N001", "explorer-v1")
         assert item.vin == "N001"
         assert item.role == "owner"
-        assert mock_db.execute_sql.call_count == 4
-        insert_query = mock_db.execute_sql.call_args_list[2][0][0]
+        assert mock_db.execute_sql.call_count == 5
+        user_query = mock_db.execute_sql.call_args_list[1][0][0]
+        assert "FROM User" in user_query
+        insert_query = mock_db.execute_sql.call_args_list[3][0][0]
         assert "INSERT INTO Vehicle" in insert_query
-        edge_query = mock_db.execute_sql.call_args_list[3][0][0]
+        edge_query = mock_db.execute_sql.call_args_list[4][0][0]
         assert "CREATE EDGE" in edge_query
 
     @pytest.mark.asyncio
@@ -171,12 +176,35 @@ class TestSqlFleetStore:
         """register_device skips vehicle INSERT when vehicle already exists."""
         mock_db.execute_sql.side_effect = [
             [],  # get_device → not found
+            [{"count": 1}],  # User check → exists
             [{"count": 1}],  # vehicle already exists
-            [],  # CREATE EDGE
+            [{"@rid": "#1:1"}],  # CREATE EDGE → created
         ]
         item = await store.register_device("alice@example.com", "N001", "explorer-v1")
         assert item.vin == "N001"
-        assert mock_db.execute_sql.call_count == 3
+        assert mock_db.execute_sql.call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_register_device_user_not_found(self, store, mock_db):
+        """register_device raises ValueError when User vertex is absent."""
+        mock_db.execute_sql.side_effect = [
+            [],  # get_device → not found
+            [{"count": 0}],  # User check → missing
+        ]
+        with pytest.raises(ValueError, match="User account not found"):
+            await store.register_device("ghost@example.com", "N001", "explorer-v1")
+
+    @pytest.mark.asyncio
+    async def test_register_device_edge_not_created(self, store, mock_db):
+        """register_device raises RuntimeError when CREATE EDGE returns empty."""
+        mock_db.execute_sql.side_effect = [
+            [],  # get_device → not found
+            [{"count": 1}],  # User check → exists
+            [{"count": 1}],  # vehicle already exists
+            [],  # CREATE EDGE → no edge created (silent DB failure)
+        ]
+        with pytest.raises(RuntimeError, match="Failed to link device"):
+            await store.register_device("alice@example.com", "N001", "explorer-v1")
 
     @pytest.mark.asyncio
     async def test_register_device_duplicate(self, store, mock_db):
@@ -208,7 +236,8 @@ class TestSqlFleetStore:
         ]
         assert await store.remove_device("alice@example.com", "N001") is True
         delete_query = mock_db.execute_sql.call_args_list[1][0][0]
-        assert "DELETE EDGE" in delete_query
+        assert "DELETE FROM" in delete_query
+        assert "OwnsDevice" in delete_query
 
     @pytest.mark.asyncio
     async def test_remove_device_not_found(self, store, mock_db):

@@ -1,5 +1,5 @@
 [Unit]
-Description=nomon REST API server (device mode)
+Description=nomon REST API server (Soft AP mode, HTTP on 192.168.4.1:8080)
 After=network.target nomopractic.service
 Wants=nomopractic.service
 
@@ -16,13 +16,17 @@ EnvironmentFile=-/etc/nomothetic/nomothetic.env
 
 # systemd creates /var/lib/nomon owned by User:Group automatically.
 StateDirectory=nomon
-# /run/nomothetic is tmpfs; recreate on every start for the operator secret display.
-RuntimeDirectory=nomothetic
+RuntimeDirectory=nomothetic-ap
 RuntimeDirectoryMode=0755
 
 WorkingDirectory=${NOMON_INSTALL_DIR}
-ExecStart=${NOMON_INSTALL_DIR}/.venv/bin/uvicorn nomothetic.api:create_app --factory --host 0.0.0.0 --port 8443 \
-  --ssl-keyfile /etc/nomothetic/tls/key.pem --ssl-certfile /etc/nomothetic/tls/cert.pem
+
+# Plain HTTP on 192.168.4.1:8080.  Binding to the AP gateway IP ensures the
+# AP API is unreachable from other network interfaces.  Cleartext is
+# acceptable: the AP is a closed WPA2 hotspot on an isolated 192.168.4.0/24
+# subnet (ADR-016).
+ExecStart=${NOMON_INSTALL_DIR}/.venv/bin/uvicorn nomothetic.api:create_app --factory \
+  --host 192.168.4.1 --port 8080
 
 Environment=NOMON_API_MODE=device
 Environment=NOMON_DEVICE_AUTH=true
@@ -33,6 +37,6 @@ RestartSec=5s
 
 StandardOutput=journal
 StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
+# No [Install] section — this service is not enabled at boot.
+# It is started and stopped exclusively by ap-mode.sh when the Soft AP
+# goes up or down (see nomothetic ADR-016).

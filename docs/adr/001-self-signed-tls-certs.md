@@ -37,3 +37,8 @@ Use **auto-generated self-signed certificates** stored in `.certs/cert.pem` and 
 ## Future
 
 Replace with proper CA-signed certs if devices are ever exposed publicly. The `cert_dir` parameter on `APIServer` allows dropping in replacement certs without code changes.
+
+**Note (Phase 22 / ADR-016 amended 2026-05-11):** AP mode uses plain HTTP bound
+to `192.168.4.1:8080` — no dedicated AP certificate. The initial Phase 22
+HTTPS+TOFU design (separate AP self-signed cert, bootstrap service) was reverted.
+See ADR-015 and ADR-016 for history.

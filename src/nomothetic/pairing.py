@@ -19,9 +19,12 @@ import secrets
 import stat
 import tempfile
 
+from nomothetic.device_jwt import DeviceJwtSecretStore
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PAIRING_SECRET_PATH = "/var/lib/nomon/pairing_secret"
+_PAIRING_SECRET_DIGITS = 8
 
 
 def get_pairing_secret_path() -> str:
@@ -142,9 +145,13 @@ class PairingState:
 
     def __init__(self) -> None:
         self.secret: str | None = None
+        self._last_secret: str | None = None
         self.paired: bool = False
         self.owner_email: str | None = None
-        self.jwt_secret: str = secrets.token_urlsafe(48)
+        # JWT signing secret is loaded from (or generated into) the persistent
+        # store at /var/lib/nomon/device_jwt_secret so it survives AP → WiFi
+        # mode switches and service restarts.  See DeviceJwtSecretStore (ADR-016).
+        self.jwt_secret: str = DeviceJwtSecretStore().load_or_generate()
 
     def load_or_generate_secret(self) -> str:
         """Load an existing pairing secret or generate a new one.
@@ -153,7 +160,7 @@ class PairingState:
         invalid, delegates to :meth:`generate_secret` to create and persist a
         new secret.
 
-        On **subsequent restarts** (valid 6-digit secret already on disk),
+        On **subsequent restarts** (valid 8-digit secret already on disk),
         loads that value without overwriting the file, so the WPA2 Soft AP
         passphrase stays stable across service restarts.
 
@@ -163,8 +170,9 @@ class PairingState:
             The active pairing secret.
         """
         existing = _read_shared_secret()
-        if existing is not None and existing.isdigit() and len(existing) == 6:
+        if existing is not None and existing.isdigit() and len(existing) == _PAIRING_SECRET_DIGITS:
             self.secret = existing
+            self._last_secret = existing
             self.paired = False
             logger.info(
                 "Loaded existing pairing secret from %s",
@@ -184,19 +192,46 @@ class PairingState:
         Returns
         -------
         str
-            The pairing secret (6-digit zero-padded numeric string).
+            The pairing secret (8-digit zero-padded numeric string).
         """
-        passkey = secrets.randbelow(1_000_000)
-        self.secret = f"{passkey:06d}"
+        passkey = secrets.randbelow(10**_PAIRING_SECRET_DIGITS)
+        self.secret = f"{passkey:0{_PAIRING_SECRET_DIGITS}d}"
+        self._last_secret = self.secret
         self.paired = False
         _write_shared_secret(self.secret)
         return self.secret
 
+    def get_active_secret(self) -> str | None:
+        """Return the current pairing secret from memory or the shared file."""
+        if self.secret is not None:
+            return self.secret
+        existing = _read_shared_secret()
+        if existing is not None and existing.isdigit() and len(existing) == _PAIRING_SECRET_DIGITS:
+            return existing
+        return self._last_secret
+
+    def has_pairing_secret(self) -> bool:
+        """Return True when a valid pairing secret is available."""
+        return self.get_active_secret() is not None
+
+    def verify_secret(self, candidate: str) -> bool:
+        """Verify candidate against the active pairing secret (constant-time)."""
+        active = self.get_active_secret()
+        return active is not None and hmac.compare_digest(active, candidate)
+
+    def complete_pairing(self, owner_email: str) -> None:
+        """Mark the device as paired for *owner_email*."""
+        self.paired = True
+        self.owner_email = owner_email
+        self.secret = None
+
     def verify_and_consume(self, candidate: str) -> bool:
         """Verify candidate against stored secret (constant-time).
 
-        On success the secret is consumed — subsequent calls with the
-        same value will return False.
+        On success the secret is consumed from in-memory state — subsequent
+        calls in the same runtime will return False until a new session is
+        started. The shared on-disk secret remains available for secure
+        re-pairing.
 
         Parameters
         ----------
@@ -208,13 +243,11 @@ class PairingState:
         bool
             True if the candidate matches and the device was not already paired.
         """
-        if self.secret is None or self.paired:
+        if self.paired or not self.verify_secret(candidate):
             return False
-        if hmac.compare_digest(self.secret, candidate):
-            self.paired = True
-            self.secret = None
-            return True
-        return False
+        self.paired = True
+        self.secret = None
+        return True
 
     def is_paired(self) -> bool:
         """Return whether the device has been paired.
@@ -225,18 +258,29 @@ class PairingState:
         """
         return self.paired
 
+    def reset_session(self) -> None:
+        """Invalidate the current auth session while preserving the pairing secret.
+
+        Rotates the JWT signing secret so previously issued access tokens stop
+        working, clears owner state, and leaves the shared pairing secret file
+        untouched so the legitimate owner can pair again without restarting the
+        service.
+        """
+        self.paired = False
+        self.owner_email = None
+        self.secret = None
+        self.jwt_secret = DeviceJwtSecretStore().rotate()
+
     def reset(self) -> None:
-        """Clear pairing state and regenerate JWT secret.
+        """Clear pairing state, rotate JWT state, and delete the pairing secret.
 
         Deletes the on-disk pairing secret file so the next service startup
         generates a fresh passphrase.  After reset the device is unpaired and
         a new pairing secret must be generated via :meth:`generate_secret` or
         :meth:`load_or_generate_secret`.
         """
-        self.paired = False
-        self.owner_email = None
-        self.secret = None
-        self.jwt_secret = secrets.token_urlsafe(48)
+        self.reset_session()
+        self._last_secret = None
         try:
             os.unlink(get_pairing_secret_path())
         except OSError:

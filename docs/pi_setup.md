@@ -1,73 +1,107 @@
 # Raspberry Pi Setup
 
-End-to-end guide for building and deploying the `nomopractic` Rust daemon
-and installing `nomothetic` on the Raspberry Pi.
+Comprehensive guide for reimaging, provisioning, deploying, and validating a
+nomon device on Raspberry Pi.
+
+This document covers:
+
+- Fresh Pi reimage and first boot hardening
+- Build/deploy workflow for nomographic, nomopractic, and nomothetic
+- AP mode and WiFi mode TLS behavior (including AP self-signed certs)
+- Verification commands for certs, pairing secret, JWT signer secret, and services
 
 ## Prerequisites
 
 ### Hardware
 
-- **Raspberry Pi Zero 2W** running Debian (bookworm/trixie)
-- **SunFounder Robot HAT V4** attached (I2C bus 1, address `0x14`)
+- Raspberry Pi Zero 2W (or compatible Pi)
+- MicroSD card (16 GB minimum recommended)
+- SunFounder Robot HAT V4 attached (I2C bus 1, address `0x14`)
 
-### Software — on the Pi
+### Software and Accounts
 
-- **Python ≥ 3.9**
-- **uv** — fast Python package manager (replaces pip/venv):
-  ```bash
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  ```
-- **Rust toolchain** — install with `rustup` (see [Installing Rust on the Pi](#installing-rust-on-the-pi) below)
-- **Both repos cloned**: `Perceptua-Nomon/nomothetic` and `Perceptua-Nomon/nomopractic`
+- Raspberry Pi Imager available on your dev machine
+- Access to Raspberry Pi Connect and SSH
+- GitHub access to the nomon repos
+- Optional: Tailscale account for remote trusted HTTPS access
 
-### Software — on your dev machine (optional, for cross-compilation)
+### Repositories
 
-- **uv** — fast Python package manager:
-  ```bash
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  # or: brew install uv / pip install uv / winget install astral-sh.uv
-  ```
-- Rust toolchain with the aarch64 target: `rustup target add aarch64-unknown-linux-gnu`
-- [`cross`](https://github.com/cross-rs/cross) for Docker-based cross-compilation: `cargo install cross`
+Clone/update the monorepo on your Pi (or clone each repo separately):
+
+- `nomographic`
+- `nomopractic`
+- `nomothetic`
 
 ---
 
-## Installing Rust on the Pi
+## 1 - Reimage the Pi
 
-The Pi Zero 2W has only 512 MB of RAM. The Rust compiler regularly exceeds
-this during linking, so you must configure swap space before installing.
+1. Power down the Pi and remove the SD card.
+2. Reimage with Raspberry Pi Imager.
+3. In the imager advanced options, enable:
+   - SSH
+   - Raspberry Pi Connect
+4. Reinsert the SD card and boot the Pi.
 
-### Set up swap with rpi-swap
+After first boot, connect via Raspberry Pi Connect remote shell.
 
-Raspberry Pi OS ships with
-[rpi-swap](https://github.com/raspberrypi/rpi-swap), which manages swap
-configuration through drop-in files at `/etc/rpi/swap.conf.d/`. Create a
-drop-in that allocates a fixed 2 GB swapfile:
+---
+
+## 2 - First-Boot Access and Build Tooling
+
+### 2.1 Configure SSH key access
+
+On the Pi (replace placeholders):
+
+```bash
+PI_USER=<pi_user>
+DEV_KEY="ssh-ed25519 <dev_public_key> <dev_user>@<dev_machine>"
+
+mkdir -p /home/$PI_USER/.ssh
+chmod 700 /home/$PI_USER/.ssh
+printf '%s\n' "$DEV_KEY" >> /home/$PI_USER/.ssh/authorized_keys
+chmod 600 /home/$PI_USER/.ssh/authorized_keys
+sudo chown -R $PI_USER:$PI_USER /home/$PI_USER/.ssh
+```
+
+Then connect from your dev machine:
+
+```bash
+ssh <pi_user>@<pi_host>
+```
+
+### 2.2 Configure temporary swap for Rust builds (8 GiB)
 
 ```bash
 sudo mkdir -p /etc/rpi/swap.conf.d/
 
-sudo tee /etc/rpi/swap.conf.d/80-rust-build.conf > /dev/null <<EOF
+sudo tee /etc/rpi/swap.conf.d/80-rust-build.conf > /dev/null <<'EOF'
 [Main]
 Mechanism=swapfile
 
 [File]
-FixedSizeMiB=2048
+FixedSizeMiB=8192
 EOF
 
 sudo reboot
 ```
 
-After rebooting, verify swap is active:
+After reboot:
 
 ```bash
 free -h
-#               total        used        free      shared  buff/cache   available
-# Mem:          432Mi       ...
-# Swap:         2.0Gi       ...
 ```
 
-### Install Rust via rustup
+### 2.3 Optional: install and configure Tailscale
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+sudo tailscale set --operator="$USER"
+```
+
+### 2.4 Install Rust
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -75,388 +109,290 @@ source "$HOME/.cargo/env"
 rustc --version
 ```
 
-Accept the default installation (option 1) when prompted.
-
-### Clean up swap (optional)
-
-Once Rust is installed and you no longer need the extra swap for compilation,
-remove the drop-in and reboot to restore the default swap configuration:
+### 2.5 Install uv
 
 ```bash
-sudo rm /etc/rpi/swap.conf.d/80-rust-build.conf
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv --version
+```
+
+### 2.6 Remove temporary build swap (optional)
+
+If you are done compiling on the Pi:
+
+```bash
+sudo rm -f /etc/rpi/swap.conf.d/80-rust-build.conf
 sudo reboot
 ```
 
-If you plan to compile Rust code directly on the Pi regularly (rather than
-cross-compiling), keep the swap drop-in in place.
+---
+
+## 3 - Prepare Runtime Users, Groups, and Paths
+
+Run on the Pi:
+
+```bash
+sudo groupadd -f nomon
+sudo usermod -aG nomon "$USER"
+
+sudo mkdir -p /run/nomopractic
+sudo chown root:nomon /run/nomopractic
+
+# Re-login so your group membership is refreshed
+newgrp nomon
+```
+
+Get the AP SSID suffix (`last4` of wlan0 MAC):
+
+```bash
+cat /sys/class/net/wlan0/address | tr -d ':' | tr '[:upper:]' '[:lower:]' | grep -o '.\{4\}$'
+```
 
 ---
 
-## 1 — Build & Deploy nomopractic
+## 4 - Configure Environment Files
 
-### Cross-compile from your dev machine
+Configure `.env` or deployment env files for local/device mode as required by
+your deployment scripts.
 
-```bash
-cd nomopractic/
+For nomothetic:
 
-# Install cross (one-time)
-cargo install cross
+- Keep your WiFi/Tailscale TLS host configuration up to date.
+- Add the AP suffix result from step 3 where your local env expects it.
+- `NOMON_TLS_EXTRA_HOSTS` applies to the WiFi-mode cert provisioning path.
+  AP-mode cert SANs are fixed to `192.168.4.1`, `127.0.0.1`, and `localhost`
+  and do not depend on `NOMON_TLS_EXTRA_HOSTS`.
 
-# Build the release binary for aarch64
-make release          # runs: cross build --target aarch64-unknown-linux-gnu --release
-```
+---
 
-The binary lands at
-`target/aarch64-unknown-linux-gnu/release/nomopractic`.
+## 5 - Deploy Services
 
-### Copy to the Pi
-
-```bash
-PI=nomon@<pi-hostname>
-
-scp target/aarch64-unknown-linux-gnu/release/nomopractic  $PI:/tmp/nomopractic
-scp config.toml                                            $PI:/tmp/nomopractic.config.toml
-scp systemd/nomopractic.service                            $PI:/tmp/nomopractic.service
-
-ssh $PI 'sudo mv /tmp/nomopractic /usr/local/bin/ && \
-         sudo mkdir -p /etc/nomopractic && \
-         sudo mv /tmp/nomopractic.config.toml /etc/nomopractic/config.toml && \
-         sudo mv /tmp/nomopractic.service /etc/systemd/system/'
-```
-
-### Create the runtime group and socket directory
+From each repo root on the Pi (recommended order):
 
 ```bash
-# On the Pi
-sudo groupadd -f nomon
-sudo usermod -aG nomon $USER          # allow your user to connect
-sudo mkdir -p /run/nomopractic
-sudo chown root:nomon /run/nomopractic
+cd ~/perceptua-nomon/nomographic
+make deploy-local
+
+cd ~/perceptua-nomon/nomopractic
+make deploy-local
+
+cd ~/perceptua-nomon/nomothetic
+make deploy-local
 ```
 
-### Start the daemon
+If your layout differs, use the equivalent repository paths.
 
-**Option A — systemd (recommended for production):**
+---
+
+## 6 - Service Health Verification
+
+### 6.1 Check core services
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now nomopractic
+
 sudo systemctl status nomopractic
+sudo systemctl status nomothetic-api
+sudo systemctl status nomon-softap-watchdog.timer
 ```
 
-**Option B — foreground (useful for debugging):**
+If AP is manually activated, also check:
 
 ```bash
-sudo nomopractic --config /etc/nomopractic/config.toml
+sudo systemctl status nomothetic-ap
 ```
 
-You should see:
-
-```
-INFO nomopractic::ipc: IPC listener started path="/run/nomopractic/nomopractic.sock"
-```
-
----
-
-## 2 — Verify with socat
-
-Before writing Python code, confirm the socket is alive:
+### 6.2 Verify nomopractic socket and basic IPC
 
 ```bash
-# Install socat if not already present
 sudo apt install -y socat
 
 echo '{"id":"1","method":"health","params":{}}' \
   | socat - UNIX-CONNECT:/run/nomopractic/nomopractic.sock
 ```
 
-Expected response:
+### 6.3 Verify nomothetic HTTPS API
 
-```json
-{"id":"1","ok":true,"result":{"schema_version":"1.0.0","status":"ok","version":"0.1.0","hat_address":"0x14","i2c_bus":1,"uptime_s":5}}
+```bash
+curl -sk https://localhost:8443/
+```
+
+You can also open:
+
+- `https://<pi_host>:8443/docs`
+
+---
+
+## 7 - AP Mode and Pairing Flow (Current Behavior)
+
+AP and WiFi modes are separated:
+
+- WiFi mode uses browser-trusted HTTPS when available (for example, Tailscale cert path).
+- AP mode binds to `192.168.4.1:8080` using **plain HTTP** (interface-scoped; no TLS required).
+- No bootstrap or certificate delivery service — the mobile client connects directly over plain HTTP.
+
+### 7.1 Trigger AP mode manually
+
+```bash
+sudo /usr/local/bin/ap-mode.sh up
+```
+
+Expected:
+
+- `nomon-ap` hotspot appears
+- `nomothetic-ap` starts (`192.168.4.1:8080`)
+
+### 7.2 Pairing secret and AP passphrase
+
+```bash
+sudo cat /var/lib/nomon/pairing_secret
+```
+
+Use this value for initial pairing / AP passphrase as configured by the AP flow.
+
+### 7.3 AP health check
+
+```bash
+curl -s http://192.168.4.1:8080/api/health
+curl -s http://192.168.4.1:8080/api/device/auth/status
+```
+
+### 7.4 Verify AP binding is interface-scoped
+
+```bash
+sudo ss -tlnp | grep ':8080'
+```
+
+Expected:
+
+- `192.168.4.1:8080` (AP API HTTP)
+- No listener on `0.0.0.0:8080`
+
+### 7.5 Disable AP mode
+
+```bash
+sudo /usr/local/bin/ap-mode.sh down
 ```
 
 ---
 
-## 3 — Install nomothetic on the Pi
+## 8 - Secret and JWT Provisioning Verification
 
-`picamera2` transitively depends on `python-prctl`, which requires the
-`libcap` development headers to build from source. Install them first:
+These checks confirm that pairing and JWT signer state are provisioned correctly.
 
-```bash
-sudo apt install -y libcap-dev
-```
+### 8.0 Verify device/WiFi TLS cert files (systemd device API service)
 
-Then install the package:
+The device API service (`nomothetic-api`) serves HTTPS using:
 
-```bash
-cd nomothetic/
-uv sync --extra pi
-```
+- `/etc/nomothetic/tls/cert.pem`
+- `/etc/nomothetic/tls/key.pem`
 
-To install additional extras (e.g. REST API and telemetry):
+Check presence and permissions:
 
 ```bash
-uv sync --extra pi --extra api --extra telemetry
+sudo ls -l /etc/nomothetic/tls/
+sudo stat -c '%n %a %U:%G' /etc/nomothetic/tls/cert.pem /etc/nomothetic/tls/key.pem
 ```
 
----
-
-## 4 — Talk to the daemon from Python
-
-### Health check
-
-```python
-from nomothetic.hat import HatClient
-
-with HatClient() as hat:
-    result = hat.health()
-    print(f"Daemon v{result.version}, up {result.uptime_s}s")
-```
-
-The client defaults to `/run/nomopractic/nomopractic.sock`. Override with:
-
-```python
-hat = HatClient(socket_path="/tmp/nomopractic.sock", timeout_s=5.0)
-```
-
-Or set the `NOMON_HAT_SOCKET_PATH` environment variable.
-
-### Read battery voltage
-
-```python
-with HatClient() as hat:
-    voltage = hat.get_battery_voltage()
-    print(f"Battery: {voltage:.2f} V")
-```
-
-### Move a servo
-
-```python
-with HatClient() as hat:
-    # Set servo on PWM channel 0 to 90°
-    hat.set_servo_angle(channel=0, angle_deg=90.0, ttl_ms=1000)
-
-    # Or set a raw pulse width
-    hat.set_servo_pulse_us(channel=0, pulse_us=1500, ttl_ms=1000)
-```
-
-The `ttl_ms` parameter is a safety lease — if the Python process crashes or
-stops sending commands, the daemon automatically idles the servo after the TTL
-expires. For continuous motion, refresh the command in a loop faster than the
-TTL interval.
-
-### Reset the HAT microcontroller
-
-```python
-with HatClient() as hat:
-    hat.reset_mcu()
-```
-
----
-
-## 5 — Raw socket (without HatClient)
-
-If `nomothetic.hat` is not yet installed or you want to test the protocol
-directly from Python:
-
-```python
-from __future__ import annotations
-
-import json
-import socket
-from typing import Any, Optional
-
-SOCK_PATH = "/run/nomopractic/nomopractic.sock"
-
-def send_request(method: str, params: Optional[dict[str, Any]] = None, req_id: str = "1") -> dict[str, Any]:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(2.0)
-        s.connect(SOCK_PATH)
-        request = json.dumps({"id": req_id, "method": method, "params": params or {}})
-        s.sendall((request + "\n").encode())
-        data = b""
-        while not data.endswith(b"\n"):
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-        return json.loads(data)
-
-# Health check
-resp = send_request("health")
-print(resp)
-# {"id": "1", "ok": true, "result": {"schema_version": "1.0.0", ...}}
-
-# Battery voltage (Phase 2+)
-resp = send_request("get_battery_voltage", req_id="2")
-print(f"Battery: {resp['result']['voltage_v']:.2f} V")
-
-# Servo angle (Phase 3+)
-resp = send_request("set_servo_angle", {"channel": 0, "angle_deg": 45.0, "ttl_ms": 500}, req_id="3")
-print(resp)
-```
-
----
-
-## 6 — Configuration reference
-
-### nomopractic config (`/etc/nomopractic/config.toml`)
-
-```toml
-i2c_bus = 1
-hat_address = 0x14
-socket_path = "/run/nomopractic/nomopractic.sock"
-socket_mode = 432        # 0o660 in decimal
-log_level = "info"
-servo_default_ttl_ms = 500
-watchdog_poll_ms = 100
-```
-
-Every field can be overridden with an environment variable:
-
-| Variable | Example |
-|----------|---------|
-| `NOMON_HAT_I2C_BUS` | `1` |
-| `NOMON_HAT_ADDRESS` | `0x14` |
-| `NOMON_HAT_SOCKET_PATH` | `/tmp/nomopractic.sock` |
-| `NOMON_HAT_SOCKET_MODE` | `0660` |
-| `NOMON_HAT_LOG_LEVEL` | `debug` |
-| `NOMON_HAT_SERVO_DEFAULT_TTL_MS` | `1000` |
-| `NOMON_HAT_WATCHDOG_POLL_MS` | `50` |
-
-### Verbose logging
+Inspect certificate identity and SAN:
 
 ```bash
-RUST_LOG=debug nomopractic --config /etc/nomopractic/config.toml
+sudo openssl x509 -in /etc/nomothetic/tls/cert.pem -noout -subject -issuer
+sudo openssl x509 -in /etc/nomothetic/tls/cert.pem -noout -ext subjectAltName
+sudo openssl x509 -in /etc/nomothetic/tls/cert.pem -noout -fingerprint -sha256
 ```
 
----
-
-## 7 — Development without hardware
-
-For local development and testing without a Raspberry Pi or HAT, use a
-temporary socket path:
+Confirm the live endpoint presents this cert:
 
 ```bash
-# Terminal 1 — start the daemon (I2C calls will fail, but health works)
-NOMON_HAT_SOCKET_PATH=/tmp/nomopractic.sock cargo run -- --config config.toml
-
-# Terminal 2 — send a health check
-echo '{"id":"1","method":"health","params":{}}' \
-  | socat - UNIX-CONNECT:/tmp/nomopractic.sock
+echo | openssl s_client -connect localhost:8443 -servername localhost 2>/dev/null \
+  | openssl x509 -noout -fingerprint -sha256
 ```
 
-On a machine without I2C hardware, the daemon will start and respond to
-`health` requests. Methods that access I2C (`get_battery_voltage`,
-`set_servo_*`, `reset_mcu`) will return `HARDWARE_ERROR` responses — this is
-expected and useful for testing the IPC layer in isolation.
+The fingerprint from the live endpoint should match the fingerprint from
+`/etc/nomothetic/tls/cert.pem`.
 
-Run the integration test suite (no hardware needed):
+### 8.1 Verify pairing secret file
 
 ```bash
-cd nomopractic/
-cargo test
+sudo ls -l /var/lib/nomon/pairing_secret
+sudo stat -c '%n %a %U:%G' /var/lib/nomon/pairing_secret
+sudo wc -c /var/lib/nomon/pairing_secret
 ```
 
----
-
-## 8 — Wi-Fi Soft AP Pairing
-
-When the Pi cannot reach a known Wi-Fi network, the Soft AP watchdog
-automatically broadcasts a WPA2 hotspot so any browser or the nomotactic app
-can reach nomothetic at `192.168.4.1:8443` to complete HTTP pairing — no
-Bluetooth, no native modules required.
-
-### How it works
-
-1. At startup, nomothetic generates (or reads) a random pairing secret from
-   `/var/lib/nomon/pairing_secret` and logs it to the journal:
-   ```
-   INFO  DEVICE PAIRING SECRET: <22-char-url-safe-string>
-   ```
-2. If the Pi has no internet connectivity, the `nomon-softap-watchdog.timer`
-   systemd unit calls `scripts/ap-mode.sh up` (in nomopractic) to activate a
-   WPA2 hotspot:
-   ```
-   SSID:       nomon-<last4-of-MAC>
-   Passphrase: same value as /var/lib/nomon/pairing_secret
-   Device IP:  192.168.4.1
-   ```
-3. The user connects their phone or laptop to `nomon-<last4-of-MAC>`.
-4. They open `https://192.168.4.1:8443` in any browser (accept the
-   self-signed certificate) and follow the pairing prompt — enter the secret
-   shown in step 1 to obtain a device-scoped JWT.
-5. The watchdog calls `scripts/ap-mode.sh down` automatically once the Pi
-   acquires full internet connectivity.
-
-### Pairing secret file
-
-| Property | Value |
-|----------|-------|
-| Path | `/var/lib/nomon/pairing_secret` (default) |
-| Mode | `0640` (`rw-r-----`) |
-| Owner | `root:nomon` |
-| Env override | `NOMON_PAIRING_SECRET_PATH` |
-
-The `nomothetic-api.service` systemd unit creates `/var/lib/nomon/` on startup.
-
-### Verify the Soft AP is working
+### 8.2 Verify persistent device JWT signer secret
 
 ```bash
-# Check the watchdog timer is active
-sudo systemctl status nomon-softap-watchdog.timer
-
-# Check connectivity (triggers AP if 'none' or 'limited')
-nmcli general connectivity
-
-# Verify the AP connection appears when triggered
-nmcli con show nomon-ap
+sudo ls -l /var/lib/nomon/device_jwt_secret
+sudo stat -c '%n %a %U:%G' /var/lib/nomon/device_jwt_secret
+sudo wc -c /var/lib/nomon/device_jwt_secret
 ```
 
-### Troubleshooting Soft AP
+Expected:
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| AP not appearing | Watchdog timer not running | `sudo systemctl start nomon-softap-watchdog.timer` |
-| `nomon-ap` missing after `ap-mode.sh up` | NetworkManager not installed | `sudo apt install -y network-manager` |
-| Passphrase rejected | Pairing secret file missing | Check `/var/lib/nomon/pairing_secret` exists; restart nomothetic to regenerate |
-| `https://192.168.4.1:8443` unreachable | nomothetic API not running | `sudo systemctl start nomothetic-api` |
-| Certificate warning | Self-signed cert (expected) | Click through or import `.certs/cert.pem` |
+- File exists after nomothetic startup
+- Mode `0600`
+- Non-trivial length (at least 32 characters)
 
-### NetworkManager group access
-
-The `nomothetic-api` service runs as the `nomon` system user. For
-`POST /api/device/network/configure` to call `nmcli` without `sudo`, the
-`nomon` user must be a member of the `netdev` group:
+### 8.3 Verify signer persistence across restart
 
 ```bash
-sudo usermod -aG netdev nomon
+sudo sha256sum /var/lib/nomon/device_jwt_secret
 sudo systemctl restart nomothetic-api
+sleep 2
+sudo sha256sum /var/lib/nomon/device_jwt_secret
 ```
 
-This is done automatically by `scripts/deploy.sh`. If setting up manually,
-run the commands above after creating the `nomon` user.
+Expected: hash remains unchanged unless an explicit key rotation/reset occurred.
+
+### 8.4 Verify startup logs for secret provisioning
+
+```bash
+sudo journalctl -u nomothetic-api -n 200 --no-pager | grep -Ei 'pairing secret|jwt secret|ap cert|bootstrap'
+```
 
 ---
 
-## Troubleshooting
+## 9 - End-to-End Device Validation
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `Connection refused` | Daemon not running | `sudo systemctl start nomopractic` |
-| `Permission denied` on socket | User not in `nomon` group | `sudo usermod -aG nomon $USER` then re-login |
-| `No such file or directory` on socket | Socket path doesn't exist or daemon crashed | Check `journalctl -u nomopractic` |
-| `HARDWARE_ERROR` on servo/battery | I2C bus not available | Verify HAT connection: `sudo i2cdetect -y 1` should show `0x14` |
-| `UNKNOWN_METHOD` response | Method not yet implemented in current phase | Check [roadmap](https://github.com/Perceptua-Nomon/nomopractic/blob/main/docs/roadmap.md) for method availability |
-| Servo stops moving after ~500 ms | TTL lease expired (by design) | Increase `ttl_ms` or send commands in a loop |
+1. Run nomotactic and connect to the device.
+2. Complete pairing flow.
+3. Confirm protected endpoints reject unauthenticated requests and succeed with bearer tokens.
+4. Exercise camera/sensor/motor commands.
+5. If testing AP mode:
+   - trigger AP mode with `ap-mode.sh up`
+   - connect mobile to `nomon-ap` hotspot
+   - pair and run commands over AP HTTP (`http://192.168.4.1:8080`)
+
+Useful manual checks:
+
+```bash
+# Unauthorized should fail
+curl -s -o /dev/null -w '%{http_code}\n' http://192.168.4.1:8080/api/sensor/grayscale
+
+# Pair status
+curl -s http://192.168.4.1:8080/api/device/auth/status
+```
 
 ---
 
-## Further reading
+## 10 - Troubleshooting
 
-- [getting_started.md](getting_started.md) — Start both servers and interact remotely
-- [hat_ipc_schema.md](hat_ipc_schema.md) — Full IPC protocol specification
-- [hat_python_client.md](hat_python_client.md) — `HatClient` class interface
-- [architecture.md](architecture.md) — System architecture overview
-- [pi_hardware.md](pi_hardware.md) — Pi hardware discovery notes
+| Symptom | Likely Cause | Fix |
+|---------|--------------|-----|
+| `Permission denied` on `/run/nomopractic/nomopractic.sock` | User not in `nomon` group | `sudo usermod -aG nomon $USER` then re-login |
+| AP service fails to start | NetworkManager state issue | Check `journalctl -u nomothetic-ap -n 200` and `ip addr show wlan0` |
+| `http://192.168.4.1:8080` unreachable | AP API service down or AP interface not up | `sudo systemctl status nomothetic-ap` and `ip addr show wlan0` |
+| Re-pair required after reboot | JWT signer not persisted | Validate `/var/lib/nomon/device_jwt_secret` presence and mode |
+| Commands return hardware errors | HAT/I2C unavailable | `sudo i2cdetect -y 1` should include `0x14` |
+
+---
+
+## Further Reading
+
+- [getting_started.md](getting_started.md)
+- [integration-testing-plan.md](integration-testing-plan.md)
+- [hat_ipc_schema.md](hat_ipc_schema.md)
+- [hat_python_client.md](hat_python_client.md)
+- [architecture.md](architecture.md)
+- [pi_hardware.md](pi_hardware.md)

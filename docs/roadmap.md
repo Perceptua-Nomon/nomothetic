@@ -26,8 +26,11 @@
 | 18.1 | BLE Simplification Coordination | ⊘ Superseded by Phase 20 |
 | 19 | Service Env-File Hardening | ✅ Complete |
 | 20 | BLE → Wi-Fi Soft AP Migration | ✅ Complete |
+| 21 | HTTP AP Pairing Service | ✅ Complete |
+| 22 | Clean AP/WiFi Mode Separation with Self-Signed Certs | ✅ Complete |
+| 23 | Device Fleet Registration & Identity | ✅ Complete |
 
-**Test totals (current): 532 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store)
+**Test totals (current): 574 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store; `ap_mode` tests removed — see ADR-016 amendment)
 
 ---
 
@@ -572,7 +575,7 @@ Device mode is unchanged.
 - [x] New module `src/nomothetic/fleet_routes.py`: in-memory fleet data store
   (ArcadeDB integration deferred; transient store sufficient for MVP)
 - [x] `POST /api/fleet/devices` — register a device and link to user
-  Request: `{ vin, model }` (requires JWT)
+  Request: `{ vin, model }` (requires JWT) (`registration_proof` added in Phase 23 — see Phase 23 for details)
   Response: `{ vin, model, registered_at, timestamp }`
   Creates Vehicle vertex + OwnsDevice edge (role: `owner`)
 - [x] `GET /api/fleet/devices` — list current user's devices
@@ -1119,8 +1122,9 @@ Simplification Coordination)
       Wi-Fi Soft AP section that describes:
   - Soft AP managed by `nomon-softap-watchdog` systemd timer (nomopractic Phase 15)
   - SSID/password derivation from `/var/lib/nomon/pairing_secret`
-  - How nomothetic's HTTPS stack is reachable at `192.168.4.1:8443` when the
-    AP is active
+  - How nomothetic's HTTP stack is reachable at `192.168.4.1:8080` when the
+    AP is active (plain HTTP, interface-bound; HTTPS/TOFU approach later
+    adopted in Phase 22 then reverted — see ADR-016)
   - The existing `POST /api/device/auth/pair` endpoint serves AP-mode clients
     identically to normal Wi-Fi clients
 - Verify: `grep -n 'BLE\|bluer\|bluetooth\|Bluetooth' docs/architecture.md` —
@@ -1163,6 +1167,20 @@ supply home Wi-Fi credentials.
 
 ---
 
+### Phase 20.5 — Wi-Fi AP Mode Toggle ✅
+
+Adds a manual AP mode control endpoint so the app (or operator) can explicitly
+bring the Soft AP up or down without waiting for the watchdog.
+
+- [x] `POST /api/device/wifi/ap` — toggle Soft AP on/off
+  Request: `{ "subcommand": "up" | "down" }`, Response: `{ "subcommand", "timestamp" }`
+  Invokes `ap-mode.sh <subcommand>` via `subprocess.run` in a thread-pool executor
+  Script path from `NOMON_AP_MODE_SCRIPT` env var (default: `/opt/nomon/scripts/ap-mode.sh`)
+  Subcommand validated against `{"up", "down"}` allowlist — not passed verbatim from user input
+  `422` on invalid subcommand; `500` on script failure
+
+---
+
 ### Mobile & Web App (nomotactic)
 
 Developed in the `nomotactic` repository. Expo (React Native) app serving
@@ -1185,6 +1203,256 @@ Managed in the `nomographic` repository. ArcadeDB schemas and ArcadeDB-native mi
 - Local mode: nomothetic opens embedded ArcadeDB from filesystem
 
 **See:** `nomographic/docs/roadmap.md`, `nomographic/docs/architecture.md`
+
+---
+
+### Phase 21 — HTTP AP Pairing Service ✅
+
+Decouples the Soft AP pairing channel from the main HTTPS API so that
+Tailscale-issued (Let's Encrypt-backed) certificates can be used on the primary
+interface without breaking AP-mode pairing. See **ADR-015**.
+
+- [x] `systemd/nomothetic-ap.service` — plain HTTP on port 8080 (`0.0.0.0`)
+  bound alongside the existing `nomothetic-api.service` (HTTPS, port 8443).
+- [x] `scripts/deploy.sh` — stop, enable, and restart `nomothetic-ap.service`
+  in the systemd service lifecycle alongside `nomothetic-api` and
+  `nomothetic-stream`; rollback handler covers the AP service.
+- [x] `docs/adr/015-http-for-ap-mode.md` — ADR documenting the decision,
+  security risks accepted (R1–R4), and future mitigation path (nftables,
+  targeted Android network security config).
+
+---
+
+### Phase 22 — Clean AP/WiFi Mode Separation ✅
+
+**Goal:** Fix the two outstanding ADR-015 issues: (1) bind `nomothetic-ap.service`
+to `192.168.4.1` only (not `0.0.0.0`) to prevent LAN exposure; (2) persist the
+JWT signing secret across AP → WiFi mode switches so re-pairing is not required.
+Also: clean Python module boundary for AP-mode code.
+ADR-016 initially adopted HTTPS+TOFU but was subsequently amended (2026-05-11)
+back to plain HTTP — see ADR-016 for full rationale.
+
+**Architecture decisions:** ADR-016 (amended)
+
+**Cross-repo dependencies:** nomotactic — `SOFT_AP_URL` update, Expo config plugin.
+
+---
+
+#### 22.1 — AP Certificate Module (removed)
+
+> **Note (2026-05-11):** This sub-phase is removed.  The original ADR-016 design
+> included a dedicated self-signed certificate module (`nomothetic.ap_mode.cert`)
+> for the AP HTTPS service.  This module (`cert.py`, `__init__.py`) was deleted
+> when ADR-016 was amended to revert to plain HTTP — no TLS certificate is needed
+> for the AP HTTP service on port 8080.
+
+- [~] ~~New package `src/nomothetic/ap_mode/` with `__init__.py`~~ — deleted
+- [~] ~~`src/nomothetic/ap_mode/cert.py`~~ — deleted
+
+#### 22.2 — AP Bootstrap Service (removed)
+
+> **Note (2026-05-11):** This sub-phase is removed.  The original ADR-016
+> design included a separate HTTP bootstrap service (`nomothetic-ap-bootstrap.service`
+> on port 8080) to deliver the AP self-signed cert PEM for TOFU pinning.  This
+> service and the associated `nomothetic.ap_mode.bootstrap` module were deleted
+> when ADR-016 was amended to revert to plain HTTP (the main AP service is now
+> itself on HTTP port 8080 bound to `192.168.4.1`).
+
+- [~] ~~`src/nomothetic/ap_mode/bootstrap.py`~~ — deleted
+- [~] ~~`systemd/nomothetic-ap-bootstrap.service`~~ — deleted
+- [~] ~~`nomopractic/scripts/ap-mode.sh` bootstrap start/stop~~ — removed
+
+#### 22.3 — AP Main Server (binding fix)
+
+- [x] Update `systemd/nomothetic-ap.service` — change `ExecStart` from:
+  ```
+  uvicorn nomothetic.api:create_app --factory --host 0.0.0.0 --port 8080
+  ```
+  to:
+  ```
+  uvicorn nomothetic.api:create_app --factory \
+    --host 192.168.4.1 --port 8080
+  ```
+  No SSL flags, no `ExecStartPre` (cert generation removed in amendment).
+- [x] Verify: `ss -tlnp | grep 8080` shows `192.168.4.1:8080` only.
+
+#### 22.4 — Persisted Device JWT Secret (`nomothetic.device_jwt`)
+
+- [x] `src/nomothetic/device_jwt.py`:
+  - `_DEFAULT_SECRET_PATH = "/var/lib/nomon/device_jwt_secret"`
+    (env: `NOMON_DEVICE_JWT_SECRET_PATH`)
+  - `DeviceJwtSecretStore` class:
+    - `load_or_generate() -> str` — read from file (if `≥ 32` chars); otherwise
+      generate `secrets.token_urlsafe(48)`, write atomically with
+      `tempfile.mkstemp` + `os.rename`, set `0600 nomon:nomon` (same pattern as
+      `pairing.py._write_shared_secret()`); return the secret
+    - `rotate() -> str` — always generate a new secret, overwrite file, return it
+    - `_read() -> str | None` — internal; reads file, returns `None` on any error
+      or if value `< 32` chars (corrupt file guard)
+    - `_write(secret: str) -> None` — internal; atomic write with `0600` permissions
+    - Logs `INFO` on read, `INFO` on generate+write, `WARNING` on write failure
+      (service continues with in-memory secret if `/var/lib/nomon/` absent)
+- [x] Modify `src/nomothetic/pairing.py` (doc-comment change + call site only):
+  - `PairingState.__init__()`: update `# …` comment noting that `jwt_secret` is
+    now loaded from `DeviceJwtSecretStore.load_or_generate()`; the call site
+    `self.jwt_secret = secrets.token_urlsafe(48)` is replaced by
+    `self.jwt_secret = DeviceJwtSecretStore().load_or_generate()`
+  - `PairingState.reset()`: update comment noting `jwt_secret` is rotated via
+    `DeviceJwtSecretStore().rotate()`
+- [x] Verify: start `nomothetic-ap.service`, pair, record JWT; stop and start
+  `nomothetic-api.service`; existing JWT is still accepted (same secret on disk).
+  Delete `/var/lib/nomon/device_jwt_secret`, restart — JWT is rejected (new secret).
+
+#### 22.5 — Configuration
+
+- [x] `config.toml` — add `[ap_mode]` section:
+  ```toml
+  [ap_mode]
+  # Directory for the AP-specific self-signed certificate.
+  # Override with NOMON_AP_CERT_DIR env var.
+  cert_dir = "/var/lib/nomon/ap-certs"
+  ```
+- [x] Update `scripts/start.sh` — export `NOMON_AP_CERT_DIR` from `[ap_mode].cert_dir`
+  (matching the pattern used for other `[section].key` → env var exports)
+
+#### 22.6 — Tests (removed)
+
+> **Note (2026-05-11):** This sub-phase is removed.  `tests/test_ap_mode.py` was
+> deleted in the ADR-016 amendment along with the `nomothetic.ap_mode` package it
+> tested (cert generation, bootstrap service, AP server binding).  The
+> `DeviceJwtSecretStore` tests in this file were also removed; `DeviceJwtSecretStore`
+> itself is retained in `nomothetic.device_jwt` and is tested via integration paths.
+
+- [~] ~~`tests/test_ap_mode.py`~~ — deleted (all 12 tests removed)
+- [x] `uv run pytest tests/` — no regressions (≥ 532 passing)
+
+#### 22.7 — nomotactic Changes
+
+**Note (2026-05-11):** The `react-native-ssl-pinning` dependency and `apFetch.ts`
+TOFU wrapper have been removed.  AP mode now uses standard `fetch` over plain HTTP.
+See ADR-016 amendment.
+
+- [x] `nomotactic/constants/config.ts`:
+  - `SOFT_AP_URL = "http://192.168.4.1:8080"` (plain HTTP; was `https://...8443`)
+  - `SOFT_AP_BOOTSTRAP_URL` removed (was `http://192.168.4.1:8080` — same address)
+  - Comment updated to reference ADR-016
+- [~] ~~`nomotactic/lib/apFetch.ts`~~ — deleted (TOFU wrapper; no longer needed)
+- [x] `nomotactic/lib/auth.tsx`:
+  - `connectToAp()` simplified: sets `deviceBaseUrl(SOFT_AP_URL)` only
+  - `pairViaAp()` uses standard `fetch` instead of `fetchWithApCert`
+  - All `apFetch` and `SOFT_AP_BOOTSTRAP_URL` imports removed
+- [x] `nomotactic/app.json`:
+  - Android: `usesCleartextTraffic: true` removed; Expo config plugin retained
+    (cleartext scoped to `192.168.4.1` only)
+  - iOS: `NSExceptionAllowsInsecureHTTPLoads: true` scoped to `192.168.4.1`
+    retained (already in place)
+- [x] `nomotactic/plugins/apModeTlsPlugin.ts` — retained; comments updated to
+  remove TOFU/pinning references; cleartext exception for `192.168.4.1` unchanged
+- [~] ~~`react-native-ssl-pinning`~~ — uninstalled from `package.json`
+- [x] Verify: `npx expo lint` — 0 errors; `npx tsc --noEmit` — 0 errors
+
+#### 22.8 — Documentation and ADR Updates
+
+- [x] `docs/adr/016-ap-mode-https.md` — new ADR (already created)
+- [x] `docs/adr/015-http-for-ap-mode.md` — status updated to `Superseded by ADR-016`
+- [x] `docs/adr/001-self-signed-tls-certs.md` — add note in "Future" section:
+  "The AP mode now has its own dedicated self-signed cert at `/var/lib/nomon/ap-certs/`,
+  generated by `nomothetic.ap_mode.cert`; this is separate from the WiFi cert
+  managed by `provision_tls_cert()` (ADR-016)."
+- [x] `docs/adr/014-device-mode-auth.md` — add note documenting JWT secret
+  persistence via `DeviceJwtSecretStore`; update "Auto-Generated JWT Secret" section
+  to describe the new persistence behaviour and the `/var/lib/nomon/device_jwt_secret`
+  file (`0600 nomon:nomon`)
+- [x] `docs/architecture.md` — update "Wi-Fi Soft AP note" and provisioning sequence
+  to reflect HTTPS on port 8443 and the TOFU bootstrap step on port 8080
+- [x] `docs/roadmap.md` — Phase 22 added (this entry)
+
+#### Phase 22 Exit Criteria
+
+- [x] `sudo systemctl start nomothetic-ap` (with AP active):
+  - `curl http://192.168.4.1:8080/` returns `{ "status": "ok" }`
+- [x] AP service bound only to `192.168.4.1`: `ss -tlnp | grep 8080` shows `192.168.4.1:8080` only
+- [x] JWT survives AP → WiFi transition (manual test: pair on AP, switch to WiFi, use JWT)
+- [x] Delete `/var/lib/nomon/device_jwt_secret`, restart service → JWT rejected (new secret)
+- [x] `uv run pytest tests/` — ≥ 574 passing
+- [x] `uv run ruff check src/ tests/` — 0 errors
+- [x] `uv run black --check src/ tests/` — clean
+- [x] `uv run mypy src/ tests/` — 0 errors
+- [x] `npx expo lint` (nomotactic) — 0 errors
+- [x] `npx tsc --noEmit` (nomotactic) — 0 errors
+
+---
+
+### Phase 23 — Device Fleet Registration & Identity
+
+**Goal:** Enable a paired user to register their physical device with the
+central fleet API via a proof-of-access token flow. The device issues a
+short-lived registration proof JWT; the central API validates it structurally
+before creating the fleet record.
+
+**Architecture decisions:**
+- ADR-017: Device Registration Proof JWT
+- ADR-018: Web Token Storage Strategy
+
+**Cross-repo dependencies:**
+- nomotactic: `DeviceRegistrationForm` component, `GET /api/device/auth/identity` relay
+- nomothetic (central): `POST /api/fleet/devices` updated to require `registration_proof`
+
+#### 23.1 — Device Identity Endpoint (`nomothetic.device_auth_routes`)
+
+- [x] `DeviceIdentityResponse` Pydantic model: `vin`, `model`, `hostname`,
+      `registration_proof`
+- [x] `GET /api/device/auth/identity` — requires device JWT (pairing_rate_limit:
+      3 req/min)
+  - Calls `_derive_vin()` for VIN resolution
+  - Generates `registration_proof` JWT: HS256, 5-min TTL, claims
+    `iss=nomon-device`, `sub=<vin>`, `aud=nomon-fleet`, unique `jti`
+  - Returns `{ vin, model, hostname, registration_proof }`
+- [x] `NOMON_VIN` environment variable renamed to `NOMON_DEVICE_ID`
+  - **Breaking change:** operators must update `.env` / systemd override files
+
+#### 23.2 — Fleet Registration Proof Validation (`nomothetic.fleet_routes`)
+
+- [x] `POST /api/fleet/devices` request body updated: `{ vin, model,
+      registration_proof }` (requires central JWT)
+  - `registration_proof` is validated: `exp`, `sub == vin`, `aud == "nomon-fleet"`
+  - Cryptographic signature verification deferred (device and central use
+    separate JWT secrets — see ADR-017)
+  - `400` on invalid or expired proof; `422` on missing field
+
+#### 23.3 — nomotactic: Device Registration Form
+
+- [x] `components/DeviceRegistrationForm.tsx` — handles central fleet
+      registration for users with no registered devices; discovery-driven
+      flow (direct / ap / needs-pairing); calls `GET /api/device/auth/identity`
+      on the device then relays the proof to `POST /api/fleet/devices` on
+      the central API
+
+#### 23.4 — Web Token Storage Hardening (nomotactic)
+
+- [x] Access tokens (central + device): memory-only — stored in React state,
+      never written to browser storage
+- [x] Refresh tokens (central + device): `sessionStorage` — tab-scoped,
+      cleared on tab/window close
+- [x] Device URL: `localStorage` — non-sensitive, persists across sessions
+- [x] Mobile: unchanged — `expo-secure-store` for all tokens
+
+#### Phase 23 Exit Criteria
+
+- [x] `GET /api/device/auth/identity` (with valid device JWT) returns `vin`,
+      `model`, `hostname`, `registration_proof`
+- [x] `POST /api/fleet/devices` accepts `{ vin, model, registration_proof }`
+      and rejects expired or mismatched proofs with `400`
+- [x] `NOMON_DEVICE_ID` env var resolves the VIN correctly (replaces `NOMON_VIN`)
+- [x] `DeviceRegistrationForm` completes the end-to-end registration flow
+- [x] Web token storage: access tokens are not written to `localStorage` or
+      `sessionStorage`; refresh tokens are in `sessionStorage` only
+- [x] `uv run pytest tests/` — no regressions (≥ 574 passing)
+- [x] `uv run ruff check src/ tests/` — 0 errors
+- [x] `uv run black --check src/ tests/` — clean
+- [x] `npx expo lint` (nomotactic) — 0 errors
+- [x] `npx tsc --noEmit` (nomotactic) — 0 errors
+
 
 ### Management Server
 

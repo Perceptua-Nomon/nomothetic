@@ -48,16 +48,22 @@ On success:
 
 ### Auto-Generated JWT Secret
 
-Each device generates its own JWT signing secret at startup
-(`secrets.token_urlsafe(48)`).  This secret lives only in memory — it
-is never persisted to disk.  A service restart generates a new secret,
-invalidating all existing tokens (clients must re-pair).
+Each device manages its JWT signing secret via `DeviceJwtSecretStore`
+(`nomothetic.device_jwt`), which persists the secret on disk so that it
+survives service restarts and AP → Wi-Fi mode switches.
 
-This is acceptable because:
-
-- Device mode is single-user — only one person holds tokens.
-- Re-pairing after a restart is a minor inconvenience.
-- No key file to protect on the filesystem.
+**File:** `/var/lib/nomon/device_jwt_secret`  
+**Permissions:** `0600 nomon:nomon`  
+**Write method:** atomic — `tempfile.mkstemp` + `os.rename`  
+**Fallback:** if `/var/lib/nomon/` is absent at write time, a `WARNING` is
+logged and an in-memory secret is used; the service starts normally.  
+**Rotation:** `DeviceJwtSecretStore().rotate()` generates and persists a new
+secret, invalidating all existing JWTs.  `PairingState.reset()` (factory
+reset) calls `rotate()` automatically.  
+**Cross-mode persistence:** both `nomothetic-ap.service` (AP mode) and
+`nomothetic-api.service` (Wi-Fi mode) load from the same on-disk secret.
+JWTs issued during AP pairing remain valid after the device transitions to
+Wi-Fi mode — no re-pairing required.
 
 ### Issuer Separation
 
@@ -100,12 +106,17 @@ authentication: `/status` and `/pair` are unauthenticated (by design),
 ### Negative
 
 - Single-owner model — no multi-user access control on the device.
-- Tokens invalidated on service restart (by design, but inconvenient).
+- Tokens are preserved across service restarts (JWT secret persisted to disk
+  via `DeviceJwtSecretStore`); invalidated only when the secret file is
+  deleted or `PairingState.reset()` (factory reset) is called.
 - Pairing secret must be communicated out-of-band (console/SSH).
-- In-memory stores — device restart loses user and token state.
+- JWT secret is persisted to disk via `DeviceJwtSecretStore` (Phase 22);
+  pairing user record and consumed-secret flag remain in-memory (lost on restart).
 
 ### Future Considerations
 
-- Persist pairing state to disk for restart resilience.
+- Persist pairing user state to disk for full restart resilience (JWT secret
+  is now persisted via `DeviceJwtSecretStore` — Phase 22; pairing user record
+  and consumed-secret flag remain in-memory).
 - QR code display on device screen for easier pairing.
 - Multi-user device access with role-based permissions.

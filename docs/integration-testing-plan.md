@@ -7,6 +7,19 @@ both deployment modes (central and device), cross-repo boundaries, and planned
 features not yet implemented. Each test area indicates whether it can be tested
 today and what infrastructure is required.
 
+### Phase 22 Completed Features (AP HTTPS Split)
+
+The following AP-mode hardening and separation work is complete and should be
+treated as baseline behavior for integration tests:
+
+1. AP API binds to `192.168.4.1:8080` only (plain HTTP — no `0.0.0.0` exposure,
+  no TLS). Cleartext is acceptable: the AP is a closed WPA2 hotspot.
+2. Device JWT signing secret is persisted at `/var/lib/nomon/device_jwt_secret`
+  so AP/WiFi mode switches do not force re-pairing.
+3. nomotactic uses standard `fetch` for all AP API calls — `connectToAp()` sets
+  `deviceBaseUrl` to `SOFT_AP_URL` (`http://192.168.4.1:8080`).
+  No cert pinning, no native modules, no bootstrap service.
+
 ---
 
 ## Testing Infrastructure
@@ -312,19 +325,61 @@ pairing state, users, and tokens live in in-memory stores.
 
 ### Wi-Fi Soft AP Pairing — Integration Tests
 
-The Soft AP pairing flow is exercised by the existing nomothetic device-auth
-tests plus manual on-device verification:
+The AP pairing flow uses plain HTTP on `192.168.4.1:8080` (interface-bound to
+the AP gateway). Coverage is split between automated tests and Pi/manual
+integration checks.
 
 | Test | Can Test Now? | How |
 |------|:------------:|-----|
 | Pairing secret file written on first boot | Yes | `test_shared_secret_file_written` in `test_pairing.py` |
 | Secret has sufficient entropy | Yes | `test_generate_secret_has_sufficient_entropy` |
-| `POST /api/device/auth/pair` accepts secret → JWT | Yes | `test_pair_success` in `test_device_auth.py` |
+| `POST /api/device/auth/pair` (and AP alias `/pair/ap`) accepts secret → JWT | Yes | `test_pair_success` in `test_device_auth.py` |
 | Wrong secret → 401 | Yes | `test_pair_wrong_secret` |
 | Already paired → 409 | Yes | `test_pair_already_paired` |
-| Rate limiting (3 req/min) | Yes | `test_pair_rate_limited` |
+| Rate limiting (3 req/min) | Yes | `test_pair_rate_limit` |
+| AP cert generation creates cert+key and SAN includes 192.168.4.1 | No | `tests/test_ap_mode.py` deleted — AP mode no longer uses a self-signed cert |
+| AP cert generation is idempotent | No | Same — cert module removed (ADR-016 amendment) |
+| AP key file permission is 0600 | No | Same |
+| AP cert fingerprint format | No | Same |
+| Bootstrap endpoint serves only cert+health routes | No | Bootstrap service deleted; AP uses main API only |
+| AP server rejects non-AP host binding | No | `APServer` class deleted; binding enforced by systemd unit |
+| AP server startup calls cert generation before uvicorn run | No | No cert generation (`ExecStartPre` removed) |
+| JWT secret persists and reloads across restarts | Yes | `test_jwt_secret_shared_across_instances` in `test_pairing.py` |
+| JWT rotation invalidates previous token signer | Yes | `test_reset_regenerates_jwt_secret` in `test_pairing.py` |
+| Bootstrap `/api/cert` returns 503 before cert exists | No | Bootstrap service deleted |
 | On-device: AP appears within 30 s when offline | Pi only | `nmcli con show nomon-ap` after disconnecting from known network |
 | On-device: AP deactivates when Pi gets internet | Pi only | `nomon-softap-watchdog.timer` cycles; `nmcli general connectivity` → `full` |
+
+### AP Mode Pairing and Operating Process (Expected Runtime Flow)
+
+Use this sequence as the canonical end-to-end integration workflow for AP mode.
+
+1. Device loses internet connectivity; watchdog brings up Soft AP with SSID
+  `nomon-<last4>` and passphrase from `/var/lib/nomon/pairing_secret`.
+2. `nomothetic-ap.service` starts plain HTTP API on `192.168.4.1:8080`
+  (bound exclusively to the AP gateway — not reachable from other interfaces).
+3. nomotactic detects AP by probing `GET http://192.168.4.1:8080/api/device/auth/status`.
+4. Pairing call (`POST /api/device/auth/pair/ap`) submits the pairing secret
+  and receives device access and refresh tokens.
+5. nomotactic stores the JWT and switches device base URL to
+  `http://192.168.4.1:8080` for all subsequent AP API calls.
+6. When home WiFi is restored, AP mode is torn down and normal WiFi/Tailscale
+  HTTPS resumes; persisted JWT signer allows token continuity across service
+  restarts and mode transitions.
+
+### AP Mode Edge Cases and Expected Failures
+
+These are required integration scenarios for release validation.
+
+| Scenario | Trigger | Expected Result | Failure Type |
+|----------|---------|-----------------|---------------|
+| User provides wrong pairing secret | `/api/device/auth/pair` or `/pair/ap` with invalid secret | `401 Unauthorized` | Expected auth failure |
+| Pair attempt after already paired | Second pair request after success | `409 Conflict` | Expected state failure |
+| Pair brute-force attempts | >3 attempts in 60 s | `429 Too Many Requests` | Expected rate-limit failure |
+| Device JWT secret directory absent | `/var/lib/nomon` unavailable at startup | Service starts with in-memory secret and logs warning; persistence disabled until path exists | Expected degraded mode |
+| AP API accessed without token | Call protected endpoint without bearer token | `401 Unauthorized` | Expected auth failure |
+| Old token after JWT rotate | Call endpoint with token signed by previous key | `401 Unauthorized` | Expected token invalidation |
+| AP remains active after internet recovers | Watchdog or teardown regression | AP should deactivate within watchdog window; lingering AP is a release-blocking defect | Unexpected failure |
 
 ---
 
@@ -355,7 +410,7 @@ tests plus manual on-device verification:
 | Area | Test | Can Test Now? | Notes |
 |------|------|:-------------:|-------|
 | Soft AP visibility | `nomon-<last4>` SSID appears when Pi has no internet | Pi only | `nmcli dev wifi list` from a phone; watchdog must be running |
-| HTTP pairing | `POST /api/device/auth/pair` returns JWT | Yes | `test_pair_success` in `test_device_auth.py` |
+| AP pairing (plain HTTP) | `POST /api/device/auth/pair/ap` returns JWT | Yes | nomotactic `pairViaAp()` + backend pair tests in `test_device_auth.py` |
 | Wrong secret → 401 | Pairing rejects wrong secret | Yes | `test_pair_wrong_secret` |
 | JWT interop | Device JWT accepted by nomothetic device endpoints | Yes | `test_device_endpoint_requires_token` |
 | AP auto-deactivation | AP disappears after Pi joins home network | Pi only | Watchdog polls `nmcli general connectivity` every 30 s |
@@ -473,7 +528,7 @@ sudo journalctl -u nomothetic-api -n 30 | grep "DEVICE PAIRING SECRET"
 # nomopractic IPC socket is alive
 echo '{"method":"health","params":{},"id":"1"}' | socat - UNIX-CONNECT:/run/nomopractic/nomopractic.sock
 
-# nomothetic HTTPS is responding
+# nomothetic HTTPS API (home network) is responding
 curl -sk https://localhost:8443/
 # Expected: {"status":"ok"}
 
@@ -502,15 +557,15 @@ SSID:       nomon-<last4-of-MAC>
 Passphrase: same value as /var/lib/nomon/pairing_secret
 ```
 
-### Step 6 — Pair via HTTP
+### Step 6 — Pair via AP (plain HTTP)
 
 Open a browser or run:
 
 ```bash
-curl -sk https://192.168.4.1:8443/api/device/auth/status
+curl http://192.168.4.1:8080/api/device/auth/status
 # Expected: {"paired": false}
 
-curl -sk -X POST https://192.168.4.1:8443/api/device/auth/pair \
+curl -X POST http://192.168.4.1:8080/api/device/auth/pair \
   -H "Content-Type: application/json" \
   -d '{"secret": "<pairing-secret>", "display_name": "My nomon"}'
 # Expected: 200 OK with { access_token, refresh_token }
@@ -518,17 +573,17 @@ curl -sk -X POST https://192.168.4.1:8443/api/device/auth/pair \
 
 Store the `access_token` — this JWT is used for all subsequent API calls.
 
-### Step 7 — Send Commands over HTTPS
+### Step 7 — Send Commands over HTTP (AP) or HTTPS (home WiFi)
 
 ```bash
 JWT="<access_token from Step 6>"
 
 # Battery voltage
-curl -sk -H "Authorization: Bearer $JWT" https://192.168.4.1:8443/api/hat/battery
+curl -H "Authorization: Bearer $JWT" http://192.168.4.1:8080/api/hat/battery
 
 # Drive forward for 1 s
-curl -sk -H "Authorization: Bearer $JWT" \
-  -X POST https://192.168.4.1:8443/api/hat/drive \
+curl -H "Authorization: Bearer $JWT" \
+  -X POST http://192.168.4.1:8080/api/hat/drive \
   -H "Content-Type: application/json" \
   -d '{"speed_pct": 50, "ttl_ms": 1000}'
 ```
@@ -567,6 +622,41 @@ ls /run/nomopractic/nomopractic.sock 2>/dev/null && echo "WARN: socket still exi
 ---
 
 ## Test Execution
+
+### AP Regression Checklist (Release Gate)
+
+Run this checklist in order for every release touching AP mode, pairing,
+device auth, or networking.
+
+| Step | Scope | Command / Action | Pass Criteria |
+|------|-------|------------------|---------------|
+| 1 | AP + pairing baseline | `pytest tests/test_pairing.py tests/test_device_auth.py -q` | All tests pass |
+| 2 | Lint and typing guardrails | `ruff check src/ tests/ && black --check src/ tests/ && mypy src/` | No lint or typing errors |
+| 3 | AP binding safety | `ss -tlnp \| grep 8080` on the Pi | Listener bound to `192.168.4.1:8080` only (not `0.0.0.0`) |
+| 4 | AP health check | `curl http://192.168.4.1:8080/` | Returns `{"status":"ok"}` |
+| 5 | Pairing auth flow | Perform AP pair, then retry with wrong secret and repeated attempts | Success returns tokens; wrong secret returns 401; brute-force returns 429 |
+| 6 | Protected endpoint enforcement | Call a protected AP endpoint with and without bearer token | No token returns 401; valid token succeeds |
+| 7 | JWT persistence across mode switch | Pair in AP mode, restart service and switch to WiFi mode, reuse token | Token remains valid until expiry; no forced re-pair due to signer reset |
+| 8 | AP teardown reliability | Restore internet and observe watchdog behaviour | AP deactivates within watchdog window; AP service no longer reachable |
+
+### AP Expected-Failure Smoke Set
+
+These failures must be observed as designed, not treated as regressions.
+
+| Scenario | Validation Method | Expected Outcome |
+|----------|-------------------|------------------|
+| Fingerprint rejected by user | N/A — no TOFU flow in plain HTTP AP mode | N/A |
+| Invalid pairing secret | Submit wrong secret to `/api/device/auth/pair/ap` | 401 Unauthorized |
+| Missing JWT secret directory | Start service without `/var/lib/nomon` | Warning logged; service continues with in-memory signer |
+
+### AP Release Sign-off Criteria
+
+A release is AP-ready only if all conditions below are true:
+
+1. AP Regression Checklist steps 1-8 pass in sequence.
+2. AP Expected-Failure Smoke Set outcomes match expected behaviour.
+3. AP binding is interface-scoped: `ss -tlnp | grep 8080` shows `192.168.4.1:8080` only (not `0.0.0.0`).
+4. AP teardown on internet restore is verified on real Pi hardware.
 
 ### Running All Tests
 

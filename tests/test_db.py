@@ -36,6 +36,9 @@ def test_config_from_env_defaults():
         "ARCADEDB_ROOT_PASSWORD": "pass",
     }
     with patch.dict(os.environ, env, clear=False):
+        # Remove ARCADEDB_DATABASE so the implementation default is exercised;
+        # patch.dict will restore the original value on exit.
+        os.environ.pop("ARCADEDB_DATABASE", None)
         cfg = DatabaseConfig.from_env()
     assert cfg.port == 2480
     assert cfg.database == "nomon_central"
