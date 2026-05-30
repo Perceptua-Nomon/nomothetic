@@ -833,7 +833,7 @@ token reuse across modes.
 
 ---
 
-### Phase 18 — BLE Pairing Coordination (P1)
+### Phase 18 — BLE Pairing Coordination ⊘ Superseded by Phase 20
 
 **Goal:** Coordinate BLE pairing between nomopractic (BLE GATT server) and
 nomotactic (BLE client) by managing the shared pairing secret lifecycle and
@@ -892,7 +892,7 @@ BLE commands go directly from nomotactic to nomopractic. nomothetic's role is:
 
 ---
 
-### Phase 18.1 — BLE Simplification Coordination (P1)
+### Phase 18.1 — BLE Simplification Coordination ⊘ Superseded by Phase 20
 
 **Goal:** Update nomothetic documentation and pairing secret lifecycle to
 coordinate with the BLE simplification in nomopractic Phase 13.1 and
