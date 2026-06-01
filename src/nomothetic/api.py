@@ -29,6 +29,7 @@ import importlib.metadata as _meta
 import json
 import logging
 import os
+import re
 import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -671,6 +672,22 @@ class WifiProvisionRequest(BaseModel):
         description="WPA2 passphrase (8–63 chars) or empty string for open networks",
     )
 
+    @field_validator("ssid")
+    @classmethod
+    def _validate_ssid(cls, v: str) -> str:
+        """Reject SSIDs with null bytes, control characters, or a leading dash.
+
+        - Null bytes (\\x00) are invalid in SSIDs per IEEE 802.11.
+        - Control characters (\\x01–\\x1f, \\x7f) are rejected for safety.
+        - Leading ``-`` is rejected to prevent argument injection into nmcli,
+          which could interpret a leading-dash SSID as an option flag.
+        """
+        if re.search(r"[\x00-\x1f\x7f]", v):
+            raise ValueError("SSID must not contain null bytes or control characters")
+        if v.startswith("-"):
+            raise ValueError("SSID must not start with '-'")
+        return v
+
     @field_validator("password")
     @classmethod
     def _validate_password_length(cls, v: str) -> str:
@@ -1218,7 +1235,7 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
                 _fd = _os.open(
                     _secret_display_path,
                     _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC,
-                    0o644,
+                    0o600,  # owner-read-only: pairing secret must not be world-readable
                 )
                 try:
                     _os.write(_fd, secret.encode())

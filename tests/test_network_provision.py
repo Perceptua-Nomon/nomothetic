@@ -214,3 +214,39 @@ def test_configure_wifi_rate_limited(device_client):
             headers={"Authorization": f"Bearer {token}"},
         )
     assert resp.status_code == 429
+
+
+@pytest.mark.parametrize(
+    "ssid",
+    [
+        "\x00valid",  # null byte
+        "ctrl\x01char",  # control char \x01
+        "\x1fnewline-ish",  # control char \x1f
+        "del\x7fchar",  # DEL
+        "back\x08space",  # backspace
+    ],
+)
+def test_configure_wifi_ssid_control_chars(device_client, ssid):
+    """SSID containing control characters returns 422."""
+    client, app = device_client
+    token = _get_token(client, app)
+
+    resp = client.post(
+        "/api/device/network/configure",
+        json={"ssid": ssid, "password": "securepass123"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422, f"SSID {ssid!r} should be rejected"
+
+
+def test_configure_wifi_ssid_leading_dash(device_client):
+    """SSID starting with '-' returns 422 (argument injection guard)."""
+    client, app = device_client
+    token = _get_token(client, app)
+
+    resp = client.post(
+        "/api/device/network/configure",
+        json={"ssid": "-danger", "password": "securepass123"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422
