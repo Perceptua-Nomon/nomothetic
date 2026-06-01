@@ -25,6 +25,7 @@ provision_tls_cert
 """
 
 import asyncio
+import importlib.metadata as _meta
 import json
 import logging
 import os
@@ -328,9 +329,14 @@ class GrayscaleResponse(BaseModel):
 
 
 class UltrasonicResponse(BaseModel):
-    """Ultrasonic distance sensor reading."""
+    """Ultrasonic distance sensor reading.
 
-    distance_cm: float
+    ``distance_cm`` is ``None`` when no object is detected within the sensor's
+    valid range (2–400 cm) or when the echo pulse times out.  Callers should
+    treat ``None`` as "no reading available".
+    """
+
+    distance_cm: float | None
     timestamp: str
 
 
@@ -1286,18 +1292,28 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
         Returns
         -------
         UltrasonicResponse
-            ``distance_cm``: distance in centimetres.
+            ``distance_cm``: distance in centimetres, or ``None`` when no object
+            is within sensor range or the echo pulse times out.
 
         Raises
         ------
         HTTPException
             503 if the nomopractic daemon is unavailable.
-            500 on hardware error (timeout, no echo, GPIO failure).
+            500 on hardware error (GPIO failure) or unexpected IPC errors.
         """
-        result = await _hat_call("read_ultrasonic")
+        hat = _require_hat()
+        ts = datetime.now(timezone.utc).isoformat()
+        try:
+            result = await asyncio.to_thread(hat.read_ultrasonic)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            if e.code in ("NO_ECHO", "TIMEOUT"):
+                return UltrasonicResponse(distance_cm=None, timestamp=ts)
+            raise HTTPException(status_code=500, detail=str(e)) from e
         return UltrasonicResponse(
             distance_cm=result.distance_cm,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=ts,
         )
 
     # ========================================================================
@@ -2592,7 +2608,7 @@ def create_app() -> FastAPI:
             if mode == Mode.DEVICE
             else "HTTP REST API for fleet management and authentication"
         ),
-        version="0.1.0",
+        version=_meta.version("nomothetic"),
         lifespan=lifespan,
     )
 
@@ -2604,7 +2620,7 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "service": "nomon-camera-api" if mode == Mode.DEVICE else "nomon-central-api",
-            "version": "0.1.0",
+            "version": _meta.version("nomothetic"),
             "mode": mode.value,
         }
 

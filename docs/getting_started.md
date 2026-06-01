@@ -80,9 +80,12 @@ Audio recordings are stored under the directory configured by `[media].dir`
 (sub-folder `audio/` is created automatically).  The microphone device index
 is controlled via `[audio].input_device_index` in `config.toml`.
 
-Sensitive values (SSH keys, JWT secrets, MQTT credentials) belong in `.env`
-rather than `config.toml`.  Copy `.env.example` → `.env` and fill in only
-what you need.
+Sensitive values (SSH keys, JWT secrets, MQTT credentials) belong in mode-specific
+env files rather than `config.toml`.  Copy the appropriate example file and fill
+in only what you need:
+
+- Device mode: `cp .env.device.example .env.device`
+- Central mode: `cp .env.central.example .env.central`
 
 ---
 

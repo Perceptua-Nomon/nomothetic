@@ -10,6 +10,8 @@
 #   all      Start both the stream and API servers.
 #
 # Options:
+#   --mode device|central
+#                   Which env file to load: .env.device (default) or .env.central.
 #   --config FILE   Path to TOML config file.
 #                   Defaults to ./config.toml, then <repo-root>/config.toml.
 #   --foreground    Run in the foreground instead of backgrounding (useful
@@ -29,10 +31,11 @@ REPO_DIR="$(dirname "${SCRIPT_DIR}")"
 
 CONFIG_FILE=""
 FOREGROUND=false
+MODE="device"
 
 # ─── Parse server type (required first arg) ───────────────────────────────────
 if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
-  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
@@ -48,6 +51,14 @@ fi
 # ─── Parse optional arguments ─────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
+    --mode)
+      if [[ "${2:-}" != "device" && "${2:-}" != "central" ]]; then
+        echo "Error: --mode must be 'device' or 'central', got '${2:-}'" >&2
+        exit 1
+      fi
+      MODE="$2"
+      shift 2
+      ;;
     --config)
       CONFIG_FILE="$2"
       shift 2
@@ -57,7 +68,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -74,7 +85,7 @@ if [[ "${SERVER_TYPE}" == "all" ]]; then
     echo "Error: --foreground is not supported with 'all'; use 'stream' or 'api' directly." >&2
     exit 1
   fi
-  FORWARD_ARGS=()
+  FORWARD_ARGS=(--mode "${MODE}")
   [[ -n "${CONFIG_FILE}" ]] && FORWARD_ARGS+=(--config "${CONFIG_FILE}")
   "$0" stream "${FORWARD_ARGS[@]}"
   "$0" api    "${FORWARD_ARGS[@]}"
@@ -96,8 +107,8 @@ if [[ -z "${CONFIG_FILE}" ]]; then
   fi
 fi
 
-# ─── Load .env defaults without overriding explicit env vars ─────────────────
-if [[ -f "${REPO_DIR}/.env" ]]; then
+# ─── Load .env.device or .env.central defaults without overriding explicit env vars ─
+if [[ -f "${REPO_DIR}/.env.${MODE}" ]]; then
   while IFS= read -r line || [[ -n "${line}" ]]; do
     line="${line#"${line%%[![:space:]]*}"}"
     [[ "${line}" =~ ^# || -z "${line}" ]] && continue
@@ -115,7 +126,7 @@ if [[ -f "${REPO_DIR}/.env" ]]; then
     if [[ -z "${!key+x}" ]]; then
       export "${key}=${val}"
     fi
-  done < "${REPO_DIR}/.env"
+  done < "${REPO_DIR}/.env.${MODE}"
 fi
 
 # ─── Activate virtual environment if present ─────────────────────────────────
@@ -228,7 +239,7 @@ else
   if [[ "${NOMON_API_MODE}" == "central" ]]; then
     if [[ -z "${NOMON_JWT_SECRET:-}" || ${#NOMON_JWT_SECRET} -lt 32 ]]; then
       echo "Error: central mode requires NOMON_JWT_SECRET (min 32 chars)." >&2
-      echo "Set it in ${REPO_DIR}/.env or export it before starting the API." >&2
+      echo "Set it in ${REPO_DIR}/.env.central or export it before starting the API." >&2
       exit 1
     fi
   fi

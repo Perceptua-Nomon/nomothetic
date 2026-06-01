@@ -449,7 +449,7 @@ Mobile App
 | Path traversal | Filename-only validation in `Camera`; rejects `/`, `\`, `..`, `.` prefix, absolute paths |
 | CORS (device mode) | `allow_origins=["*"]` in dev; tighten for production |
 | CORS (central mode) | Explicit origins from `NOMON_CORS_ORIGINS` env var; no wildcard on auth routes |
-| Secrets | `python-dotenv` for envvars; `.env` and `.certs/` are gitignored; `NOMON_JWT_SECRET` required in central mode |
+| Secrets | `.env.device` and `.env.central` are gitignored; `.certs/` is gitignored; `NOMON_JWT_SECRET` required in central mode |
 
 ---
 

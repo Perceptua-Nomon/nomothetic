@@ -29,7 +29,7 @@
 #   # Deploy local code directly on the Pi (no SSH needed):
 #   ./scripts/deploy.sh --local
 #
-# Environment (read from .env in the repo root):
+# Environment (read from .env.device or .env.central in the repo root, based on --mode):
 #   NOMON_PI_HOST     SSH target — "user@host" or plain hostname. Optional;
 #                     if unset the script runs locally.
 #   NOMON_SSH_KEY     Path to SSH private key (optional; if set it is passed to
@@ -76,9 +76,26 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     exit 0
 fi
 
-# ── Load .env ──────────────────────────────────────────────────────────────────
+# ── Pre-scan for --mode (needed before env file loading) ──────────────────────
 
-ENV_FILE="${REPO_DIR}/.env"
+_mode="device"
+_prev=""
+for _arg in "$@"; do
+    if [[ "${_prev}" == "--mode" ]]; then
+        if [[ "${_arg}" == "device" || "${_arg}" == "central" ]]; then
+            _mode="${_arg}"
+        else
+            echo "Error: --mode must be 'device' or 'central', got '${_arg}'" >&2
+            exit 1
+        fi
+    fi
+    _prev="${_arg}"
+done
+unset _prev _arg
+
+# ── Load .env.device or .env.central ──────────────────────────────────────────
+
+ENV_FILE="${REPO_DIR}/.env.${_mode}"
 if [[ -f "${ENV_FILE}" ]]; then
     while IFS= read -r line || [[ -n "${line}" ]]; do
         # Strip leading whitespace
@@ -108,11 +125,17 @@ _NOMON_SUDO_PASS_QUOTED="$(printf '%q' "${NOMON_SUDO_PASS}")"
 DEPLOY_LOCAL=false
 SKIP_TESTS=false
 _positional_args=()
+_next_is_mode=false
 
 for _arg in "$@"; do
+    if [[ "${_next_is_mode}" == true ]]; then
+        _next_is_mode=false
+        continue  # value already consumed by pre-scan above
+    fi
     case "${_arg}" in
         --local)       DEPLOY_LOCAL=true ;;
         --skip-tests)  SKIP_TESTS=true ;;
+        --mode)        _next_is_mode=true ;;
         *)             _positional_args+=("${_arg}") ;;
     esac
 done
@@ -163,7 +186,7 @@ _DEPLOY_EXCLUDE='^\s*(NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_GITHUB_
 
 copy_nomothetic_env() {
     if [[ ! -f "${ENV_FILE}" ]]; then
-        echo "==> Warning: .env not found; skipping /etc/nomothetic/nomothetic.env creation." >&2
+        echo "==> Warning: .env.${_mode} not found; skipping /etc/nomothetic/nomothetic.env creation." >&2
         return
     fi
 

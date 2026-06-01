@@ -155,7 +155,7 @@ class Camera:
 - Validate filenames as plain names only: no `/`, `\`, `..`, leading `.`
 - All files must be written within the configured `directory` — never outside it
 - Never hardcode credentials, tokens, or secrets
-- Use `python-dotenv` to load `.env` files; add `.env` to `.gitignore`
+- Use `python-dotenv` to load env files; `.env.device` and `.env.central` are gitignored — never commit them
 
 ---
 

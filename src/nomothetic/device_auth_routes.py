@@ -7,6 +7,7 @@ endpoints — pairing IS the initial authentication step.
 See ADR-014 for design rationale.
 """
 
+import importlib.metadata as _meta
 import logging
 import os
 import secrets
@@ -103,6 +104,7 @@ class DeviceIdentityResponse(BaseModel):
     vin: str
     model: str
     hostname: str
+    firmware_version: str
     registration_proof: str
     """Short-lived proof token (JWT) signed by the device secret.
 
@@ -448,10 +450,15 @@ def create_device_auth_router() -> APIRouter:
         """
         svc = _require_service()
         vin = _derive_vin()
+        try:
+            firmware_version = _meta.version("nomothetic")
+        except _meta.PackageNotFoundError:
+            firmware_version = "unknown"
         return DeviceIdentityResponse(
             vin=vin,
             model=os.environ.get("NOMON_MODEL", "nomon"),
             hostname=socket.gethostname(),
+            firmware_version=firmware_version,
             registration_proof=svc.create_registration_proof(vin),
         )
 

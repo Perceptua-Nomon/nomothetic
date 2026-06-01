@@ -1,7 +1,7 @@
 VERSION ?=
 PI_HOST ?=
 
-.PHONY: install install-dev install-pi test lint format type-check check clean start-stream start-api stop-stream stop-api stop deploy deploy-local coverage
+.PHONY: install install-dev install-pi test lint format type-check check clean start-stream start-api start-api-central stop-stream stop-api stop deploy deploy-local deploy-central coverage
 
 install:
 	uv sync
@@ -40,7 +40,10 @@ start-stream:
 	./scripts/start.sh stream
 
 start-api:
-	./scripts/start.sh api
+	./scripts/start.sh api --mode device
+
+start-api-central:
+	./scripts/start.sh api --mode central
 
 stop-stream:
 	./scripts/stop.sh stream
@@ -55,7 +58,10 @@ deploy:
 	./scripts/deploy.sh $(VERSION) $(PI_HOST)
 
 deploy-local:
-	./scripts/deploy.sh --local $(PI_HOST)
+	./scripts/deploy.sh --local --mode device $(PI_HOST)
+
+deploy-central:
+	./scripts/deploy.sh --local --mode central $(PI_HOST)
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
@@ -75,11 +81,13 @@ help:
 	@echo "  type-check   - Run type checking with mypy"
 	@echo "  check        - Run lint, type-check, and tests (release checks)"
 	@echo "  deploy       - Deploy release to Raspberry Pi over SSH (VERSION=v0.x.y PI_HOST=user@host)"
-	@echo "  deploy-local - Sync and deploy current local source to Pi (PI_HOST=user@host)"
+	@echo "  deploy-local     - Sync and deploy device mode to Pi (PI_HOST=user@host)"
+	@echo "  deploy-central   - Sync and deploy central mode to server (PI_HOST=user@host)"
 	@echo "  clean        - Remove generated files and caches"
 	@echo "  start        - Start both the stream and API servers in the background"
 	@echo "  start-stream - Start the MJPEG stream server in the background"
-	@echo "  start-api    - Start the REST API server in the background"
+	@echo "  start-api        - Start the REST API server (device mode)"
+	@echo "  start-api-central - Start the REST API server (central mode)"
 	@echo "  stop-stream  - Stop the MJPEG stream server"
 	@echo "  stop-api     - Stop the REST API server"
 	@echo "  stop         - Stop all background servers"

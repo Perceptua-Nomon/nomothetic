@@ -1,6 +1,11 @@
 """Package initialization for nomothetic."""
 
-__version__ = "0.1.0"
+import importlib.metadata as _meta
+
+try:
+    __version__ = _meta.version("nomothetic")
+except _meta.PackageNotFoundError:  # pragma: no cover
+    __version__ = "unknown"
 __author__ = "Perceptua"
 
 from .camera import Camera

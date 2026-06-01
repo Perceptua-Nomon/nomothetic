@@ -1216,12 +1216,50 @@ def test_get_ultrasonic_connection_error(client, mock_hat):
     nomothetic.api._hat_client = None
 
 
-def test_get_ultrasonic_hardware_error(client, mock_hat):
-    """GET /api/sensor/ultrasonic returns 500 on HatError."""
+def test_get_ultrasonic_no_echo_returns_null_distance(client, mock_hat):
+    """GET /api/sensor/ultrasonic returns 200 with null distance on NO_ECHO."""
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.read_ultrasonic.side_effect = HatError("NO_ECHO", "out of range")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/sensor/ultrasonic")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["distance_cm"] is None
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_ultrasonic_timeout_returns_null_distance(client, mock_hat):
+    """GET /api/sensor/ultrasonic returns 200 with null distance on TIMEOUT."""
     import nomothetic.api
     from nomothetic.hat import HatError
 
     mock_hat.read_ultrasonic.side_effect = HatError("TIMEOUT", "no echo")
+    nomothetic.api._hat_client = mock_hat
+
+    response = client.get("/api/sensor/ultrasonic")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["distance_cm"] is None
+    assert "timestamp" in data
+
+    nomothetic.api._hat_client = None
+
+
+def test_get_ultrasonic_hardware_error(client, mock_hat):
+    """GET /api/sensor/ultrasonic returns 500 on GPIO hardware failure.
+
+    HARDWARE_ERROR is a real hardware fault, not a benign no-reading condition.
+    It must propagate as 500 so operators can observe and diagnose GPIO failures.
+    """
+    import nomothetic.api
+    from nomothetic.hat import HatError
+
+    mock_hat.read_ultrasonic.side_effect = HatError("HARDWARE_ERROR", "GPIO bus fault")
     nomothetic.api._hat_client = mock_hat
 
     response = client.get("/api/sensor/ultrasonic")

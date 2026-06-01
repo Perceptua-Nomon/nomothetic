@@ -33,6 +33,15 @@ journal / console:
 INFO  DEVICE PAIRING SECRET: <22-char-url-safe-string>
 ```
 
+**Persistence:** the secret is written to `/var/lib/nomon/pairing_secret`
+(`0640 nomon:nomon`) so that it survives service restarts and mode
+switches.  The directory `/var/lib/nomon` must be owned by `nomon:nomon`
+with mode `0750` for the write to succeed; if the write fails, a `WARNING`
+is logged and the in-memory secret is used for the current session
+(meaning the secret changes on next restart).  On subsequent boots the
+same secret is reused — the device keeps the same pairing code until an
+explicit factory reset.
+
 The device owner reads this secret (physically or via SSH) and enters it
 in the nomotactic app's pairing prompt.  The app calls
 `POST /api/device/auth/pair` with the secret and a display name.

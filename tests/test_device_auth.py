@@ -467,7 +467,7 @@ def test_identity_requires_auth(device_auth_client):
 
 
 def test_identity_returns_fields(device_auth_client):
-    """Authenticated GET /identity returns vin, model, hostname, and proof."""
+    """Authenticated GET /identity returns vin, model, hostname, firmware_version, and proof."""
     client, app = device_auth_client
     token = _get_token(client, app)
     resp = client.get(
@@ -479,6 +479,9 @@ def test_identity_returns_fields(device_auth_client):
     assert "vin" in data
     assert "model" in data
     assert "hostname" in data
+    assert "firmware_version" in data
+    assert isinstance(data["firmware_version"], str)
+    assert len(data["firmware_version"]) > 0
     assert "registration_proof" in data
     assert len(data["registration_proof"]) > 0
 
