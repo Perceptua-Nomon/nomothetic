@@ -86,12 +86,24 @@ class DeviceRemoveResponse(BaseModel):
 def _validate_registration_proof(proof: str, vin: str) -> bool:
     """Validate the structural integrity of a registration proof token.
 
-    .. note::
-        Cryptographic signature verification is intentionally omitted.
-        The device and central fleet services use separate JWT secrets, so
-        the fleet server cannot verify the device-issued signature.
-        Full ownership proof requires asymmetric device certificates
-        (planned future work).
+    .. warning::
+        **Security limitation (FL1)**: Cryptographic signature verification is
+        intentionally omitted.  The device and central fleet services use
+        separate JWT secrets, so the fleet server cannot verify the
+        device-issued signature.
+
+        **Consequence**: Any authenticated central user who can guess or
+        enumerate a VIN can forge a structurally valid proof for that VIN,
+        enabling them to register a device they do not own.
+
+        **Planned mitigation**: asymmetric device certificates — the device
+        holds an EC private key, and the central server verifies the proof
+        signature using the device's public key stored at manufacture time.
+        See security checklist item FL1.
+
+        Until that work lands, registration relies on the assumption that all
+        central-authenticated users are trusted fleet owners who cannot
+        meaningfully harm each other by claiming the same VIN.
 
     This function checks:
 

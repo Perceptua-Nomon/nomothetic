@@ -25,9 +25,11 @@ provision_tls_cert
 """
 
 import asyncio
+import importlib.metadata as _meta
 import json
 import logging
 import os
+import re
 import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -328,9 +330,14 @@ class GrayscaleResponse(BaseModel):
 
 
 class UltrasonicResponse(BaseModel):
-    """Ultrasonic distance sensor reading."""
+    """Ultrasonic distance sensor reading.
 
-    distance_cm: float
+    ``distance_cm`` is ``None`` when no object is detected within the sensor's
+    valid range (2–400 cm) or when the echo pulse times out.  Callers should
+    treat ``None`` as "no reading available".
+    """
+
+    distance_cm: float | None
     timestamp: str
 
 
@@ -664,6 +671,22 @@ class WifiProvisionRequest(BaseModel):
         max_length=63,
         description="WPA2 passphrase (8–63 chars) or empty string for open networks",
     )
+
+    @field_validator("ssid")
+    @classmethod
+    def _validate_ssid(cls, v: str) -> str:
+        """Reject SSIDs with null bytes, control characters, or a leading dash.
+
+        - Null bytes (\\x00) are invalid in SSIDs per IEEE 802.11.
+        - Control characters (\\x01–\\x1f, \\x7f) are rejected for safety.
+        - Leading ``-`` is rejected to prevent argument injection into nmcli,
+          which could interpret a leading-dash SSID as an option flag.
+        """
+        if re.search(r"[\x00-\x1f\x7f]", v):
+            raise ValueError("SSID must not contain null bytes or control characters")
+        if v.startswith("-"):
+            raise ValueError("SSID must not start with '-'")
+        return v
 
     @field_validator("password")
     @classmethod
@@ -1212,7 +1235,7 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
                 _fd = _os.open(
                     _secret_display_path,
                     _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC,
-                    0o644,
+                    0o600,  # owner-read-only: pairing secret must not be world-readable
                 )
                 try:
                     _os.write(_fd, secret.encode())
@@ -1286,18 +1309,28 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
         Returns
         -------
         UltrasonicResponse
-            ``distance_cm``: distance in centimetres.
+            ``distance_cm``: distance in centimetres, or ``None`` when no object
+            is within sensor range or the echo pulse times out.
 
         Raises
         ------
         HTTPException
             503 if the nomopractic daemon is unavailable.
-            500 on hardware error (timeout, no echo, GPIO failure).
+            500 on hardware error (GPIO failure) or unexpected IPC errors.
         """
-        result = await _hat_call("read_ultrasonic")
+        hat = _require_hat()
+        ts = datetime.now(timezone.utc).isoformat()
+        try:
+            result = await asyncio.to_thread(hat.read_ultrasonic)
+        except HatConnectionError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except HatError as e:
+            if e.code in ("NO_ECHO", "TIMEOUT"):
+                return UltrasonicResponse(distance_cm=None, timestamp=ts)
+            raise HTTPException(status_code=500, detail=str(e)) from e
         return UltrasonicResponse(
             distance_cm=result.distance_cm,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=ts,
         )
 
     # ========================================================================
@@ -2592,7 +2625,7 @@ def create_app() -> FastAPI:
             if mode == Mode.DEVICE
             else "HTTP REST API for fleet management and authentication"
         ),
-        version="0.1.0",
+        version=_meta.version("nomothetic"),
         lifespan=lifespan,
     )
 
@@ -2604,7 +2637,7 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "service": "nomon-camera-api" if mode == Mode.DEVICE else "nomon-central-api",
-            "version": "0.1.0",
+            "version": _meta.version("nomothetic"),
             "mode": mode.value,
         }
 

@@ -466,7 +466,7 @@ sudo apt update && sudo apt install -y network-manager
 sudo groupadd -f nomon
 sudo useradd -r -s /usr/sbin/nologin -g nomon nomon 2>/dev/null || true
 sudo mkdir -p /var/lib/nomon
-sudo chown root:nomon /var/lib/nomon
+sudo chown nomon:nomon /var/lib/nomon
 sudo chmod 750 /var/lib/nomon
 ```
 

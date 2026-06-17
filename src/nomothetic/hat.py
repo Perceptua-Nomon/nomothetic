@@ -245,7 +245,8 @@ class HatClient:
         HatTimeoutError
             On read timeout.
         HatConnectionError
-            On broken pipe, connection reset, or empty response.
+            On any OS-level socket error (broken pipe, connection reset,
+            ENOTCONN, EBADF, etc.) or empty response.
         HatError
             When the daemon returns ``ok=false``.
         """
@@ -258,7 +259,8 @@ class HatClient:
             resp_line = self._rfile.readline()
         except socket.timeout as e:
             raise HatTimeoutError(f"Request timed out after {self._timeout_s}s") from e
-        except (BrokenPipeError, ConnectionResetError) as e:
+        except OSError as e:
+            # Catches BrokenPipeError, ConnectionResetError, ENOTCONN, EBADF, etc.
             raise HatConnectionError(f"Connection lost: {e}") from e
 
         if not resp_line:

@@ -30,7 +30,7 @@
 | 22 | Clean AP/WiFi Mode Separation with Self-Signed Certs | ✅ Complete |
 | 23 | Device Fleet Registration & Identity | ✅ Complete |
 
-**Test totals (current): 574 passing** (23 camera + 14 streaming + 113 API + 36 telemetry + 60 HAT + 16 audio + 70 calibration + 20 routine + 60 central/auth + 13 db + 19 user_store + 22 fleet_store; `ap_mode` tests removed — see ADR-016 amendment)
+**Test totals (current): 591 passing** (23 camera + 14 streaming + 168 API + 36 telemetry + 94 HAT + 19 audio + 18 auth + 29 central + 32 device-auth + 17 db + 41 pairing + 12 rate-limit + 6 mode + 15 network-provision + 13 token-store + 25 user-store + 22 fleet-store + 7 wifi-ap; `ap_mode` tests removed — see ADR-016 amendment)
 
 ---
 
@@ -775,6 +775,21 @@ logout, device-mode TLS, and ArcadeDB TLS support.
 - [x] `nomographic/docker-compose.yml` requires `ARCADEDB_ROOT_PASSWORD`
 - [x] `nomographic/.env.example` passwords changed to `changeme_before_deploy`
 
+#### 16.8 — Network Provisioning Security (2026-06-01)
+- [x] `api.py`: `WifiProvisionRequest._validate_ssid` rejects SSID values containing
+      control characters (U+0000–U+001F, U+007F) and leading dashes via deny-list regex
+      (`re.search(r'[\x00-\x1f\x7f]', v) or v.startswith('-')`) — prevents nmcli injection
+- [x] `api.py`: pairing secret display file `/run/nomothetic/pairing-secret` opened with
+      `0o600` (was `0o644`) — prevents world-readable secret exposure on the Pi filesystem
+- [x] `fleet_routes.py`: `_validate_registration_proof()` expanded with FL1 docstring
+      note documenting that the structural-only JWT validation is intentional (see ADR-017
+      and security checklist FL1)
+- [x] 6 new tests in `tests/test_network_provision.py` — SSID control-char rejection
+      (`\x00`, `\x1f`, `\x7f`), leading-dash rejection, existing valid cases unaffected
+- [x] `nomourgoi/docs/security-checklist.md` — added P22/P23 (SSID control-char and
+      leading-dash validation), P24/P25 (pairing secret file permissions), X6–X8 (web
+      token hygiene), FL1–FL3 (fleet registration proof structural validation)
+
 ---
 
 ### Phase 17 — Device-Mode Authentication
@@ -833,7 +848,7 @@ token reuse across modes.
 
 ---
 
-### Phase 18 — BLE Pairing Coordination (P1)
+### Phase 18 — BLE Pairing Coordination ⊘ Superseded by Phase 20
 
 **Goal:** Coordinate BLE pairing between nomopractic (BLE GATT server) and
 nomotactic (BLE client) by managing the shared pairing secret lifecycle and
@@ -892,7 +907,7 @@ BLE commands go directly from nomotactic to nomopractic. nomothetic's role is:
 
 ---
 
-### Phase 18.1 — BLE Simplification Coordination (P1)
+### Phase 18.1 — BLE Simplification Coordination ⊘ Superseded by Phase 20
 
 **Goal:** Update nomothetic documentation and pairing secret lifecycle to
 coordinate with the BLE simplification in nomopractic Phase 13.1 and
@@ -1374,7 +1389,7 @@ See ADR-016 amendment.
 - [x] AP service bound only to `192.168.4.1`: `ss -tlnp | grep 8080` shows `192.168.4.1:8080` only
 - [x] JWT survives AP → WiFi transition (manual test: pair on AP, switch to WiFi, use JWT)
 - [x] Delete `/var/lib/nomon/device_jwt_secret`, restart service → JWT rejected (new secret)
-- [x] `uv run pytest tests/` — ≥ 574 passing
+- [x] `uv run pytest tests/` — ≥ 591 passing
 - [x] `uv run ruff check src/ tests/` — 0 errors
 - [x] `uv run black --check src/ tests/` — clean
 - [x] `uv run mypy src/ tests/` — 0 errors
@@ -1447,7 +1462,7 @@ before creating the fleet record.
 - [x] `DeviceRegistrationForm` completes the end-to-end registration flow
 - [x] Web token storage: access tokens are not written to `localStorage` or
       `sessionStorage`; refresh tokens are in `sessionStorage` only
-- [x] `uv run pytest tests/` — no regressions (≥ 574 passing)
+- [x] `uv run pytest tests/` — no regressions (≥ 591 passing)
 - [x] `uv run ruff check src/ tests/` — 0 errors
 - [x] `uv run black --check src/ tests/` — clean
 - [x] `npx expo lint` (nomotactic) — 0 errors
