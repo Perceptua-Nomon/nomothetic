@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 _ACCESS_TOKEN_TTL = timedelta(minutes=15)
 _REFRESH_TOKEN_TTL = timedelta(days=7)
+_PLUGIN_TOKEN_TTL = timedelta(minutes=60)
 _MIN_SECRET_LENGTH = 32
 _JWT_ALGORITHM = "HS256"
 _JWT_ISSUER = "nomon-central"
@@ -264,6 +265,41 @@ class AuthService:
             "sub": email,
             "iat": int(now.timestamp()),
             "exp": int((now + _ACCESS_TOKEN_TTL).timestamp()),
+            "iss": self._issuer,
+        }
+        header = {"alg": _JWT_ALGORITHM}
+        token = _authlib_jwt.encode(header, payload, self._secret)
+        return token.decode("utf-8") if isinstance(token, bytes) else str(token)
+
+    def create_plugin_token(self, plugin_name: str, ttl: timedelta = _PLUGIN_TOKEN_TTL) -> str:
+        """Create a device JWT for an authenticated on-device plugin.
+
+        Issued only after a plugin proves possession of its registered private
+        key (see :mod:`nomothetic.plugin_auth`). The token is signed with the
+        device JWT secret, so it is accepted by ``jwt_required`` exactly like an
+        owner token and is inherently scoped to this device.
+
+        The ``sub`` claim is ``plugin:<plugin_name>`` so plugin traffic is
+        distinguishable from owner traffic in logs and downstream checks, and so
+        a plugin token never collides with a real owner email.
+
+        Parameters
+        ----------
+        plugin_name : str
+            The authenticated plugin's name (e.g. ``"autonomon"``).
+        ttl : datetime.timedelta, optional
+            Token lifetime. Defaults to 60 minutes.
+
+        Returns
+        -------
+        str
+            Encoded JWT string.
+        """
+        now = datetime.now(timezone.utc)
+        payload = {
+            "sub": f"plugin:{plugin_name}",
+            "iat": int(now.timestamp()),
+            "exp": int((now + ttl).timestamp()),
             "iss": self._issuer,
         }
         header = {"alg": _JWT_ALGORITHM}

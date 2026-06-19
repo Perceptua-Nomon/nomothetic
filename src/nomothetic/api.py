@@ -1254,6 +1254,16 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
 
         app.include_router(create_device_auth_router())
 
+        # Plugin auth (ADR-019): on-device autonomy plugins obtain a device JWT
+        # via Ed25519 challenge-response. These endpoints bootstrap plugin auth,
+        # so they are registered on the bare app (not behind jwt_required).
+        from nomothetic.plugin_auth import ChallengeStore, PluginKeyStore
+        from nomothetic.plugin_auth_routes import create_plugin_auth_router
+
+        app.state.plugin_key_store = PluginKeyStore()
+        app.state.plugin_challenge_store = ChallengeStore()
+        app.include_router(create_plugin_auth_router())
+
         device_router = APIRouter(
             dependencies=[Depends(jwt_required)],
         )
