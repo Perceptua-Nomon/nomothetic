@@ -1277,6 +1277,16 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
         app.state.network_limiter = _RateLimiter(max_requests=5, window_seconds=60)
         device_router = APIRouter()
 
+    # Autonomy-routine status/log sink (push model; autonomon ADR-004). The
+    # brain (autonomon) reports its own lifecycle events; this gateway only
+    # stores and serves them — no interpretation. Included on device_router so
+    # the endpoints inherit whatever auth device_router carries.
+    from nomothetic.routine_log_store import RoutineLogStore
+    from nomothetic.routine_routes import create_routine_router
+
+    app.state.routine_log_store = RoutineLogStore()
+    device_router.include_router(create_routine_router())
+
     # ========================================================================
     # Device-mode endpoints (only registered when NOMON_API_MODE=device)
     # ========================================================================
