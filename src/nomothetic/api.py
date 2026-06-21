@@ -1101,6 +1101,11 @@ async def lifespan(app: FastAPI):
     if _hat_client:
         _hat_client.close()
 
+    # Shutdown: stop any routines this device launched (no orphaned autonomy)
+    routine_manager = getattr(app.state, "routine_manager", None)
+    if routine_manager is not None:
+        await routine_manager.shutdown()
+
     # Shutdown: Close ArcadeDB client (central mode)
     db_client = getattr(app.state, "db_client", None)
     if db_client is not None:
@@ -1276,6 +1281,30 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
 
         app.state.network_limiter = _RateLimiter(max_requests=5, window_seconds=60)
         device_router = APIRouter()
+
+    # Autonomy-routine status/log sink (push model; autonomon ADR-004). The
+    # brain (autonomon) reports its own lifecycle events; this gateway only
+    # stores and serves them — no interpretation. Included on device_router so
+    # the endpoints inherit whatever auth device_router carries.
+    from nomothetic.routine_log_store import RoutineLogStore
+    from nomothetic.routine_routes import create_routine_router
+
+    app.state.routine_log_store = RoutineLogStore()
+    device_router.include_router(create_routine_router())
+
+    # Autonomy-routine lifecycle control (start/stop/stop-all). nomothetic
+    # supervises the autonomon plugin *process* (ADR-004: no cognition here) and
+    # enforces a max-duration guard so a routine cannot run forever if the
+    # operator loses connection. Credentials/connection come from config, never
+    # the request payload.
+    from nomothetic.routine_control_routes import create_routine_control_router
+    from nomothetic.routine_manager import RoutineManager, RoutineManagerConfig
+
+    app.state.routine_manager = RoutineManager(
+        RoutineManagerConfig.from_env(),
+        log_store=app.state.routine_log_store,
+    )
+    device_router.include_router(create_routine_control_router())
 
     # ========================================================================
     # Device-mode endpoints (only registered when NOMON_API_MODE=device)
