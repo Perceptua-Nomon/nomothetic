@@ -195,6 +195,14 @@ copy_nomothetic_env() {
         | grep -vE '^\s*#' \
         | grep -vE '^\s*$')"
 
+    # Autonomy routine start needs a plugin credential in the device env; warn
+    # (non-fatal) if neither is set so the operator isn't surprised by a 503.
+    if ! printf '%s\n' "${filtered}" \
+        | grep -qE '^\s*(NOMON_PLUGIN_KEY|NOMON_PLUGIN_TOKEN)\s*=\s*\S'; then
+        echo "==> Warning: no NOMON_PLUGIN_KEY or NOMON_PLUGIN_TOKEN set in .env.${_mode};" >&2
+        echo "    autonomy routine start (POST /api/routines/start) will return 503 until one is set." >&2
+    fi
+
     if [[ -n "${PI_HOST}" ]]; then
         echo "==> Writing /etc/nomothetic/nomothetic.env on remote host..."
         local tmp_env_file

@@ -255,9 +255,17 @@ The primary remote control interface. Mobile app and management server talk to t
 | `POST` | `/api/calibration/grayscale/{channel}/capture` | Calibration | Capture live ADC reading as white/black reference |
 | `POST` | `/api/calibration/save` | Calibration | Persist calibration to disk |
 | `POST` | `/api/calibration/reset` | Calibration | Revert in-memory calibration to defaults |
-| `POST` | `/api/routine/start` | Routine | Start a named autonomous routine (currently: `explore`) |
-| `POST` | `/api/routine/stop` | Routine | Stop the active routine; returns run statistics |
-| `GET` | `/api/routine/status` | Routine | Query active routine state: running, elapsed time, avoidance counts |
+| `POST` | `/api/routine/start` | Routine | Start a named firmware HAT routine (nomopractic, ADR-009) |
+| `POST` | `/api/routine/stop` | Routine | Stop the active firmware HAT routine; returns run statistics |
+| `GET` | `/api/routine/status` | Routine | Query active firmware HAT routine state |
+| `GET` | `/api/routines/available` | Autonomy | List routines this device can launch, read from autonomon's catalogue (`nomon_manifest`); empty when autonomon is not installed |
+| `POST` | `/api/routines/start` | Autonomy | Launch an autonomy routine from a JSON payload (`routine`, `params`, optional `heartbeat_timeout_s`/`max_duration_s`); supervised as a subprocess under a renewable heartbeat lease |
+| `POST` | `/api/routines/heartbeat` | Autonomy | Renew a running routine's lease (`routine`); the app calls this on an interval to keep the routine alive while contact holds |
+| `POST` | `/api/routines/stop` | Autonomy | Stop one running autonomy routine (`routine`) |
+| `POST` | `/api/routines/stop-all` | Autonomy | Stop every running autonomy routine |
+| `GET` | `/api/routines` | Autonomy | Status summary of every autonomy routine that has reported |
+| `GET` | `/api/routines/{routine}/logs` | Autonomy | Current status + recent lifecycle events for a routine |
+| `POST` | `/api/routines/{routine}/events` | Autonomy | Append a reported lifecycle event (plugin → gateway, push model) |
 | `POST` | `/api/device/wifi/ap` | Device | Toggle Soft AP up or down (`up`/`down`) |
 | `GET` | `/api/device/auth/identity` | Device | Return device hardware VIN, model, hostname, and a short-lived registration proof JWT for fleet registration |
 | `GET` | `/docs` | — | Interactive Swagger UI |
