@@ -39,16 +39,16 @@ jobs:
         run: uv sync --all-extras --no-extra pi --frozen
 
       - name: Lint — ruff
-        run: uv run ruff check src/ tests/
+        run: uv run --no-sync ruff check src/ tests/
 
       - name: Lint — black
-        run: uv run black --check src/ tests/
+        run: uv run --no-sync black --check src/ tests/
 
       - name: Type check — mypy
-        run: uv run mypy src/ tests/
+        run: uv run --no-sync mypy src/ tests/
 
       - name: Tests — pytest
-        run: uv run pytest tests/ -v --cov=src/nomothetic --cov-report=term-missing
+        run: uv run --no-sync pytest tests/ -v --cov=src/nomothetic --cov-report=term-missing
 
   # ──────────────────────────────────────────────────────────────────────────
   # release: create a GitHub Release when a vX.Y.Z tag is pushed
