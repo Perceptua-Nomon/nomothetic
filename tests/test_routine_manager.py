@@ -131,13 +131,16 @@ def test_config_no_credentials():
 
 
 def test_config_resolves_bin_beside_interpreter(tmp_path, monkeypatch):
-    # autonomon is installed into nomothetic's venv, beside the interpreter.
+    # Legacy fallback: with no published catalogue, a script beside the running
+    # interpreter is used (e.g. an older same-venv install).
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "python").write_text("")
     (bindir / "nomon-autonomon").write_text("")
     monkeypatch.setattr(sys, "executable", str(bindir / "python"))
-    cfg = RoutineManagerConfig.from_env({"NOMON_PLUGIN_TOKEN": "t"})
+    cfg = RoutineManagerConfig.from_env(
+        {"NOMON_PLUGIN_TOKEN": "t", "NOMON_ROUTINE_CATALOG_PATH": str(tmp_path / "none.json")}
+    )
     assert cfg.autonomon_bin == str(bindir / "nomon-autonomon")
 
 
@@ -153,12 +156,32 @@ def test_config_bin_env_override_wins(tmp_path, monkeypatch):
 
 
 def test_config_bin_falls_back_to_bare_name(tmp_path, monkeypatch):
-    # No sibling script → bare name, resolved via PATH at exec time.
+    # No published catalogue and no sibling script → bare name (resolved via PATH).
     bindir = tmp_path / "bin"
     bindir.mkdir()
     monkeypatch.setattr(sys, "executable", str(bindir / "python"))
-    cfg = RoutineManagerConfig.from_env({"NOMON_PLUGIN_TOKEN": "t"})
+    cfg = RoutineManagerConfig.from_env(
+        {"NOMON_PLUGIN_TOKEN": "t", "NOMON_ROUTINE_CATALOG_PATH": str(tmp_path / "none.json")}
+    )
     assert cfg.autonomon_bin == "nomon-autonomon"
+
+
+def test_config_resolves_bin_from_published_catalogue(tmp_path, monkeypatch):
+    # The decoupled path (ADR-005): autonomon publishes its own-venv CLI path in
+    # the catalogue, and the gateway uses it without autonomon in its own venv.
+    bin_path = tmp_path / "autonomon-venv" / "bin" / "nomon-autonomon"
+    bin_path.parent.mkdir(parents=True)
+    bin_path.write_text("")
+    catalogue = tmp_path / "routine_catalog.json"
+    catalogue.write_text(json.dumps({"routines": ["explore"], "autonomon_bin": str(bin_path)}))
+    # No sibling beside the interpreter, so only the catalogue can supply the path.
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+    cfg = RoutineManagerConfig.from_env(
+        {"NOMON_PLUGIN_TOKEN": "t", "NOMON_ROUTINE_CATALOG_PATH": str(catalogue)}
+    )
+    assert cfg.autonomon_bin == str(bin_path)
 
 
 # ---------------------------------------------------------------------------
