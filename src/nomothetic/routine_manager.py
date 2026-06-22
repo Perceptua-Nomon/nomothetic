@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from nomothetic.routine_catalog import catalog_path, published_autonomon_bin
 from nomothetic.routine_log_store import (
     InvalidRoutineName,
     RoutineLogStore,
@@ -63,14 +64,30 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _resolve_autonomon_bin() -> str:
-    """Locate the ``nomon-autonomon`` console script.
+def _resolve_autonomon_bin(catalog: Path | None) -> str:
+    """Locate the ``nomon-autonomon`` console script, reading the catalogue live.
 
-    Prefer the script installed alongside the running interpreter — autonomon is
-    installed into nomothetic's venv, and the systemd service PATH does not
-    include the venv's ``bin`` directory, so a bare name would not resolve. Fall
-    back to the bare name (resolved via PATH at exec time) when no sibling exists.
+    autonomon and nomothetic are standalone projects with **separate venvs**
+    (autonomon ADR-005), so the gateway cannot assume the CLI lives in its own venv.
+    Resolution order:
+
+    1. The absolute path autonomon advertises in its published catalogue
+       (*catalog*) — the normal, fully-decoupled path.
+    2. A script beside the running interpreter — legacy same-venv installs.
+    3. The bare name, resolved via ``PATH`` at exec time.
+
+    ``NOMON_AUTONOMON_BIN`` takes precedence over all of these; that override is
+    applied by the caller, :meth:`RoutineManager._resolve_bin`.
     """
+    published = published_autonomon_bin(catalog)
+    if published:
+        if Path(published).is_file():
+            return published
+        logger.warning(
+            "published autonomon CLI %s is not an accessible file; "
+            "falling back to a PATH lookup of 'nomon-autonomon'",
+            published,
+        )
     candidate = Path(sys.executable).resolve().parent / "nomon-autonomon"
     if candidate.is_file():
         return str(candidate)
@@ -139,10 +156,18 @@ class RoutineManagerConfig:
 
     Parameters
     ----------
-    autonomon_bin : str
-        Path to (or name of) the ``nomon-autonomon`` console script. When built
-        via :meth:`from_env` without ``NOMON_AUTONOMON_BIN``, this is resolved to
-        the script installed beside the running interpreter (nomothetic's venv).
+    autonomon_bin : str or None
+        Explicit override for the ``nomon-autonomon`` console-script path (from
+        ``NOMON_AUTONOMON_BIN``). When ``None`` (the default), the path is resolved
+        *live at each launch* from the catalogue autonomon publishes (its own venv's
+        CLI path; autonomon ADR-005), falling back to a script beside the running
+        interpreter, then the bare name. Resolving live — rather than freezing it at
+        startup — means a catalogue published after this gateway started is still
+        picked up, with no restart and regardless of deploy order.
+    routine_catalog_path : pathlib.Path or None
+        Path to autonomon's published routine catalogue, read live at launch to
+        locate the CLI. Captured from ``NOMON_ROUTINE_CATALOG_PATH`` by
+        :meth:`from_env`; ``None`` falls back to the shared default at read time.
     device_url : str
         Base URL the launched plugin uses to reach this device's REST API
         (passed as ``NOMON_DEVICE_URL``). Self-signed TLS is expected.
@@ -166,7 +191,8 @@ class RoutineManagerConfig:
         Seconds to wait after SIGINT before escalating to SIGKILL on stop.
     """
 
-    autonomon_bin: str = "nomon-autonomon"
+    autonomon_bin: str | None = None
+    routine_catalog_path: Path | None = None
     device_url: str = "https://127.0.0.1:8443"
     device_id: str = "nomon"
     plugin_key: str | None = None
@@ -210,7 +236,8 @@ class RoutineManagerConfig:
             return value
 
         return cls(
-            autonomon_bin=env.get("NOMON_AUTONOMON_BIN") or _resolve_autonomon_bin(),
+            autonomon_bin=env.get("NOMON_AUTONOMON_BIN") or None,
+            routine_catalog_path=catalog_path(env),
             device_url=env.get("NOMON_AUTONOMON_DEVICE_URL", "https://127.0.0.1:8443"),
             device_id=env.get("NOMON_DEVICE_ID", "nomon"),
             plugin_key=env.get("NOMON_PLUGIN_KEY") or None,
@@ -376,19 +403,25 @@ class RoutineManager:
         max_duration = self._resolve_max_duration(max_duration_s)
         loop = asyncio.get_running_loop()
 
+        # Resolve the CLI path *live*, at launch, from autonomon's published
+        # catalogue (autonomon ADR-005). The catalogue can appear or change after this
+        # gateway started — deploy order, or a reload that is not a full restart —
+        # and the listing endpoint already reads it live, so the launch path must
+        # too; resolving here avoids freezing a stale bare-name fallback at startup.
+        # Off the event loop because it touches the filesystem.
+        autonomon_bin = await asyncio.to_thread(self._resolve_bin)
+
         async with self._lock:
             existing = self._running.get(routine)
             if existing is not None and existing.process.returncode is None:
                 raise RoutineAlreadyRunning(routine)
 
-            argv = [self._config.autonomon_bin]
+            argv = [autonomon_bin]
             env = self._build_env(routine, params)
             try:
                 process = await self._launcher(argv, env)
             except (FileNotFoundError, PermissionError, OSError) as exc:
-                raise RoutineLaunchError(
-                    f"could not launch {self._config.autonomon_bin!r}: {exc}"
-                ) from exc
+                raise RoutineLaunchError(f"could not launch {autonomon_bin!r}: {exc}") from exc
 
             now_mono = loop.time()
             entry = _RoutineProcess(
@@ -504,6 +537,18 @@ class RoutineManager:
         if value <= 0:
             raise ValueError("max_duration_s must be greater than 0")
         return value
+
+    def _resolve_bin(self) -> str:
+        """Resolve the ``nomon-autonomon`` path to exec for this launch.
+
+        An explicit ``NOMON_AUTONOMON_BIN`` (captured on the config) always wins;
+        otherwise the path is read live from autonomon's published catalogue, so a
+        catalogue published after startup is picked up without a gateway restart.
+        Touches the filesystem — call via :func:`asyncio.to_thread`.
+        """
+        if self._config.autonomon_bin:
+            return self._config.autonomon_bin
+        return _resolve_autonomon_bin(self._config.routine_catalog_path)
 
     def _build_env(self, routine: str, params: dict[str, Any]) -> dict[str, str]:
         """Build the child environment: a minimal passthrough plus routine vars."""

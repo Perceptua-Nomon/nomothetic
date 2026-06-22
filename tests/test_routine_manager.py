@@ -9,6 +9,7 @@ import asyncio
 import json
 import signal
 import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -75,9 +76,16 @@ class FakeLauncher:
         return proc
 
 
+# A catalogue path guaranteed not to exist, so launch-time CLI resolution in the
+# default test config is deterministic (bare-name fallback) and never depends on a
+# real /var/lib/nomon on the host running the tests.
+_NO_CATALOG = Path("/nonexistent-nomon/routine_catalog.json")
+
+
 def _config(**overrides: Any) -> RoutineManagerConfig:
     base: dict[str, Any] = {
         "plugin_token": "test-token",
+        "routine_catalog_path": _NO_CATALOG,
         "default_heartbeat_timeout_s": 100.0,
         "heartbeat_timeout_ceiling_s": 300.0,
         "grace_period_s": 0.1,
@@ -130,35 +138,91 @@ def test_config_no_credentials():
     assert RoutineManagerConfig().has_credentials() is False
 
 
-def test_config_resolves_bin_beside_interpreter(tmp_path, monkeypatch):
-    # autonomon is installed into nomothetic's venv, beside the interpreter.
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    (bindir / "python").write_text("")
-    (bindir / "nomon-autonomon").write_text("")
-    monkeypatch.setattr(sys, "executable", str(bindir / "python"))
-    cfg = RoutineManagerConfig.from_env({"NOMON_PLUGIN_TOKEN": "t"})
-    assert cfg.autonomon_bin == str(bindir / "nomon-autonomon")
+def test_config_from_env_does_not_freeze_bin(tmp_path):
+    # ADR-005: without an explicit override, the CLI path is NOT resolved at
+    # config-build time — it is resolved live at each launch. So from_env leaves
+    # autonomon_bin unset and just records where to read the catalogue.
+    catalogue = tmp_path / "routine_catalog.json"
+    cfg = RoutineManagerConfig.from_env(
+        {"NOMON_PLUGIN_TOKEN": "t", "NOMON_ROUTINE_CATALOG_PATH": str(catalogue)}
+    )
+    assert cfg.autonomon_bin is None
+    assert cfg.routine_catalog_path == catalogue
 
 
-def test_config_bin_env_override_wins(tmp_path, monkeypatch):
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    (bindir / "nomon-autonomon").write_text("")
-    monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+def test_config_from_env_bin_override_is_captured():
     cfg = RoutineManagerConfig.from_env(
         {"NOMON_PLUGIN_TOKEN": "t", "NOMON_AUTONOMON_BIN": "/opt/nomon-autonomon"}
     )
     assert cfg.autonomon_bin == "/opt/nomon-autonomon"
 
 
-def test_config_bin_falls_back_to_bare_name(tmp_path, monkeypatch):
-    # No sibling script → bare name, resolved via PATH at exec time.
+@pytest.mark.asyncio
+async def test_start_resolves_bin_from_published_catalogue(tmp_path, monkeypatch):
+    # The decoupled path (ADR-005): autonomon publishes its own-venv CLI path in the
+    # catalogue, and the gateway execs it. Read live at launch, so a catalogue
+    # published after the gateway started is still used — no restart needed.
+    bin_path = tmp_path / "autonomon-venv" / "bin" / "nomon-autonomon"
+    bin_path.parent.mkdir(parents=True)
+    bin_path.write_text("")
+    catalogue = tmp_path / "routine_catalog.json"
+    catalogue.write_text(json.dumps({"routines": ["explore"], "autonomon_bin": str(bin_path)}))
+    # No sibling beside the interpreter, so only the catalogue can supply the path.
     bindir = tmp_path / "bin"
     bindir.mkdir()
     monkeypatch.setattr(sys, "executable", str(bindir / "python"))
-    cfg = RoutineManagerConfig.from_env({"NOMON_PLUGIN_TOKEN": "t"})
-    assert cfg.autonomon_bin == "nomon-autonomon"
+    launcher = FakeLauncher()
+    manager = RoutineManager(_config(routine_catalog_path=catalogue), launcher=launcher)
+    await manager.start("explore", {})
+    argv, _env = launcher.calls[0]
+    assert argv == [str(bin_path)]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_start_resolves_bin_beside_interpreter(tmp_path, monkeypatch):
+    # Legacy fallback: with no published catalogue, a script beside the running
+    # interpreter is used (e.g. an older same-venv install).
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "python").write_text("")
+    (bindir / "nomon-autonomon").write_text("")
+    monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+    launcher = FakeLauncher()
+    manager = RoutineManager(
+        _config(routine_catalog_path=tmp_path / "none.json"), launcher=launcher
+    )
+    await manager.start("explore", {})
+    argv, _env = launcher.calls[0]
+    assert argv == [str(bindir / "nomon-autonomon")]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_start_falls_back_to_bare_name(tmp_path, monkeypatch):
+    # No published catalogue and no sibling script → bare name (resolved via PATH).
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+    launcher = FakeLauncher()
+    manager = RoutineManager(
+        _config(routine_catalog_path=tmp_path / "none.json"), launcher=launcher
+    )
+    await manager.start("explore", {})
+    argv, _env = launcher.calls[0]
+    assert argv == ["nomon-autonomon"]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_start_uses_bin_env_override():
+    # NOMON_AUTONOMON_BIN wins over catalogue/sibling resolution and is used as-is.
+    launcher = FakeLauncher()
+    manager = RoutineManager(_config(autonomon_bin="/opt/nomon-autonomon"), launcher=launcher)
+    await manager.start("explore", {})
+    argv, _env = launcher.calls[0]
+    assert argv == ["/opt/nomon-autonomon"]
+    await manager.shutdown()
 
 
 # ---------------------------------------------------------------------------

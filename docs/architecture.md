@@ -258,7 +258,7 @@ The primary remote control interface. Mobile app and management server talk to t
 | `POST` | `/api/routine/start` | Routine | Start a named firmware HAT routine (nomopractic, ADR-009) |
 | `POST` | `/api/routine/stop` | Routine | Stop the active firmware HAT routine; returns run statistics |
 | `GET` | `/api/routine/status` | Routine | Query active firmware HAT routine state |
-| `GET` | `/api/routines/available` | Autonomy | List routines this device can launch, read from autonomon's catalogue (`nomon_manifest`); empty when autonomon is not installed |
+| `GET` | `/api/routines/available` | Autonomy | List routines this device can launch, read from the catalogue file autonomon publishes (`NOMON_ROUTINE_CATALOG_PATH`); empty when none has been published (autonomon ADR-005) |
 | `POST` | `/api/routines/start` | Autonomy | Launch an autonomy routine from a JSON payload (`routine`, `params`, optional `heartbeat_timeout_s`/`max_duration_s`); supervised as a subprocess under a renewable heartbeat lease |
 | `POST` | `/api/routines/heartbeat` | Autonomy | Renew a running routine's lease (`routine`); the app calls this on an interval to keep the routine alive while contact holds |
 | `POST` | `/api/routines/stop` | Autonomy | Stop one running autonomy routine (`routine`) |

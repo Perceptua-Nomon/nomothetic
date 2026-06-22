@@ -431,6 +431,22 @@ else
     echo "WARNING: netdev group not found — nmcli wifi provisioning will not work without sudo"
 fi
 
+# ── Persistent state directory ────────────────────────────────────────────────
+# /var/lib/nomon holds device state that MUST survive redeploys: the pairing
+# secret (also read by nomopractic as the Wi-Fi Soft AP passphrase) and the device
+# JWT signing secret. systemd's StateDirectory=nomon provisions this when the unit
+# starts, but we also ensure it here — owned by the service user, before any
+# service (re)start — so secret persistence never depends on StateDirectory and
+# survives autonomon's deploy, which may create /var/lib/nomon as root when it
+# publishes its routine catalogue there. Only the directory is created and
+# chowned; existing secret files are left untouched, so the pairing secret stays
+# stable across redeploys and is regenerated only on an explicit factory reset.
+echo "==> Ensuring persistent state directory /var/lib/nomon..."
+sudo mkdir -p /var/lib/nomon
+sudo chown "${NOMON_SERVICE_USER}:${NOMON_SERVICE_GROUP}" /var/lib/nomon
+sudo chmod 0755 /var/lib/nomon
+echo "  State directory ready (owner: ${NOMON_SERVICE_USER}:${NOMON_SERVICE_GROUP}) ✓"
+
 # ── Systemd service state capture ─────────────────────────────────────────────
 
 SYSTEMD_AVAILABLE=false
