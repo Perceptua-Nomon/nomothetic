@@ -217,7 +217,8 @@ The primary remote control interface. Mobile app and management server talk to t
 |--------|------|-----|-------------|
 | `GET` | `/` | Health | Health check |
 | `GET` | `/api/camera/status` | Camera | Camera state (resolution, fps, encoder, recording) |
-| `POST` | `/api/camera/capture` | Camera | Still image capture |
+| `POST` | `/api/camera/capture` | Camera | Still image capture (writes a file; returns metadata) |
+| `GET` | `/api/camera/frame` | Camera | Single raw JPEG frame (`image/jpeg` bytes) — raw input for autonomon vision |
 | `POST` | `/api/camera/record/start` | Camera | Start video recording |
 | `POST` | `/api/camera/record/stop` | Camera | Stop video recording |
 | `POST` | `/api/camera/pan` | Vehicle | Set camera pan servo angle |

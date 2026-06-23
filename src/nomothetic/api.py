@@ -38,7 +38,7 @@ from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from nomothetic.mode import Mode, get_mode
@@ -1057,6 +1057,34 @@ def _require_camera():
     return _camera
 
 
+def _grab_one_jpeg(cam) -> bytes:
+    """Capture a single JPEG frame in memory (no disk write).
+
+    Reuses the camera's MJPEG frame generator, taking exactly one frame and then
+    closing the generator so the camera is started and stopped for this one grab
+    (the generator stops the camera in its ``finally``). Blocking; call via
+    ``asyncio.to_thread``.
+
+    Parameters
+    ----------
+    cam : Camera
+        The initialized camera.
+
+    Returns
+    -------
+    bytes
+        Raw JPEG-encoded frame.
+    """
+    gen = cam.get_jpeg_frame_generator()
+    try:
+        frame: bytes = next(gen)
+        return frame
+    finally:
+        close = getattr(gen, "close", None)
+        if callable(close):
+            close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage camera, HAT client, and audio initialization and cleanup."""
@@ -1641,6 +1669,32 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Capture failed: {str(e)}") from e
+
+    @device_router.get("/api/camera/frame", tags=["Camera"])
+    async def get_camera_frame():
+        """Return a single raw JPEG frame from the camera.
+
+        Unlike ``/api/camera/capture`` (which writes a file to disk and returns
+        metadata), this returns the frame **bytes** directly as ``image/jpeg`` —
+        a raw input for autonomon's vision perception layer (ADR-004). No
+        interpretation is performed here.
+
+        Returns
+        -------
+        Response
+            ``image/jpeg`` with the raw JPEG frame as the body.
+
+        Raises
+        ------
+        HTTPException
+            503 if the camera is not initialized; 500 if frame capture fails.
+        """
+        cam = _require_camera()
+        try:
+            jpeg = await asyncio.to_thread(_grab_one_jpeg, cam)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Frame capture failed: {str(e)}") from e
+        return Response(content=jpeg, media_type="image/jpeg")
 
     @device_router.post(
         "/api/camera/record/start", response_model=RecordStartResponse, tags=["Camera"]

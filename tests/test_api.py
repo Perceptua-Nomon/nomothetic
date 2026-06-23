@@ -168,6 +168,49 @@ def test_capture_without_camera(client):
     assert "not initialized" in response.json()["error"]
 
 
+def test_camera_frame_returns_jpeg_bytes(client, mock_camera):
+    """The frame endpoint returns raw image/jpeg bytes from the camera."""
+    import nomothetic.api
+
+    jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIFtestframe\xff\xd9"
+
+    def _one_frame():
+        yield jpeg
+
+    mock_camera.get_jpeg_frame_generator.return_value = _one_frame()
+    nomothetic.api._camera = mock_camera
+
+    response = client.get("/api/camera/frame")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.content == jpeg
+
+    # Cleanup
+    nomothetic.api._camera = None
+
+
+def test_camera_frame_capture_error(client, mock_camera):
+    """A camera failure during frame capture returns 500."""
+    import nomothetic.api
+
+    mock_camera.get_jpeg_frame_generator.side_effect = RuntimeError("Camera failed")
+    nomothetic.api._camera = mock_camera
+
+    response = client.get("/api/camera/frame")
+    assert response.status_code == 500
+    assert "Frame capture failed" in response.json()["error"]
+
+    # Cleanup
+    nomothetic.api._camera = None
+
+
+def test_camera_frame_without_camera(client):
+    """The frame endpoint returns 503 when the camera is not initialized."""
+    response = client.get("/api/camera/frame")
+    assert response.status_code == 503
+    assert "not initialized" in response.json()["error"]
+
+
 # ============================================================================
 # Video Recording Endpoints
 # ============================================================================
