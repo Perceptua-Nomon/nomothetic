@@ -52,7 +52,20 @@ logger = logging.getLogger(__name__)
 # Parent environment variables passed through to the plugin child. Deliberately
 # minimal so the child does not inherit unrelated gateway secrets; the routine's
 # own NOMON_* variables are layered on top in _build_env().
-_ENV_PASSTHROUGH = ("PATH", "HOME", "USER", "LANG", "LC_ALL", "LD_LIBRARY_PATH", "SSL_CERT_FILE")
+_ENV_PASSTHROUGH = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "LC_ALL",
+    "LD_LIBRARY_PATH",
+    "SSL_CERT_FILE",
+    # Vision-routine config: model path and fake-detection hook (test/CI).
+    # These are set in /etc/nomothetic/nomothetic.env on the Pi (loaded as the
+    # systemd EnvironmentFile) so they reach the subprocess via this passthrough.
+    "NOMON_VISION_MODEL_PATH",
+    "NOMON_VISION_FAKE_DETECTIONS",
+)
 
 # Floor for a client-supplied heartbeat timeout, so the connection-loss guard
 # cannot be set uselessly low. The operator-configured default is exempt.
