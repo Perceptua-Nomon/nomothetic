@@ -51,7 +51,10 @@ logger = logging.getLogger(__name__)
 
 # Parent environment variables passed through to the plugin child. Deliberately
 # minimal so the child does not inherit unrelated gateway secrets; the routine's
-# own NOMON_* variables are layered on top in _build_env().
+# own NOMON_* variables are layered on top in _build_env(). Autonomon-specific
+# runtime config (e.g. the vision model/detector) is NOT listed here: nomothetic
+# stays ignorant of the brain's internals (ADR-004/005). The autonomon CLI loads
+# its own env file (/etc/autonomon/autonomon.env) for that.
 _ENV_PASSTHROUGH = ("PATH", "HOME", "USER", "LANG", "LC_ALL", "LD_LIBRARY_PATH", "SSL_CERT_FILE")
 
 # Floor for a client-supplied heartbeat timeout, so the connection-loss guard
