@@ -170,15 +170,19 @@ if [[ -n "${PI_HOST}" ]]; then
         SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
     fi
     echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} → ${PI_HOST}"
-    # NOMON_SKIP_TESTS is embedded directly in the command string rather than
-    # passed as a positional arg, because SSH concatenates all args into a
-    # single string — empty positional args (VERSION, NOMON_REMOTE_DIR) are
-    # silently dropped, which shifts subsequent args and corrupts $3 onward.
-    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} bash -ls \"\$@\"" --)
+    # All deploy params are env vars (not positional args): SSH concatenates
+    # positionals into one string and silently drops empty ones, shifting args.
+    _VERSION_QUOTED="$(printf '%q' "${VERSION}")"
+    _DEPLOY_LOCAL_QUOTED="$(printf '%q' "${DEPLOY_LOCAL}")"
+    _REMOTE_DIR_QUOTED="$(printf '%q' "${NOMON_REMOTE_DIR:-}")"
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_DEPLOY_VERSION=${_VERSION_QUOTED} NOMON_DEPLOY_LOCAL=${_DEPLOY_LOCAL_QUOTED} NOMON_DEPLOY_REMOTE_DIR=${_REMOTE_DIR_QUOTED} bash -ls")
 else
     echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} locally"
     export NOMON_SKIP_TESTS="${SKIP_TESTS}"
-    RUN_CMD=(bash -ls --)
+    export NOMON_DEPLOY_VERSION="${VERSION}"
+    export NOMON_DEPLOY_LOCAL="${DEPLOY_LOCAL}"
+    export NOMON_DEPLOY_REMOTE_DIR="${NOMON_REMOTE_DIR:-}"
+    RUN_CMD=(bash -ls)
 fi
 
 # Deploy-only variables that must NOT be written to the on-device env file.
@@ -280,7 +284,7 @@ copy_nomothetic_env
 # ── Deployment ─────────────────────────────────────────────────────────────────
 # All steps below run on the Pi (remote or local) via a single shell session.
 
-"${RUN_CMD[@]}" "${VERSION}" "${DEPLOY_LOCAL}" "${NOMON_REMOTE_DIR:-}" << 'END_REMOTE'
+"${RUN_CMD[@]}" << 'END_REMOTE'
 set -euo pipefail
 
 if [[ -n "${NOMON_SUDO_PASS:-}" ]]; then
@@ -297,40 +301,38 @@ else
     sudo() { command sudo "$@"; }
 fi
 
-readonly REQUESTED_VERSION="$1"
-readonly DEPLOY_LOCAL="${2:-false}"
-readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/nomothetic}"
+readonly REQUESTED_VERSION="${NOMON_DEPLOY_VERSION:-}"
+readonly DEPLOY_LOCAL="${NOMON_DEPLOY_LOCAL:-false}"
+readonly REMOTE_DIR="${NOMON_DEPLOY_REMOTE_DIR:-${HOME}/perceptua-nomon/nomothetic}"
 readonly SKIP_TESTS="${NOMON_SKIP_TESTS:-false}"
-
-if [[ ! -d "${REMOTE_DIR}" ]]; then
-    echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
-    exit 1
-fi
-
-cd "${REMOTE_DIR}"
-
-# ── Save current ref for rollback (release mode only) ─────────────────────────
-
-if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
-    PREV_REF="$(git rev-parse HEAD)"
-    PREV_LABEL="$(git describe --tags --exact-match HEAD 2>/dev/null \
-                  || git rev-parse --short HEAD)"
-    echo "  Current ref: ${PREV_LABEL}"
-fi
 
 # ── Resolve target version (pre-flight, before we touch anything) ─────────────
 
 if [[ "${DEPLOY_LOCAL}" == "true" ]]; then
+    if [[ ! -d "${REMOTE_DIR}" ]]; then
+        echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
+        exit 1
+    fi
     # Version was already resolved from pyproject.toml on the dev machine.
     TARGET="${REQUESTED_VERSION}"
     echo "==> Target: ${TARGET} (local source)"
 else
-    echo "==> Fetching tags from origin..."
-    git fetch --tags --quiet
+    echo "==> Fresh clone from origin..."
+    _github_repo="https://github.com/Perceptua-Nomon/nomothetic.git"
+    _tmp_clone="$(mktemp -d)"
+    git clone --quiet "${_github_repo}" "${_tmp_clone}/nomothetic"
+
+    # Backup existing repo and move fresh clone into place
+    if [[ -d "${REMOTE_DIR}" ]]; then
+        mv "${REMOTE_DIR}" "${REMOTE_DIR}.backup.$$"
+    fi
+    mv "${_tmp_clone}/nomothetic" "${REMOTE_DIR}"
+    rm -rf "${_tmp_clone}"
+    echo "  Clone complete ✓"
 
     TARGET="${REQUESTED_VERSION}"
     if [[ -z "${TARGET}" ]]; then
-        TARGET="$(git tag --list 'v*' --sort=-version:refname | head -1)"
+        TARGET="$(git -C "${REMOTE_DIR}" tag --list 'v*' --sort=-version:refname | head -1)"
         if [[ -z "${TARGET}" ]]; then
             echo "Error: no semver tags found in the repository." >&2
             exit 1
@@ -343,13 +345,10 @@ else
         exit 1
     fi
 
-    CURRENT_TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
-    if [[ "${CURRENT_TAG}" == "${TARGET}" ]]; then
-        echo "  Note: already on ${TARGET}; re-running checks and restarting servers."
-    fi
-
     echo "==> Target: ${TARGET}"
 fi
+
+cd "${REMOTE_DIR}"
 
 # ── Rollback helper ────────────────────────────────────────────────────────────
 # Set up only after pre-flight so that early errors (tag resolution etc.) do
@@ -365,8 +364,17 @@ rollback() {
     echo "" >&2
     echo "!! Deployment failed. Rolling back to ${PREV_LABEL:-local}..." >&2
 
+    # In release mode, restore from backup; in local mode, just reinstall.
     if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
-        git checkout --quiet "${PREV_REF}" || true
+        # Find and restore the backup directory if it exists
+        for _backup in "${REMOTE_DIR}".backup.*; do
+            if [[ -d "${_backup}" ]]; then
+                rm -rf "${REMOTE_DIR}"
+                mv "${_backup}" "${REMOTE_DIR}"
+                echo "  Restored from backup: ${_backup}" >&2
+                break
+            fi
+        done
     fi
 
     echo "  Reinstalling previous version..." >&2
@@ -665,4 +673,13 @@ fi
 
 echo ""
 echo "✓ nomothetic ${TARGET} deployed successfully to ${HOSTNAME}."
+
+# Clean up backup directory from release deploy (if deployment succeeded)
+if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
+    for _backup in "${REMOTE_DIR}".backup.*; do
+        if [[ -d "${_backup}" ]]; then
+            rm -rf "${_backup}"
+        fi
+    done
+fi
 END_REMOTE
