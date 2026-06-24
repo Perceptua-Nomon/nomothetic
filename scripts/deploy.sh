@@ -170,15 +170,19 @@ if [[ -n "${PI_HOST}" ]]; then
         SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
     fi
     echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} → ${PI_HOST}"
-    # NOMON_SKIP_TESTS is embedded directly in the command string rather than
-    # passed as a positional arg, because SSH concatenates all args into a
-    # single string — empty positional args (VERSION, NOMON_REMOTE_DIR) are
-    # silently dropped, which shifts subsequent args and corrupts $3 onward.
-    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} bash -ls \"\$@\"" --)
+    # All deploy params are env vars (not positional args): SSH concatenates
+    # positionals into one string and silently drops empty ones, shifting args.
+    _VERSION_QUOTED="$(printf '%q' "${VERSION}")"
+    _DEPLOY_LOCAL_QUOTED="$(printf '%q' "${DEPLOY_LOCAL}")"
+    _REMOTE_DIR_QUOTED="$(printf '%q' "${NOMON_REMOTE_DIR:-}")"
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_DEPLOY_VERSION=${_VERSION_QUOTED} NOMON_DEPLOY_LOCAL=${_DEPLOY_LOCAL_QUOTED} NOMON_DEPLOY_REMOTE_DIR=${_REMOTE_DIR_QUOTED} bash -ls")
 else
     echo "==> Deploying nomothetic${VERSION:+ ${VERSION}} locally"
     export NOMON_SKIP_TESTS="${SKIP_TESTS}"
-    RUN_CMD=(bash -ls --)
+    export NOMON_DEPLOY_VERSION="${VERSION}"
+    export NOMON_DEPLOY_LOCAL="${DEPLOY_LOCAL}"
+    export NOMON_DEPLOY_REMOTE_DIR="${NOMON_REMOTE_DIR:-}"
+    RUN_CMD=(bash -ls)
 fi
 
 # Deploy-only variables that must NOT be written to the on-device env file.
@@ -280,7 +284,7 @@ copy_nomothetic_env
 # ── Deployment ─────────────────────────────────────────────────────────────────
 # All steps below run on the Pi (remote or local) via a single shell session.
 
-"${RUN_CMD[@]}" "${VERSION}" "${DEPLOY_LOCAL}" "${NOMON_REMOTE_DIR:-}" << 'END_REMOTE'
+"${RUN_CMD[@]}" << 'END_REMOTE'
 set -euo pipefail
 
 if [[ -n "${NOMON_SUDO_PASS:-}" ]]; then
@@ -297,9 +301,9 @@ else
     sudo() { command sudo "$@"; }
 fi
 
-readonly REQUESTED_VERSION="$1"
-readonly DEPLOY_LOCAL="${2:-false}"
-readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/nomothetic}"
+readonly REQUESTED_VERSION="${NOMON_DEPLOY_VERSION:-}"
+readonly DEPLOY_LOCAL="${NOMON_DEPLOY_LOCAL:-false}"
+readonly REMOTE_DIR="${NOMON_DEPLOY_REMOTE_DIR:-${HOME}/perceptua-nomon/nomothetic}"
 readonly SKIP_TESTS="${NOMON_SKIP_TESTS:-false}"
 
 # ── Resolve target version (pre-flight, before we touch anything) ─────────────
