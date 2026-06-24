@@ -302,50 +302,33 @@ readonly DEPLOY_LOCAL="${2:-false}"
 readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/nomothetic}"
 readonly SKIP_TESTS="${NOMON_SKIP_TESTS:-false}"
 
-if [[ ! -d "${REMOTE_DIR}" ]]; then
-    echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
-    exit 1
-fi
-
-cd "${REMOTE_DIR}"
-
-# ── Save current ref for rollback (release mode only) ─────────────────────────
-# Note: in release mode we do a fresh clone, so we save the HEAD of that clone
-# (which will be main/master) as the "previous" state for rollback.
-
-if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
-    PREV_REF="$(git rev-parse HEAD)"
-    PREV_LABEL="$(git describe --tags --exact-match HEAD 2>/dev/null \
-                  || git rev-parse --short HEAD)"
-    echo "  Fresh clone HEAD: ${PREV_LABEL}"
-fi
-
 # ── Resolve target version (pre-flight, before we touch anything) ─────────────
 
 if [[ "${DEPLOY_LOCAL}" == "true" ]]; then
+    if [[ ! -d "${REMOTE_DIR}" ]]; then
+        echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
+        exit 1
+    fi
     # Version was already resolved from pyproject.toml on the dev machine.
     TARGET="${REQUESTED_VERSION}"
     echo "==> Target: ${TARGET} (local source)"
 else
     echo "==> Fresh clone from origin..."
-    _github_repo="https://github.com/anthropics/nomon"
+    _github_repo="https://github.com/perceptua-nomon/nomothetic"
     _tmp_clone="$(mktemp -d)"
     git clone --quiet "${_github_repo}" "${_tmp_clone}/nomothetic"
 
-    # Backup existing repo if present and move fresh clone into place
-    if [[ -d "${REMOTE_DIR}" && -d "${REMOTE_DIR}/.git" ]]; then
+    # Backup existing repo and move fresh clone into place
+    if [[ -d "${REMOTE_DIR}" ]]; then
         mv "${REMOTE_DIR}" "${REMOTE_DIR}.backup.$$"
     fi
     mv "${_tmp_clone}/nomothetic" "${REMOTE_DIR}"
     rm -rf "${_tmp_clone}"
-    cd "${REMOTE_DIR}"
-
-    echo "  Fetching tags from origin..."
-    git fetch --tags --quiet
+    echo "  Clone complete ✓"
 
     TARGET="${REQUESTED_VERSION}"
     if [[ -z "${TARGET}" ]]; then
-        TARGET="$(git tag --list 'v*' --sort=-version:refname | head -1)"
+        TARGET="$(git -C "${REMOTE_DIR}" tag --list 'v*' --sort=-version:refname | head -1)"
         if [[ -z "${TARGET}" ]]; then
             echo "Error: no semver tags found in the repository." >&2
             exit 1
@@ -360,6 +343,8 @@ else
 
     echo "==> Target: ${TARGET}"
 fi
+
+cd "${REMOTE_DIR}"
 
 # ── Rollback helper ────────────────────────────────────────────────────────────
 # Set up only after pre-flight so that early errors (tag resolution etc.) do
