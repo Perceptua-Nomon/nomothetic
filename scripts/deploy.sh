@@ -310,12 +310,14 @@ fi
 cd "${REMOTE_DIR}"
 
 # ── Save current ref for rollback (release mode only) ─────────────────────────
+# Note: in release mode we do a fresh clone, so we save the HEAD of that clone
+# (which will be main/master) as the "previous" state for rollback.
 
 if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
     PREV_REF="$(git rev-parse HEAD)"
     PREV_LABEL="$(git describe --tags --exact-match HEAD 2>/dev/null \
                   || git rev-parse --short HEAD)"
-    echo "  Current ref: ${PREV_LABEL}"
+    echo "  Fresh clone HEAD: ${PREV_LABEL}"
 fi
 
 # ── Resolve target version (pre-flight, before we touch anything) ─────────────
@@ -325,7 +327,20 @@ if [[ "${DEPLOY_LOCAL}" == "true" ]]; then
     TARGET="${REQUESTED_VERSION}"
     echo "==> Target: ${TARGET} (local source)"
 else
-    echo "==> Fetching tags from origin..."
+    echo "==> Fresh clone from origin..."
+    _github_repo="https://github.com/anthropics/nomon"
+    _tmp_clone="$(mktemp -d)"
+    git clone --quiet "${_github_repo}" "${_tmp_clone}/nomothetic"
+
+    # Backup existing repo if present and move fresh clone into place
+    if [[ -d "${REMOTE_DIR}" && -d "${REMOTE_DIR}/.git" ]]; then
+        mv "${REMOTE_DIR}" "${REMOTE_DIR}.backup.$$"
+    fi
+    mv "${_tmp_clone}/nomothetic" "${REMOTE_DIR}"
+    rm -rf "${_tmp_clone}"
+    cd "${REMOTE_DIR}"
+
+    echo "  Fetching tags from origin..."
     git fetch --tags --quiet
 
     TARGET="${REQUESTED_VERSION}"
@@ -341,11 +356,6 @@ else
     if [[ ! "${TARGET}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo "Error: resolved tag '${TARGET}' is not a valid semver tag." >&2
         exit 1
-    fi
-
-    CURRENT_TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
-    if [[ "${CURRENT_TAG}" == "${TARGET}" ]]; then
-        echo "  Note: already on ${TARGET}; re-running checks and restarting servers."
     fi
 
     echo "==> Target: ${TARGET}"
@@ -365,8 +375,17 @@ rollback() {
     echo "" >&2
     echo "!! Deployment failed. Rolling back to ${PREV_LABEL:-local}..." >&2
 
+    # In release mode, restore from backup; in local mode, just reinstall.
     if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
-        git checkout --quiet "${PREV_REF}" || true
+        # Find and restore the backup directory if it exists
+        for _backup in "${REMOTE_DIR}".backup.*; do
+            if [[ -d "${_backup}" ]]; then
+                rm -rf "${REMOTE_DIR}"
+                mv "${_backup}" "${REMOTE_DIR}"
+                echo "  Restored from backup: ${_backup}" >&2
+                break
+            fi
+        done
     fi
 
     echo "  Reinstalling previous version..." >&2
@@ -665,4 +684,13 @@ fi
 
 echo ""
 echo "✓ nomothetic ${TARGET} deployed successfully to ${HOSTNAME}."
+
+# Clean up backup directory from release deploy (if deployment succeeded)
+if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
+    for _backup in "${REMOTE_DIR}".backup.*; do
+        if [[ -d "${_backup}" ]]; then
+            rm -rf "${_backup}"
+        fi
+    done
+fi
 END_REMOTE
