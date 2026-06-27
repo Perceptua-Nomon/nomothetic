@@ -75,6 +75,26 @@ class RegisterResponse(BaseModel):
     user: UserResponse
 
 
+class UpdateProfileRequest(BaseModel):
+    """Profile update request body."""
+
+    display_name: str = Field(..., min_length=1, max_length=100, description="New display name")
+
+
+class ChangePasswordRequest(BaseModel):
+    """Password change request body."""
+
+    current_password: str = Field(..., min_length=1, description="Current password")
+    new_password: str = Field(..., min_length=8, description="New password (min 8 chars)")
+
+
+class ChangePasswordResponse(BaseModel):
+    """Password change confirmation response."""
+
+    success: bool
+    timestamp: str
+
+
 class LogoutRequest(BaseModel):
     """Token revocation request body."""
 
@@ -234,6 +254,73 @@ def create_auth_router() -> APIRouter:
             display_name=user.display_name,
             created_at=user.created_at,
             last_login_at=user.last_login_at,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @router.patch("/me", response_model=UserResponse)
+    async def update_me(
+        request: UpdateProfileRequest,
+        claims: TokenPayload = Depends(jwt_required),
+    ):
+        """Update the authenticated user's display name.
+
+        Returns
+        -------
+        UserResponse
+            The updated profile.
+
+        Raises
+        ------
+        HTTPException
+            401 if the token is missing or invalid.
+            404 if the user no longer exists.
+        """
+        svc = _require_service()
+        user = await svc.update_display_name(claims.sub, request.display_name)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+        return UserResponse(
+            email=user.email,
+            display_name=user.display_name,
+            created_at=user.created_at,
+            last_login_at=user.last_login_at,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @router.post("/change-password", response_model=ChangePasswordResponse)
+    async def change_password(
+        request: ChangePasswordRequest,
+        claims: TokenPayload = Depends(jwt_required),
+    ):
+        """Change the authenticated user's password.
+
+        Verifies the current password, stores the new hash, and revokes all
+        of the user's refresh tokens so other sessions must re-authenticate.
+
+        Returns
+        -------
+        ChangePasswordResponse
+            Confirmation.
+
+        Raises
+        ------
+        HTTPException
+            401 if the current password is incorrect.
+            422 if the new password fails validation.
+        """
+        svc = _require_service()
+        try:
+            await svc.change_password(claims.sub, request.current_password, request.new_password)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(exc),
+            ) from exc
+        return ChangePasswordResponse(
+            success=True,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 

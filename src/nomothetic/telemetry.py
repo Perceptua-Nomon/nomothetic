@@ -54,6 +54,9 @@ class TelemetryPublisher:
     camera : Camera, optional
         Live camera instance whose status is included in the payload.
         When ``None``, the ``"camera"`` field is published as ``null``.
+    hat_client : HatClient, optional
+        Live HAT client used to read battery voltage for the payload.  When
+        ``None``, ``battery_voltage`` is published as ``0.0`` (best-effort).
     interval : float, optional
         Seconds between publishes (default: 30.0).
     qos : int, optional
@@ -84,6 +87,7 @@ class TelemetryPublisher:
         topic: str = "nomon/telemetry",
         device_id: Optional[str] = None,
         camera: Optional[Any] = None,
+        hat_client: Optional[Any] = None,
         interval: float = 30.0,
         qos: int = 1,
     ) -> None:
@@ -98,6 +102,7 @@ class TelemetryPublisher:
         self.topic = topic
         self.device_id = device_id or self.get_device_id()
         self.camera = camera
+        self.hat_client = hat_client
         self.interval = interval
         self.qos = qos
 
@@ -110,7 +115,9 @@ class TelemetryPublisher:
     # -------------------------------------------------------------------------
 
     @classmethod
-    def from_env(cls, camera: Optional[Any] = None) -> "TelemetryPublisher":
+    def from_env(
+        cls, camera: Optional[Any] = None, hat_client: Optional[Any] = None
+    ) -> "TelemetryPublisher":
         """Create a ``TelemetryPublisher`` from environment variables.
 
         Reads configuration from the process environment (or a ``.env``
@@ -133,6 +140,10 @@ class TelemetryPublisher:
         ----------
         camera : Camera, optional
             Live camera instance to include in payloads.
+        hat_client : HatClient, optional
+            Live HAT client for battery readings.  When ``None``, one is
+            constructed best-effort (lazy connect); failures are ignored and
+            ``battery_voltage`` is then reported as ``0.0``.
 
         Returns
         -------
@@ -153,12 +164,21 @@ class TelemetryPublisher:
         interval = float(os.environ.get("NOMON_MQTT_INTERVAL", "30.0"))
         device_id = os.environ.get("NOMON_DEVICE_ID") or None
 
+        if hat_client is None:
+            try:
+                from nomothetic.hat import HatClient
+
+                hat_client = HatClient()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("HAT client unavailable for telemetry battery reads: %s", exc)
+
         return cls(
             broker=broker,
             port=port,
             topic=topic,
             device_id=device_id,
             camera=camera,
+            hat_client=hat_client,
             interval=interval,
         )
 
@@ -261,8 +281,39 @@ class TelemetryPublisher:
             "device_id": self.device_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "nomon_version": __version__,
+            "battery_voltage": self._read_battery_voltage(),
+            "cpu_temp_c": self._read_cpu_temp_c(),
+            "uptime_seconds": self._read_uptime_seconds(),
             "camera": camera_data,
         }
+
+    def _read_battery_voltage(self) -> float:
+        """Read battery voltage via the HAT client (best-effort, 0.0 on failure)."""
+        if self.hat_client is None:
+            return 0.0
+        try:
+            return float(self.hat_client.get_battery_voltage())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not read battery voltage for payload: %s", exc)
+            return 0.0
+
+    @staticmethod
+    def _read_cpu_temp_c() -> float:
+        """Read CPU temperature in °C from sysfs (best-effort, 0.0 on failure)."""
+        try:
+            with open("/sys/class/thermal/thermal_zone0/temp") as f:
+                return int(f.read().strip()) / 1000.0
+        except (OSError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _read_uptime_seconds() -> int:
+        """Read system uptime in seconds from ``/proc/uptime`` (0 on failure)."""
+        try:
+            with open("/proc/uptime") as f:
+                return int(float(f.read().split()[0]))
+        except (OSError, ValueError, IndexError):
+            return 0
 
     @staticmethod
     def get_device_id() -> str:

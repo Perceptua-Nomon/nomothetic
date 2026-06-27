@@ -567,6 +567,8 @@ nomothetic/              ← Python monorepo (this repo)
   nomothetic.db           ← ArcadeDB HTTP/Gremlin client (Phase 14)
   nomothetic.user_store   ← User persistence: InMemory + Gremlin backends (Phase 14)
   nomothetic.fleet_store  ← Fleet persistence: InMemory + Gremlin backends (Phase 14)
+  nomothetic.telemetry_store    ← Telemetry history persistence: InMemory + SQL (Phase 25)
+  nomothetic.telemetry_consumer ← Central MQTT subscriber → telemetry_store (Phase 25)
 
 nomopractic/          ← Rust repo (Phase 5, separate)
   Cargo.toml

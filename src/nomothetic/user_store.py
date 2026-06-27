@@ -89,6 +89,26 @@ class UserStore(Protocol):
         """
         ...  # pragma: no cover
 
+    async def set_password_hash(self, email: str, password_hash: str) -> bool:
+        """Replace the stored password hash for a user.
+
+        Kept off :meth:`update_user`'s general field whitelist so credential
+        mutation stays on its own audited path.
+
+        Parameters
+        ----------
+        email : str
+            Normalised email address.
+        password_hash : str
+            New bcrypt hash string.
+
+        Returns
+        -------
+        bool
+            ``True`` if the user existed and was updated.
+        """
+        ...  # pragma: no cover
+
     async def user_exists(self, email: str) -> bool:
         """Check whether a user with the given email exists.
 
@@ -164,6 +184,14 @@ class InMemoryUserStore:
             if hasattr(user, key):
                 setattr(user, key, value)
         return user
+
+    async def set_password_hash(self, email: str, password_hash: str) -> bool:
+        """Replace the stored password hash for a user."""
+        user = self._users.get(email)
+        if user is None:
+            return False
+        user.password_hash = password_hash
+        return True
 
     async def user_exists(self, email: str) -> bool:
         """Return ``True`` if a user with *email* exists."""
@@ -262,6 +290,14 @@ class SqlUserStore:
         query = f"UPDATE User SET {set_clause} WHERE email = :email"
         await self._db.execute_sql(query, params)
         return await self.get_user(email)
+
+    async def set_password_hash(self, email: str, password_hash: str) -> bool:
+        """Replace the stored password hash for a User record."""
+        if not await self.user_exists(email):
+            return False
+        query = "UPDATE User SET password_hash = :password_hash WHERE email = :email"
+        await self._db.execute_sql(query, {"email": email, "password_hash": password_hash})
+        return True
 
     async def user_exists(self, email: str) -> bool:
         """Return whether a User with the given email exists."""

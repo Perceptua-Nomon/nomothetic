@@ -30,6 +30,7 @@
 | 22 | Clean AP/WiFi Mode Separation with Self-Signed Certs | ✅ Complete |
 | 23 | Device Fleet Registration & Identity | ✅ Complete |
 | 24 | Autonomy Routine Launcher (autonomon plugin handoff) | ✅ Complete |
+| 25 | Fleet Telemetry History + Profile Editing | ✅ Complete |
 
 **Test totals (current): 663 passing** (23 camera + 14 streaming + 168 API + 36 telemetry + 94 HAT + 19 audio + 18 auth + 29 central + 32 device-auth + 17 db + 41 pairing + 12 rate-limit + 6 mode + 15 network-provision + 13 token-store + 25 user-store + 22 fleet-store + 7 wifi-ap + 72 routine-launcher [10 catalogue + 17 control + 16 logs + 29 manager]; `ap_mode` tests removed — see ADR-016 amendment)
 
@@ -1535,6 +1536,71 @@ through a file-based catalogue (autonomon ADR-005).
 - [x] nomothetic never imports autonomon (separate venvs; file-based handoff)
 - [x] 72 new tests (10 catalogue + 17 control + 16 logs + 29 manager)
 - [x] `uv run ruff check src/ tests/`, `black --check`, `mypy` — clean
+
+---
+
+### Phase 25 — Fleet Telemetry History + Profile Editing ✅
+
+**Goal:** Give the central API the two pieces nomotactic's Fleet Management
+Dashboard (nomotactic Phase 4) needed but that did not exist: a persisted
+telemetry **history** (telemetry was MQTT-only; `latest_telemetry` was hardcoded
+`null`) and **profile-edit** endpoints (display-name update + password change).
+
+**Cross-repo dependencies:**
+- nomographic central V1 already defines the `TelemetryReading` vertex
+  (`battery_voltage`, `cpu_temp_c`, `uptime_seconds`, `recorded_at`) and the
+  `ReadFrom` edge — this phase consumes that schema; no migration needed.
+- nomotactic Phase 4 consumes the new endpoints.
+
+#### 25.1 — Telemetry Store (`nomothetic.telemetry_store`)
+- [x] `TelemetryReadingItem` model + `TelemetryStore` Protocol with
+      `InMemoryTelemetryStore` (bounded per-VIN ring) and `SqlTelemetryStore`
+      (inserts a `TelemetryReading` and links it to the `Vehicle` via a
+      `ReadFrom` edge; history via `Vehicle.in('ReadFrom') ORDER BY recorded_at`).
+      Mirrors the `fleet_store.py` pattern.
+- [x] Methods: `record_reading`, `get_history(limit, since)`, `get_latest`.
+
+#### 25.2 — MQTT Ingestion (`nomothetic.telemetry_consumer`)
+- [x] Central-mode background MQTT subscriber (reuses the existing `paho-mqtt`
+      dep) that consumes `NOMON_MQTT_TOPIC` (`nomon/telemetry`), maps
+      `device_id` → VIN, and persists readings. The broker is the device→central
+      transport, so **no** new device-authenticated REST ingestion endpoint is
+      introduced (which would re-open the deferred device→central auth design,
+      autonomon Phase 7). No broker configured → no consumer, history just empty.
+- [x] `reading_from_payload` is a pure function (unit-testable without a broker);
+      `TelemetryConsumer.ingest` is an awaitable scheduled on the API event loop.
+- [x] Device payload enriched: `TelemetryPublisher.build_payload()` now adds
+      `battery_voltage` (via `HatClient`, best-effort), `cpu_temp_c` (sysfs), and
+      `uptime_seconds` (`/proc/uptime`).
+
+#### 25.3 — Fleet Telemetry Routes (`nomothetic.fleet_routes`)
+- [x] `GET /api/fleet/devices/{vin}/telemetry?limit=&since=` → ordered readings
+      (central JWT, ownership-scoped via the existing `get_device` guard).
+- [x] `GET /api/fleet/devices/{vin}` now populates `latest_telemetry` from the
+      telemetry store (was always `null`).
+- [x] Wired into `create_app()`: `SqlTelemetryStore` when `ARCADEDB_HOST` is set,
+      else `InMemoryTelemetryStore`; consumer started/stopped in the lifespan.
+
+#### 25.4 — Profile Editing (`nomothetic.auth_routes` / `auth` / `user_store`)
+- [x] `PATCH /api/auth/me` `{ display_name }` → updated `UserResponse`
+      (`AuthService.update_display_name` → `UserStore.update_user`, which already
+      whitelists `display_name`).
+- [x] `POST /api/auth/change-password` `{ current_password, new_password }` →
+      `{ success }`. `AuthService.change_password` verifies the current password
+      (bcrypt), writes the new hash via a dedicated `UserStore.set_password_hash`
+      (kept off the general update whitelist — credential mutation on its own
+      path), and revokes all of the user's refresh tokens.
+
+#### Phase 25 Exit Criteria
+- [x] Telemetry published by a device is persisted and queryable as history;
+      `latest_telemetry` is populated on device detail.
+- [x] `PATCH /api/auth/me` updates the display name; `POST /api/auth/change-password`
+      changes the password, rejects a wrong current password (401), enforces the
+      8-char minimum (422), and revokes prior refresh tokens.
+- [x] In-memory stores by default; ArcadeDB stores when `ARCADEDB_HOST` is set.
+- [x] New tests: telemetry store/consumer + history endpoint + profile/password
+      (`tests/test_telemetry_store.py`, `tests/test_telemetry_consumer.py`,
+      additions to `tests/test_central.py`); `ruff`/`black`/`mypy` clean.
 
 ---
 
