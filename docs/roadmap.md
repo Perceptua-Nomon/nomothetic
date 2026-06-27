@@ -29,8 +29,9 @@
 | 21 | HTTP AP Pairing Service | ✅ Complete |
 | 22 | Clean AP/WiFi Mode Separation with Self-Signed Certs | ✅ Complete |
 | 23 | Device Fleet Registration & Identity | ✅ Complete |
+| 24 | Autonomy Routine Launcher (autonomon plugin handoff) | ✅ Complete |
 
-**Test totals (current): 591 passing** (23 camera + 14 streaming + 168 API + 36 telemetry + 94 HAT + 19 audio + 18 auth + 29 central + 32 device-auth + 17 db + 41 pairing + 12 rate-limit + 6 mode + 15 network-provision + 13 token-store + 25 user-store + 22 fleet-store + 7 wifi-ap; `ap_mode` tests removed — see ADR-016 amendment)
+**Test totals (current): 663 passing** (23 camera + 14 streaming + 168 API + 36 telemetry + 94 HAT + 19 audio + 18 auth + 29 central + 32 device-auth + 17 db + 41 pairing + 12 rate-limit + 6 mode + 15 network-provision + 13 token-store + 25 user-store + 22 fleet-store + 7 wifi-ap + 72 routine-launcher [10 catalogue + 17 control + 16 logs + 29 manager]; `ap_mode` tests removed — see ADR-016 amendment)
 
 ---
 
@@ -1468,6 +1469,74 @@ before creating the fleet record.
 - [x] `npx expo lint` (nomotactic) — 0 errors
 - [x] `npx tsc --noEmit` (nomotactic) — 0 errors
 
+---
+
+### Phase 24 — Autonomy Routine Launcher (autonomon plugin handoff) ✅
+
+**Goal:** Let the device launch, supervise, and report on `autonomon` autonomy
+routines without nomothetic ever importing the brain or performing any
+cognition. nomothetic is a thin process supervisor and telemetry sink; all
+perception, world-modelling, and planning stays in the launched `autonomon`
+process (autonomon ADR-004). The two projects keep separate venvs and hand off
+through a file-based catalogue (autonomon ADR-005).
+
+> **Naming note:** this **autonomy** routine launcher (`/api/routines/*`, plural)
+> is distinct from the firmware **HAT** routine API (`/api/routine/*`, singular,
+> Phase 11) that drives nomopractic's in-daemon `explore`. Same word, different
+> execution model — see the Phase 6 naming note in autonomon's roadmap.
+
+**Cross-repo dependencies:**
+- autonomon: publishes its catalogue (`nomon_manifest` + `nomon-autonomon` CLI
+  path) to `NOMON_ROUTINE_CATALOG_PATH`; the launched plugin connects back to
+  this device's REST API and reports lifecycle events.
+- nomothetic ADR-019 (plugin challenge-response auth) issues the device JWT the
+  plugin uses; this phase is the launcher/supervisor that sits on top of it.
+
+#### 24.1 — Catalogue Reader (`nomothetic.routine_catalog`)
+- [x] Reads the JSON catalogue autonomon publishes (routine names, param
+      schemas, version, absolute `nomon-autonomon` path) from
+      `NOMON_ROUTINE_CATALOG_PATH` (default `/var/lib/nomon/routine_catalog.json`)
+- [x] Missing / unreadable / malformed file → empty catalogue (no routines),
+      not an error — a device with no autonomon deployed simply offers none
+- [x] 10 tests (`tests/test_routine_catalog.py`)
+
+#### 24.2 — Process Supervisor (`nomothetic.routine_manager`)
+- [x] `RoutineManager` spawns one `nomon-autonomon` subprocess per routine;
+      device URL, id, and credentials injected from `RoutineManagerConfig` so no
+      secret ever travels in the start payload
+- [x] **Heartbeat lease** — each routine runs under a renewable lease: every
+      `POST /api/routines/heartbeat` pushes the deadline out by
+      `heartbeat_timeout_s`; if heartbeats stop (operator lost contact), a
+      per-process watchdog stops the routine. Optional absolute `max_duration_s`
+      caps total runtime regardless of heartbeats
+- [x] Coarse process-level safety net complementing nomopractic's fine-grained
+      actuator-lease watchdog (motors idle within one TTL when the plugin stops
+      commanding)
+- [x] 29 tests (`tests/test_routine_manager.py`)
+
+#### 24.3 — Lifecycle Control & Status/Log Sink (`routine_control_routes`, `routine_routes`, `routine_log_store`)
+- [x] Control endpoints: `GET /api/routines/available`, `POST /api/routines/start`,
+      `POST /api/routines/heartbeat`, `POST /api/routines/stop`,
+      `POST /api/routines/stop-all`
+- [x] Status/log sink (push model): the brain reports its own
+      `starting`/`running`/`stopping`/`error` + free-form `log` events;
+      `routine_log_store` keeps a bounded per-routine ring buffer segmented by
+      `run_id`; served via `GET /api/routines` and `GET /api/routines/{routine}/logs`
+- [x] Operational telemetry only — nomothetic stores and returns exactly what the
+      brain reports and derives a coarse status from the event type (ADR-004)
+- [x] 17 tests (`tests/test_routine_control.py`) + 16 tests (`tests/test_routine_logs.py`)
+
+#### Phase 24 Exit Criteria
+- [x] `GET /api/routines/available` lists routines from the published catalogue;
+      empty when autonomon has published none
+- [x] `POST /api/routines/start` launches a routine as a supervised subprocess;
+      heartbeats keep it alive; lapsed lease or `max_duration_s` stops it
+- [x] Lifecycle events from the running plugin are queryable per routine
+- [x] nomothetic never imports autonomon (separate venvs; file-based handoff)
+- [x] 72 new tests (10 catalogue + 17 control + 16 logs + 29 manager)
+- [x] `uv run ruff check src/ tests/`, `black --check`, `mypy` — clean
+
+---
 
 ### Management Server
 
