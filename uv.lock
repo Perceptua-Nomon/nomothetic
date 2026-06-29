@@ -1511,7 +1511,7 @@ wheels = [
 
 [[package]]
 name = "nomothetic"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "gpiozero", version = "2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
