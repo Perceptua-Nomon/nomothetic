@@ -305,6 +305,99 @@ def test_me_invalid_token(central_client):
 
 
 # ============================================================================
+# Profile edit (PATCH /api/auth/me) and password change
+# ============================================================================
+
+
+def _register_profile_user(client, email="profile@example.com", password="password123"):
+    """Register a user and return (access_token, refresh_token)."""
+    reg = client.post(
+        "/api/auth/register",
+        json={"email": email, "password": password, "display_name": "Before"},
+    )
+    body = reg.json()
+    return body["access_token"], body["refresh_token"]
+
+
+def test_update_display_name(central_client):
+    """PATCH /api/auth/me updates the display name."""
+    token, _ = _register_profile_user(central_client)
+    response = central_client.patch(
+        "/api/auth/me",
+        json={"display_name": "After"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["display_name"] == "After"
+    # Persisted: a fresh GET reflects the new name.
+    me = central_client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.json()["display_name"] == "After"
+
+
+def test_update_display_name_requires_auth(central_client):
+    """PATCH /api/auth/me without a token returns 401."""
+    response = central_client.patch("/api/auth/me", json={"display_name": "Nope"})
+    assert response.status_code == 401
+
+
+def test_change_password_success(central_client):
+    """Changing the password works and the new password authenticates."""
+    token, _ = _register_profile_user(central_client, email="pw@example.com")
+    response = central_client.post(
+        "/api/auth/change-password",
+        json={"current_password": "password123", "new_password": "newpassword456"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    # New password logs in; old one does not.
+    ok = central_client.post(
+        "/api/auth/login",
+        json={"email": "pw@example.com", "password": "newpassword456"},
+    )
+    assert ok.status_code == 200
+    bad = central_client.post(
+        "/api/auth/login",
+        json={"email": "pw@example.com", "password": "password123"},
+    )
+    assert bad.status_code == 401
+
+
+def test_change_password_wrong_current(central_client):
+    """A wrong current password returns 401."""
+    token, _ = _register_profile_user(central_client, email="pw2@example.com")
+    response = central_client.post(
+        "/api/auth/change-password",
+        json={"current_password": "wrongpassword", "new_password": "newpassword456"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 401
+
+
+def test_change_password_too_short(central_client):
+    """A new password shorter than 8 chars returns 422."""
+    token, _ = _register_profile_user(central_client, email="pw3@example.com")
+    response = central_client.post(
+        "/api/auth/change-password",
+        json={"current_password": "password123", "new_password": "short"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 422
+
+
+def test_change_password_revokes_refresh_tokens(central_client):
+    """After a password change, prior refresh tokens are revoked."""
+    token, refresh = _register_profile_user(central_client, email="pw4@example.com")
+    central_client.post(
+        "/api/auth/change-password",
+        json={"current_password": "password123", "new_password": "newpassword456"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    response = central_client.post("/api/auth/refresh", json={"refresh_token": refresh})
+    assert response.status_code == 401
+
+
+# ============================================================================
 # Fleet — Device registration
 # ============================================================================
 
@@ -413,6 +506,110 @@ def test_get_device_not_found(central_client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 404
+
+
+# ============================================================================
+# Fleet — Telemetry history
+# ============================================================================
+
+
+def _seed_reading(vin: str, recorded_at: str, battery: float = 8.0) -> None:
+    """Record one telemetry reading into the active in-memory store.
+
+    Uses a private event loop (not :func:`asyncio.run`, which would clear the
+    process-global current loop and disturb pytest-asyncio's loop management
+    for subsequent async tests).
+    """
+    import asyncio
+
+    from nomothetic.fleet_routes import get_telemetry_store
+    from nomothetic.telemetry_store import TelemetryReadingItem
+
+    store = get_telemetry_store()
+    assert store is not None
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(
+            store.record_reading(
+                vin,
+                TelemetryReadingItem(
+                    battery_voltage=battery,
+                    cpu_temp_c=45.0,
+                    uptime_seconds=100,
+                    recorded_at=recorded_at,
+                ),
+            )
+        )
+    finally:
+        loop.close()
+
+
+def _register_device(client, token: str, vin: str) -> None:
+    client.post(
+        "/api/fleet/devices",
+        json={
+            "vin": vin,
+            "model": "explorer-v1",
+            "registration_proof": _make_registration_proof(vin),
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def test_device_telemetry_history(central_client):
+    """Telemetry history returns recorded readings newest-first."""
+    token = _register_and_auth(central_client)
+    _register_device(central_client, token, "TEL001")
+    _seed_reading("TEL001", "2026-01-01T00:00:00+00:00", battery=8.1)
+    _seed_reading("TEL001", "2026-01-01T00:01:00+00:00", battery=8.0)
+
+    response = central_client.get(
+        "/api/fleet/devices/TEL001/telemetry",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["vin"] == "TEL001"
+    assert len(data["readings"]) == 2
+    assert data["readings"][0]["recorded_at"] == "2026-01-01T00:01:00+00:00"
+
+
+def test_device_telemetry_history_empty(central_client):
+    """A registered device with no readings returns an empty list."""
+    token = _register_and_auth(central_client)
+    _register_device(central_client, token, "TEL002")
+    response = central_client.get(
+        "/api/fleet/devices/TEL002/telemetry",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["readings"] == []
+
+
+def test_device_telemetry_history_not_owned(central_client):
+    """Telemetry for an unregistered/unowned device returns 404."""
+    token = _register_and_auth(central_client)
+    response = central_client.get(
+        "/api/fleet/devices/NOTMINE/telemetry",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 404
+
+
+def test_device_detail_includes_latest_telemetry(central_client):
+    """Device detail surfaces the latest telemetry reading when present."""
+    token = _register_and_auth(central_client)
+    _register_device(central_client, token, "TEL003")
+    _seed_reading("TEL003", "2026-01-01T00:00:00+00:00", battery=7.7)
+
+    response = central_client.get(
+        "/api/fleet/devices/TEL003",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    latest = response.json()["latest_telemetry"]
+    assert latest is not None
+    assert latest["battery_voltage"] == 7.7
 
 
 def test_remove_device(central_client):

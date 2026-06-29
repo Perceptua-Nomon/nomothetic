@@ -29,8 +29,10 @@
 | 21 | HTTP AP Pairing Service | ✅ Complete |
 | 22 | Clean AP/WiFi Mode Separation with Self-Signed Certs | ✅ Complete |
 | 23 | Device Fleet Registration & Identity | ✅ Complete |
+| 24 | Autonomy Routine Launcher (autonomon plugin handoff) | ✅ Complete |
+| 25 | Fleet Telemetry History + Profile Editing | ✅ Complete |
 
-**Test totals (current): 591 passing** (23 camera + 14 streaming + 168 API + 36 telemetry + 94 HAT + 19 audio + 18 auth + 29 central + 32 device-auth + 17 db + 41 pairing + 12 rate-limit + 6 mode + 15 network-provision + 13 token-store + 25 user-store + 22 fleet-store + 7 wifi-ap; `ap_mode` tests removed — see ADR-016 amendment)
+**Test totals (current): 663 passing** (23 camera + 14 streaming + 168 API + 36 telemetry + 94 HAT + 19 audio + 18 auth + 29 central + 32 device-auth + 17 db + 41 pairing + 12 rate-limit + 6 mode + 15 network-provision + 13 token-store + 25 user-store + 22 fleet-store + 7 wifi-ap + 72 routine-launcher [10 catalogue + 17 control + 16 logs + 29 manager]; `ap_mode` tests removed — see ADR-016 amendment)
 
 ---
 
@@ -1468,6 +1470,139 @@ before creating the fleet record.
 - [x] `npx expo lint` (nomotactic) — 0 errors
 - [x] `npx tsc --noEmit` (nomotactic) — 0 errors
 
+---
+
+### Phase 24 — Autonomy Routine Launcher (autonomon plugin handoff) ✅
+
+**Goal:** Let the device launch, supervise, and report on `autonomon` autonomy
+routines without nomothetic ever importing the brain or performing any
+cognition. nomothetic is a thin process supervisor and telemetry sink; all
+perception, world-modelling, and planning stays in the launched `autonomon`
+process (autonomon ADR-004). The two projects keep separate venvs and hand off
+through a file-based catalogue (autonomon ADR-005).
+
+> **Naming note:** this **autonomy** routine launcher (`/api/routines/*`, plural)
+> is distinct from the firmware **HAT** routine API (`/api/routine/*`, singular,
+> Phase 11) that drives nomopractic's in-daemon `explore`. Same word, different
+> execution model — see the Phase 6 naming note in autonomon's roadmap.
+
+**Cross-repo dependencies:**
+- autonomon: publishes its catalogue (`nomon_manifest` + `nomon-autonomon` CLI
+  path) to `NOMON_ROUTINE_CATALOG_PATH`; the launched plugin connects back to
+  this device's REST API and reports lifecycle events.
+- nomothetic ADR-019 (plugin challenge-response auth) issues the device JWT the
+  plugin uses; this phase is the launcher/supervisor that sits on top of it.
+
+#### 24.1 — Catalogue Reader (`nomothetic.routine_catalog`)
+- [x] Reads the JSON catalogue autonomon publishes (routine names, param
+      schemas, version, absolute `nomon-autonomon` path) from
+      `NOMON_ROUTINE_CATALOG_PATH` (default `/var/lib/nomon/routine_catalog.json`)
+- [x] Missing / unreadable / malformed file → empty catalogue (no routines),
+      not an error — a device with no autonomon deployed simply offers none
+- [x] 10 tests (`tests/test_routine_catalog.py`)
+
+#### 24.2 — Process Supervisor (`nomothetic.routine_manager`)
+- [x] `RoutineManager` spawns one `nomon-autonomon` subprocess per routine;
+      device URL, id, and credentials injected from `RoutineManagerConfig` so no
+      secret ever travels in the start payload
+- [x] **Heartbeat lease** — each routine runs under a renewable lease: every
+      `POST /api/routines/heartbeat` pushes the deadline out by
+      `heartbeat_timeout_s`; if heartbeats stop (operator lost contact), a
+      per-process watchdog stops the routine. Optional absolute `max_duration_s`
+      caps total runtime regardless of heartbeats
+- [x] Coarse process-level safety net complementing nomopractic's fine-grained
+      actuator-lease watchdog (motors idle within one TTL when the plugin stops
+      commanding)
+- [x] 29 tests (`tests/test_routine_manager.py`)
+
+#### 24.3 — Lifecycle Control & Status/Log Sink (`routine_control_routes`, `routine_routes`, `routine_log_store`)
+- [x] Control endpoints: `GET /api/routines/available`, `POST /api/routines/start`,
+      `POST /api/routines/heartbeat`, `POST /api/routines/stop`,
+      `POST /api/routines/stop-all`
+- [x] Status/log sink (push model): the brain reports its own
+      `starting`/`running`/`stopping`/`error` + free-form `log` events;
+      `routine_log_store` keeps a bounded per-routine ring buffer segmented by
+      `run_id`; served via `GET /api/routines` and `GET /api/routines/{routine}/logs`
+- [x] Operational telemetry only — nomothetic stores and returns exactly what the
+      brain reports and derives a coarse status from the event type (ADR-004)
+- [x] 17 tests (`tests/test_routine_control.py`) + 16 tests (`tests/test_routine_logs.py`)
+
+#### Phase 24 Exit Criteria
+- [x] `GET /api/routines/available` lists routines from the published catalogue;
+      empty when autonomon has published none
+- [x] `POST /api/routines/start` launches a routine as a supervised subprocess;
+      heartbeats keep it alive; lapsed lease or `max_duration_s` stops it
+- [x] Lifecycle events from the running plugin are queryable per routine
+- [x] nomothetic never imports autonomon (separate venvs; file-based handoff)
+- [x] 72 new tests (10 catalogue + 17 control + 16 logs + 29 manager)
+- [x] `uv run ruff check src/ tests/`, `black --check`, `mypy` — clean
+
+---
+
+### Phase 25 — Fleet Telemetry History + Profile Editing ✅
+
+**Goal:** Give the central API the two pieces nomotactic's Fleet Management
+Dashboard (nomotactic Phase 4) needed but that did not exist: a persisted
+telemetry **history** (telemetry was MQTT-only; `latest_telemetry` was hardcoded
+`null`) and **profile-edit** endpoints (display-name update + password change).
+
+**Cross-repo dependencies:**
+- nomographic central V1 already defines the `TelemetryReading` vertex
+  (`battery_voltage`, `cpu_temp_c`, `uptime_seconds`, `recorded_at`) and the
+  `ReadFrom` edge — this phase consumes that schema; no migration needed.
+- nomotactic Phase 4 consumes the new endpoints.
+
+#### 25.1 — Telemetry Store (`nomothetic.telemetry_store`)
+- [x] `TelemetryReadingItem` model + `TelemetryStore` Protocol with
+      `InMemoryTelemetryStore` (bounded per-VIN ring) and `SqlTelemetryStore`
+      (inserts a `TelemetryReading` and links it to the `Vehicle` via a
+      `ReadFrom` edge; history via `Vehicle.in('ReadFrom') ORDER BY recorded_at`).
+      Mirrors the `fleet_store.py` pattern.
+- [x] Methods: `record_reading`, `get_history(limit, since)`, `get_latest`.
+
+#### 25.2 — MQTT Ingestion (`nomothetic.telemetry_consumer`)
+- [x] Central-mode background MQTT subscriber (reuses the existing `paho-mqtt`
+      dep) that consumes `NOMON_MQTT_TOPIC` (`nomon/telemetry`), maps
+      `device_id` → VIN, and persists readings. The broker is the device→central
+      transport, so **no** new device-authenticated REST ingestion endpoint is
+      introduced (which would re-open the deferred device→central auth design,
+      autonomon Phase 7). No broker configured → no consumer, history just empty.
+- [x] `reading_from_payload` is a pure function (unit-testable without a broker);
+      `TelemetryConsumer.ingest` is an awaitable scheduled on the API event loop.
+- [x] Device payload enriched: `TelemetryPublisher.build_payload()` now adds
+      `battery_voltage` (via `HatClient`, best-effort), `cpu_temp_c` (sysfs), and
+      `uptime_seconds` (`/proc/uptime`).
+
+#### 25.3 — Fleet Telemetry Routes (`nomothetic.fleet_routes`)
+- [x] `GET /api/fleet/devices/{vin}/telemetry?limit=&since=` → ordered readings
+      (central JWT, ownership-scoped via the existing `get_device` guard).
+- [x] `GET /api/fleet/devices/{vin}` now populates `latest_telemetry` from the
+      telemetry store (was always `null`).
+- [x] Wired into `create_app()`: `SqlTelemetryStore` when `ARCADEDB_HOST` is set,
+      else `InMemoryTelemetryStore`; consumer started/stopped in the lifespan.
+
+#### 25.4 — Profile Editing (`nomothetic.auth_routes` / `auth` / `user_store`)
+- [x] `PATCH /api/auth/me` `{ display_name }` → updated `UserResponse`
+      (`AuthService.update_display_name` → `UserStore.update_user`, which already
+      whitelists `display_name`).
+- [x] `POST /api/auth/change-password` `{ current_password, new_password }` →
+      `{ success }`. `AuthService.change_password` verifies the current password
+      (bcrypt), writes the new hash via a dedicated `UserStore.set_password_hash`
+      (kept off the general update whitelist — credential mutation on its own
+      path), and revokes all of the user's refresh tokens.
+
+#### Phase 25 Exit Criteria
+- [x] Telemetry published by a device is persisted and queryable as history;
+      `latest_telemetry` is populated on device detail.
+- [x] `PATCH /api/auth/me` updates the display name; `POST /api/auth/change-password`
+      changes the password, rejects a wrong current password (401), enforces the
+      8-char minimum (422), and revokes prior refresh tokens.
+- [x] In-memory stores by default; ArcadeDB stores when `ARCADEDB_HOST` is set.
+- [x] New tests: telemetry store/consumer + history endpoint + profile/password
+      (`tests/test_telemetry_store.py`, `tests/test_telemetry_consumer.py`,
+      additions to `tests/test_central.py`); `ruff`/`black`/`mypy` clean.
+
+---
 
 ### Management Server
 

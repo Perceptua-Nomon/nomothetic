@@ -12,12 +12,13 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
 from nomothetic.auth import TokenPayload, jwt_required
 from nomothetic.fleet_store import DeviceItem, FleetStore
 from nomothetic.rate_limit import register_rate_limit
+from nomothetic.telemetry_store import TelemetryReadingItem, TelemetryStore
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,14 @@ class DeviceRemoveResponse(BaseModel):
 
     vin: str
     removed: bool
+    timestamp: str
+
+
+class DeviceTelemetryResponse(BaseModel):
+    """Telemetry history for a device, newest first."""
+
+    vin: str
+    readings: list[TelemetryReadingItem]
     timestamp: str
 
 
@@ -142,8 +151,9 @@ def _validate_registration_proof(proof: str, vin: str) -> bool:
         return False
 
 
-# Module-level store (set by create_app).
+# Module-level stores (set by create_app).
 _fleet_store: Optional[FleetStore] = None
+_telemetry_store: Optional[TelemetryStore] = None
 
 
 def set_fleet_store(store: FleetStore) -> None:
@@ -155,6 +165,17 @@ def set_fleet_store(store: FleetStore) -> None:
 def get_fleet_store() -> Optional[FleetStore]:
     """Return the current fleet store (if configured)."""
     return _fleet_store
+
+
+def set_telemetry_store(store: TelemetryStore) -> None:
+    """Store the telemetry store instance for use by fleet routes."""
+    global _telemetry_store
+    _telemetry_store = store
+
+
+def get_telemetry_store() -> Optional[TelemetryStore]:
+    """Return the current telemetry store (if configured)."""
+    return _telemetry_store
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +291,12 @@ def create_fleet_router() -> APIRouter:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Device {vin} not found",
             )
+        latest_telemetry: Optional[dict] = None
+        telemetry_store = get_telemetry_store()
+        if telemetry_store is not None:
+            latest = await telemetry_store.get_latest(vin)
+            if latest is not None:
+                latest_telemetry = latest.model_dump()
         return DeviceDetailResponse(
             vin=item.vin,
             model=item.model,
@@ -277,7 +304,47 @@ def create_fleet_router() -> APIRouter:
             last_seen_at=item.last_seen_at,
             registered_at=item.registered_at,
             role=item.role,
-            latest_telemetry=None,
+            latest_telemetry=latest_telemetry,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @router.get("/devices/{vin}/telemetry", response_model=DeviceTelemetryResponse)
+    async def get_device_telemetry(
+        vin: str = Path(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
+        limit: int = Query(100, ge=1, le=1000),
+        since: Optional[str] = Query(None, description="ISO-8601 lower bound on recorded_at"),
+        claims: TokenPayload = Depends(jwt_required),
+    ):
+        """Return telemetry history for a device the caller owns, newest first.
+
+        Returns
+        -------
+        DeviceTelemetryResponse
+            Ordered list of readings (possibly empty).
+
+        Raises
+        ------
+        HTTPException
+            404 if the device is not found or owned by another user.
+            503 if telemetry persistence is not configured.
+        """
+        store = _require_store()
+        # Ownership scoping: reuse the fleet store's per-owner device lookup.
+        if await store.get_device(claims.sub, vin) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Device {vin} not found",
+            )
+        telemetry_store = get_telemetry_store()
+        if telemetry_store is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Telemetry service not configured",
+            )
+        readings = await telemetry_store.get_history(vin, limit=limit, since=since)
+        return DeviceTelemetryResponse(
+            vin=vin,
+            readings=readings,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 

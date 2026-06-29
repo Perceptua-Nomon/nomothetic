@@ -1111,7 +1111,21 @@ async def lifespan(app: FastAPI):
     _audio_recorder = AudioRecorder(audio_dir=_media_dir / "audio")
     _audio_player = AudioPlayer(audio_dir=_media_dir / "audio")
 
+    # Startup: central-mode telemetry consumer (subscribes to MQTT, persists
+    # readings). Needs the running event loop to schedule async store writes.
+    telemetry_consumer = getattr(app.state, "telemetry_consumer", None)
+    if telemetry_consumer is not None:
+        try:
+            telemetry_consumer.start_background(asyncio.get_running_loop())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to start telemetry consumer: %s", exc)
+
     yield
+
+    # Shutdown: stop telemetry consumer
+    telemetry_consumer = getattr(app.state, "telemetry_consumer", None)
+    if telemetry_consumer is not None:
+        telemetry_consumer.stop()
 
     # Shutdown: stop any active audio sessions
     if _audio_recorder and _audio_recorder.is_recording:
@@ -1170,9 +1184,11 @@ def _setup_central_stores(app: FastAPI) -> None:
     from nomothetic.fleet_routes import (
         create_fleet_router,
         set_fleet_store,
+        set_telemetry_store,
     )
     from nomothetic.fleet_store import FleetStore, InMemoryFleetStore
     from nomothetic.rate_limit import RateLimiter
+    from nomothetic.telemetry_store import InMemoryTelemetryStore, TelemetryStore
     from nomothetic.token_store import TokenStore
     from nomothetic.user_store import UserStore
 
@@ -1184,10 +1200,12 @@ def _setup_central_stores(app: FastAPI) -> None:
     user_store: UserStore
     fleet_store: FleetStore
     token_store: TokenStore
+    telemetry_store: TelemetryStore
     arcadedb_host = os.environ.get("ARCADEDB_HOST")
     if arcadedb_host:
         from nomothetic.db import DatabaseClient, DatabaseConfig
         from nomothetic.fleet_store import SqlFleetStore
+        from nomothetic.telemetry_store import SqlTelemetryStore
         from nomothetic.token_store import SqlTokenStore
         from nomothetic.user_store import SqlUserStore
 
@@ -1196,6 +1214,7 @@ def _setup_central_stores(app: FastAPI) -> None:
         user_store = SqlUserStore(db_client)
         fleet_store = SqlFleetStore(db_client)
         token_store = SqlTokenStore(db_client)
+        telemetry_store = SqlTelemetryStore(db_client)
         app.state.db_client = db_client
     else:
         from nomothetic.token_store import InMemoryTokenStore
@@ -1204,6 +1223,7 @@ def _setup_central_stores(app: FastAPI) -> None:
         user_store = InMemoryUserStore()
         fleet_store = InMemoryFleetStore()
         token_store = InMemoryTokenStore()
+        telemetry_store = InMemoryTelemetryStore()
         app.state.db_client = None
 
     auth_service = AuthService(user_store=user_store, token_store=token_store)
@@ -1211,7 +1231,21 @@ def _setup_central_stores(app: FastAPI) -> None:
     app.include_router(create_auth_router())
 
     set_fleet_store(fleet_store)
+    set_telemetry_store(telemetry_store)
     app.include_router(create_fleet_router())
+
+    # Telemetry ingestion: subscribe to the MQTT broker (when configured) and
+    # persist readings to the telemetry store.  No broker -> no consumer, and
+    # telemetry history is simply empty.  Started in the lifespan (needs the
+    # running event loop); see ``lifespan``.
+    app.state.telemetry_consumer = None
+    if os.environ.get("NOMON_MQTT_BROKER", "").strip():
+        try:
+            from nomothetic.telemetry_consumer import TelemetryConsumer
+
+            app.state.telemetry_consumer = TelemetryConsumer.from_env(telemetry_store)
+        except ImportError as exc:
+            logger.warning("Telemetry consumer unavailable (paho-mqtt missing): %s", exc)
 
 
 def _register_device_routes(app: FastAPI, mode: "Mode") -> None:

@@ -245,6 +245,57 @@ class AuthService:
         """
         return await self._user_store.get_user(email.strip().lower())
 
+    async def update_display_name(self, email: str, display_name: str) -> Optional[UserRecord]:
+        """Update a user's display name.
+
+        Parameters
+        ----------
+        email : str
+            User email.
+        display_name : str
+            New display name.
+
+        Returns
+        -------
+        UserRecord or None
+            The updated record, or ``None`` if the user does not exist.
+        """
+        return await self._user_store.update_user(email.strip().lower(), display_name=display_name)
+
+    async def change_password(self, email: str, current_password: str, new_password: str) -> bool:
+        """Change a user's password after verifying the current one.
+
+        On success every refresh token for the user is revoked, so other
+        sessions must re-authenticate.
+
+        Parameters
+        ----------
+        email : str
+            User email.
+        current_password : str
+            The user's current plaintext password.
+        new_password : str
+            The new plaintext password.
+
+        Returns
+        -------
+        bool
+            ``True`` on success.
+
+        Raises
+        ------
+        ValueError
+            If the current password is incorrect or the user does not exist.
+        """
+        normalised = email.strip().lower()
+        user = await self._user_store.get_user(normalised)
+        if user is None or not self.verify_password(current_password, user.password_hash):
+            raise ValueError("Current password is incorrect")
+        await self._user_store.set_password_hash(normalised, self.hash_password(new_password))
+        # Invalidate existing sessions; the user re-authenticates with the new password.
+        await self._token_store.delete_tokens_for_user(normalised)
+        return True
+
     # -- token creation -----------------------------------------------------
 
     def create_access_token(self, email: str) -> str:
