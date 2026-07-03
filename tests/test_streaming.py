@@ -300,3 +300,92 @@ class TestStreamServerLifecycle:
         with patch("werkzeug.serving.make_server", return_value=mock_httpd):
             server.start(debug=True)
             mock_httpd.serve_forever.assert_called_once()
+
+
+class TestStreamServerAccessToken:
+    """Tests for the optional per-run stream access token (checklist P10).
+
+    The ``?token=`` value is read via ``StreamServer._supplied_token``, which
+    these tests stub directly — patching Flask's ``request`` proxy is not safe
+    when another test module has already imported the real Flask (the proxy
+    cannot be introspected outside a request context).
+    """
+
+    def _make_server(self, mock_flask, mock_camera, token):
+        mock_flask.return_value = MagicMock()
+        mock_camera.return_value = MagicMock()
+        return StreamServer(access_token=token)
+
+    @patch("nomothetic.streaming.Response")
+    @patch("nomothetic.streaming.Camera")
+    @patch("nomothetic.streaming.Flask")
+    def test_stream_endpoint_rejects_missing_token(self, mock_flask, mock_camera, mock_response):
+        """Without ?token=, /stream returns a 403 response."""
+        server = self._make_server(mock_flask, mock_camera, "sekrit")
+
+        with patch.object(server, "_supplied_token", return_value=""):
+            server._stream_endpoint()
+
+        assert mock_response.call_args.kwargs.get("status") == 403
+
+    @patch("nomothetic.streaming.Response")
+    @patch("nomothetic.streaming.Camera")
+    @patch("nomothetic.streaming.Flask")
+    def test_stream_endpoint_rejects_wrong_token(self, mock_flask, mock_camera, mock_response):
+        """A wrong ?token= value returns a 403 response."""
+        server = self._make_server(mock_flask, mock_camera, "sekrit")
+
+        with patch.object(server, "_supplied_token", return_value="wrong"):
+            server._stream_endpoint()
+
+        assert mock_response.call_args.kwargs.get("status") == 403
+
+    @patch("nomothetic.streaming.Response")
+    @patch("nomothetic.streaming.Camera")
+    @patch("nomothetic.streaming.Flask")
+    def test_stream_endpoint_accepts_valid_token(self, mock_flask, mock_camera, mock_response):
+        """The correct ?token= value lets the MJPEG stream through."""
+        server = self._make_server(mock_flask, mock_camera, "sekrit")
+
+        with patch.object(server, "_supplied_token", return_value="sekrit"):
+            server._stream_endpoint()
+
+        assert "multipart/x-mixed-replace" in str(mock_response.call_args)
+
+    @patch("nomothetic.streaming.render_template_string")
+    @patch("nomothetic.streaming.Camera")
+    @patch("nomothetic.streaming.Flask")
+    def test_viewer_rejects_invalid_token(self, mock_flask, mock_camera, mock_render):
+        """The viewer page is 403 without the token and never renders."""
+        server = self._make_server(mock_flask, mock_camera, "sekrit")
+
+        with patch.object(server, "_supplied_token", return_value="nope"):
+            result = server._viewer()
+
+        assert result[1] == 403
+        mock_render.assert_not_called()
+
+    @patch("nomothetic.streaming.render_template_string")
+    @patch("nomothetic.streaming.Camera")
+    @patch("nomothetic.streaming.Flask")
+    def test_viewer_embeds_token_in_stream_src(self, mock_flask, mock_camera, mock_render):
+        """The viewer page embeds the token in the <img> stream URL."""
+        server = self._make_server(mock_flask, mock_camera, "sekrit")
+
+        with patch.object(server, "_supplied_token", return_value="sekrit"):
+            server._viewer()
+
+        assert mock_render.call_args.kwargs["stream_src"] == "/stream?token=sekrit"
+
+    @patch("nomothetic.streaming.render_template_string")
+    @patch("nomothetic.streaming.Camera")
+    @patch("nomothetic.streaming.Flask")
+    def test_viewer_without_token_configured_uses_plain_src(
+        self, mock_flask, mock_camera, mock_render
+    ):
+        """With no access token configured the viewer keeps the plain /stream src."""
+        server = self._make_server(mock_flask, mock_camera, None)
+
+        server._viewer()
+
+        assert mock_render.call_args.kwargs["stream_src"] == "/stream"

@@ -10,15 +10,17 @@ StreamServer
     HTTP server for serving live camera MJPEG stream.
 """
 
+import hmac
 import threading
 from typing import Optional
 
 try:
-    from flask import Flask, Response, render_template_string
+    from flask import Flask, Response, render_template_string, request
 except ImportError:
     Flask = None  # type: ignore
     Response = None  # type: ignore
     render_template_string = None  # type: ignore
+    request = None  # type: ignore
 
 try:
     from werkzeug.serving import BaseWSGIServer
@@ -83,7 +85,7 @@ VIEWER_TEMPLATE = """
     <div class="container">
         <h1>🎥 Nomon Camera Stream</h1>
         <div class="stream-wrapper">
-            <img src="/stream" alt="Camera Stream">
+            <img src="{{ stream_src }}" alt="Camera Stream">
         </div>
         <div class="info">
             <p>Resolution: {{ width }}x{{ height }}</p>
@@ -133,6 +135,12 @@ class StreamServer:
         Existing ``Camera`` instance to stream from.  When provided the
         server does **not** own the camera and will not close it on
         :meth:`close`.  All camera-related keyword arguments are ignored.
+    access_token : str, optional
+        When set, every request to ``/`` and ``/stream`` must carry a
+        matching ``?token=`` query parameter or it is rejected with 403.
+        The MJPEG stream runs over plain HTTP outside the authenticated
+        REST API, so this token is what gates camera access (security
+        checklist P10).  ``None`` disables the check (library use only).
     """
 
     def __init__(
@@ -145,6 +153,7 @@ class StreamServer:
         fps: int = 30,
         encoder: str = "h264",
         camera: Optional[Camera] = None,
+        access_token: Optional[str] = None,
     ) -> None:
         """Initialize the streaming server.
 
@@ -173,6 +182,9 @@ class StreamServer:
             Existing ``Camera`` instance to stream from.  When provided the
             server does **not** own the camera and will not close it on
             :meth:`close`.  All camera-related keyword arguments are ignored.
+        access_token : str, optional
+            Required ``?token=`` query value for ``/`` and ``/stream``.
+            ``None`` disables the check.
 
         Raises
         ------
@@ -191,6 +203,7 @@ class StreamServer:
 
         self.host = host
         self.port = port
+        self._access_token = access_token
 
         if camera is not None:
             # Use the provided camera; caller retains ownership.
@@ -233,24 +246,47 @@ class StreamServer:
         self.app.add_url_rule("/", "viewer", self._viewer)
         self.app.add_url_rule("/stream", "stream", self._stream_endpoint)
 
-    def _viewer(self) -> str:
-        """Serve the HTML viewer page.
+    def _supplied_token(self) -> str:
+        """Return the ``?token=`` value from the current request (may be empty).
+
+        Isolated in its own method so tests can stub it without touching
+        Flask's ``request`` proxy (which cannot be introspected outside a
+        request context).
+        """
+        supplied = request.args.get("token", "")
+        return supplied if isinstance(supplied, str) else ""
+
+    def _token_ok(self) -> bool:
+        """Return True when no token is configured or the request carries it."""
+        if self._access_token is None:
+            return True
+        return hmac.compare_digest(self._supplied_token(), self._access_token)
+
+    def _viewer(self):
+        """Serve the HTML viewer page (403 without a valid access token).
 
         Returns
         -------
-        str
-            Rendered HTML template with camera parameters
+        str or tuple
+            Rendered HTML template with camera parameters, or a
+            ``(body, 403)`` tuple when the access token is missing/wrong.
         """
+        if not self._token_ok():
+            return "Forbidden: missing or invalid stream token", 403
+        stream_src = "/stream"
+        if self._access_token is not None:
+            stream_src = f"/stream?token={self._access_token}"
         return render_template_string(
             VIEWER_TEMPLATE,
             width=self.width,
             height=self.height,
             fps=self.fps,
             encoder=self.encoder,
+            stream_src=stream_src,
         )
 
     def _stream_endpoint(self) -> Response:
-        """Stream MJPEG frames to the client.
+        """Stream MJPEG frames to the client (403 without a valid access token).
 
         Returns
         -------
@@ -258,6 +294,8 @@ class StreamServer:
             Flask response with multipart/x-mixed-replace content type
             that streams JPEG frames continuously
         """
+        if not self._token_ok():
+            return Response("Forbidden: missing or invalid stream token", status=403)
 
         def generate():
             """Generator that yields MJPEG boundary data."""
