@@ -9,6 +9,7 @@ import hashlib
 import logging
 import os
 import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Optional
 
@@ -29,9 +30,12 @@ except ImportError:  # pragma: no cover
     _BCRYPT_AVAILABLE = False
 
 try:
-    from authlib.jose import jwt as _authlib_jwt
+    from authlib.jose import JsonWebToken
     from authlib.jose.errors import ExpiredTokenError, JoseError
 
+    # Restrict encode/decode to HS256 only — a token whose header names any
+    # other algorithm is rejected outright (algorithm-confusion hardening).
+    _authlib_jwt = JsonWebToken(["HS256"])
     _JWT_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _authlib_jwt = None  # type: ignore[assignment]
@@ -55,6 +59,21 @@ _JWT_ISSUER = "nomon-central"
 # ---------------------------------------------------------------------------
 
 _bearer_scheme = HTTPBearer(auto_error=False)
+
+# Lazily-computed bcrypt hash of a throwaway value, compared against when a
+# login email is unknown so the response takes the same time as a wrong
+# password (prevents user enumeration via timing).  Computed once per process.
+_timing_equalizer_hash: Optional[str] = None
+
+
+def _get_timing_equalizer_hash() -> str:
+    global _timing_equalizer_hash
+    if _timing_equalizer_hash is None:
+        _timing_equalizer_hash = bcrypt.hashpw(
+            secrets.token_urlsafe(16).encode(), bcrypt.gensalt(rounds=10)
+        ).decode()
+    return _timing_equalizer_hash
+
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -221,6 +240,9 @@ class AuthService:
         normalised = email.strip().lower()
         user = await self._user_store.get_user(normalised)
         if user is None or not user.active:
+            # Burn the same bcrypt work as a real comparison so unknown
+            # emails are not distinguishable from wrong passwords by timing.
+            self.verify_password(password, _get_timing_equalizer_hash())
             return None
         if not self.verify_password(password, user.password_hash):
             return None
@@ -383,9 +405,6 @@ class AuthService:
         str
             Encoded JWT proof string.
         """
-        import uuid
-        from datetime import timedelta
-
         now = datetime.now(timezone.utc)
         payload = {
             "iss": self._issuer,

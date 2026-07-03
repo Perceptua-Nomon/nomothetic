@@ -1392,8 +1392,8 @@ def test_set_speaker_hardware_error(client, mock_hat):
 
 
 def test_start_stream_success(client, mock_camera):
-    """POST /api/stream/start starts stream and returns url."""
-    from unittest.mock import MagicMock, patch
+    """POST /api/stream/start starts stream and returns url + access token."""
+    from unittest.mock import ANY, MagicMock, patch
 
     import nomothetic.api
 
@@ -1406,19 +1406,27 @@ def test_start_stream_success(client, mock_camera):
 
     with patch("nomothetic.api.StreamServer", return_value=mock_server) as MockStreamServer:
         response = client.post("/api/stream/start", json={})
-        # Verify the existing camera instance is passed to avoid resource conflicts.
-        MockStreamServer.assert_called_once_with(host="0.0.0.0", port=8000, camera=mock_camera)
+        # Verify the existing camera instance is passed to avoid resource
+        # conflicts, and that the server is armed with an access token (P10).
+        MockStreamServer.assert_called_once_with(
+            host="0.0.0.0", port=8000, camera=mock_camera, access_token=ANY
+        )
 
     assert response.status_code == 200
     data = response.json()
     assert "url" in data
     assert "port" in data
     assert "timestamp" in data
+    # The stream server runs outside the JWT'd API; the response must carry
+    # the per-run token and embed it in the ready-to-open URL.
+    assert data["token"]
+    assert f"token={data['token']}" in data["url"]
     mock_server.start_background.assert_called_once()
 
     # Cleanup
     nomothetic.api._camera = None
     nomothetic.api._stream_server = None
+    nomothetic.api._stream_token = None
 
 
 def test_start_stream_already_running(client, mock_camera):
@@ -1442,6 +1450,7 @@ def test_start_stream_already_running(client, mock_camera):
     # Cleanup
     nomothetic.api._camera = None
     nomothetic.api._stream_server = None
+    nomothetic.api._stream_token = None
 
 
 def test_start_stream_no_camera(client):

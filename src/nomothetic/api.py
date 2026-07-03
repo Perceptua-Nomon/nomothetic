@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -381,6 +382,9 @@ class StreamStartResponse(BaseModel):
     url: str
     host: str
     port: int
+    token: Optional[str] = None
+    """Access token the client must send as ``?token=`` on every request to
+    the stream server (which runs outside the authenticated REST API)."""
     timestamp: str
 
 
@@ -972,6 +976,9 @@ _hat_client: Optional[HatClient] = None
 _stream_server: Optional[StreamServer] = None
 _stream_host: str = "0.0.0.0"
 _stream_port: int = 8000
+# Per-run access token required by the MJPEG stream server (regenerated on
+# every stream start; None while no stream is running).
+_stream_token: Optional[str] = None
 _audio_recorder: Optional[AudioRecorder] = None
 
 
@@ -1572,7 +1579,7 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
             503 if the camera is not available.
             500 if the stream server fails to start.
         """
-        global _stream_server, _stream_host, _stream_port
+        global _stream_server, _stream_host, _stream_port, _stream_token
         cam = _require_camera()
 
         host = request.host or _stream_host
@@ -1580,25 +1587,33 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
 
         if _stream_server is not None:
             url = f"http://{_stream_server.host}:{_stream_server.port}"
+            if _stream_token is not None:
+                url = f"{url}/?token={_stream_token}"
             return StreamStartResponse(
                 url=url,
                 host=_stream_server.host,
                 port=_stream_server.port,
+                token=_stream_token,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
 
+        # The MJPEG server runs outside the JWT-authenticated API, so gate it
+        # with a per-run bearer token carried in the stream URL (checklist P10).
+        token = secrets.token_urlsafe(16)
         try:
-            server = StreamServer(host=host, port=port, camera=cam)
+            server = StreamServer(host=host, port=port, camera=cam, access_token=token)
             server.start_background()
             _stream_server = server
+            _stream_token = token
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to start stream: {e}") from e
 
-        url = f"http://{host}:{port}"
+        url = f"http://{host}:{port}/?token={token}"
         return StreamStartResponse(
             url=url,
             host=host,
             port=port,
+            token=token,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -1614,7 +1629,7 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
         StreamStopResponse
             ``success``: true if a running stream was stopped.
         """
-        global _stream_server
+        global _stream_server, _stream_token
         if _stream_server is None:
             return StreamStopResponse(
                 success=False,
@@ -1622,6 +1637,7 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
             )
         server = _stream_server
         _stream_server = None
+        _stream_token = None
         try:
             await asyncio.to_thread(server.close)
         except Exception:
