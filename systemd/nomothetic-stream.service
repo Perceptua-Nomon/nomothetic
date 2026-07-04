@@ -1,17 +1,24 @@
 [Unit]
-Description=nomon MJPEG stream server
+Description=nomon MJPEG stream server (manual/debug only; not boot-enabled)
 After=network.target
 
 [Service]
 Type=simple
-Environment=NOMON_SERVICE_USER=nomon NOMON_SERVICE_GROUP=nomon
-EnvironmentFile=-/etc/nomothetic/nomothetic.env
+# ${NOMON_SERVICE_USER}, ${NOMON_SERVICE_GROUP}, and ${NOMON_INSTALL_DIR} are
+# template variables expanded by envsubst at deploy time (scripts/deploy.sh),
+# matching nomothetic-api.service. The installed /etc/systemd/system/ file
+# contains the literal resolved values — systemd never sees the $ placeholders.
 User=${NOMON_SERVICE_USER}
 Group=${NOMON_SERVICE_GROUP}
+EnvironmentFile=-/etc/nomothetic/nomothetic.env
 
-# Adjust these paths to match your deployment:
-WorkingDirectory=/opt/nomothetic
-ExecStart=/opt/nomothetic/.venv/bin/python -c "from nomothetic.streaming import StreamServer; StreamServer(host='0.0.0.0', port=8000).start()"
+WorkingDirectory=${NOMON_INSTALL_DIR}
+# Standalone stream server for deliberate manual debugging on a trusted
+# network. The normal path is API-managed: POST /api/stream/start runs a
+# stream server gated by a per-run access token. This standalone instance has
+# no token gate and would occupy the same port (8000), so deploy installs the
+# unit but never enables it (see scripts/deploy.sh).
+ExecStart=${NOMON_INSTALL_DIR}/.venv/bin/python -c "from nomothetic.streaming import StreamServer; StreamServer(host='0.0.0.0', port=8000).start()"
 
 Restart=on-failure
 RestartSec=5s

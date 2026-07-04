@@ -649,17 +649,26 @@ if command -v systemctl >/dev/null 2>&1; then
         sudo systemctl daemon-reload
     fi
 
-    # Enable and restart the main device-mode services.
+    # Enable and restart the main device-mode service.
     # nomothetic-ap is installed (unit file copied above) but NOT enabled —
     # it is started/stopped exclusively by ap-mode.sh when the Soft AP goes
     # up or down (see nomothetic ADR-015).
-    for _svc in nomothetic-api nomothetic-stream; do
+    # nomothetic-stream is likewise installed but NOT enabled: streaming is
+    # API-managed (POST /api/stream/start runs a token-gated server per run on
+    # the same port); the standalone unit is token-less and kept for manual
+    # debugging only. Stop + disable it in case an earlier deploy enabled it.
+    for _svc in nomothetic-api; do
         if [[ -f "/etc/systemd/system/${_svc}.service" ]]; then
             sudo systemctl enable "${_svc}.service" 2>/dev/null || true
             echo "  Restarting ${_svc}..."
             sudo systemctl restart "${_svc}.service"
         fi
     done
+    if [[ -f "/etc/systemd/system/nomothetic-stream.service" ]]; then
+        sudo systemctl disable nomothetic-stream.service 2>/dev/null || true
+        sudo systemctl stop nomothetic-stream.service 2>/dev/null || true
+        echo "  nomothetic-stream.service installed (not boot-enabled; streaming is API-managed) ✓"
+    fi
     if [[ -f "/etc/systemd/system/nomothetic-ap.service" ]]; then
         # Ensure it is disabled at boot; ap-mode.sh controls it at runtime.
         sudo systemctl disable nomothetic-ap.service 2>/dev/null || true
