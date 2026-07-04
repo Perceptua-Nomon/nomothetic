@@ -1604,6 +1604,54 @@ telemetry **history** (telemetry was MQTT-only; `latest_telemetry` was hardcoded
 
 ---
 
+### Phase 26 — AI Chat-Command Relay (device mode) ✅
+
+**Goal:** Give nomotactic's command bar (nomotactic Phase 3) a real endpoint: a
+device-mode Claude relay that turns operator chat into the **same validated
+device operations the app's buttons use**. Operator convenience, not autonomy —
+no cognition or robot state lives in nomothetic (the ADR-004 boundary holds;
+autonomy stays in autonomon).
+
+**Cross-repo dependencies:**
+- nomotactic Phase 3 consumes the endpoints (`CommandInput` → `lib/ai.ts`).
+
+#### 26.1 — Command Service (`nomothetic.ai_command`)
+- [x] `AiCommandService` — agentic loop against the Anthropic Messages API
+      (`anthropic` SDK via the new optional `[ai]` extra; default model
+      `claude-opus-4-8`, adaptive thinking; `NOMON_AI_MODEL`,
+      `NOMON_AI_MAX_TOKENS`, `NOMON_AI_MAX_TOOL_ITERATIONS` overrides; capped
+      tool round trips per command).
+- [x] **Destructive-free tool registry**: drive / steer / camera pan+tilt under
+      the same Pydantic bounds and TTL leases as the manual endpoints, `stop`,
+      sensor reads (ultrasonic, grayscale, battery, daemon health, lease
+      statuses), and routine list/start/stop/stop-all through the existing
+      `RoutineManager` lease machinery. Deliberately excluded: `reset_mcu`,
+      all calibration writes, raw servo pulses, raw per-motor speeds (pinned
+      by test).
+- [x] `AiKeyStore` — user-supplied Anthropic key persisted atomically `0600`
+      at `/var/lib/nomon/ai_api_key` (`NOMON_AI_API_KEY_PATH` override); a
+      stored key wins over the `ANTHROPIC_API_KEY` env fallback; the key is
+      never logged and never returned by the API.
+
+#### 26.2 — Routes (`nomothetic.ai_routes`)
+- [x] `GET/PUT/DELETE /api/ai/key` — key presence/source metadata only.
+- [x] `POST /api/ai/command` — plain-text chat turns in (validated
+      user/assistant alternation, ≤ 40 messages), reply + per-action record
+      out. Rate limited (10/min/IP, `ai_rate_limit`); provider failures map
+      to 502 (an auth-rejected key is distinguishable), missing key or SDK
+      to 503. Mounted on the device router → inherits device JWT auth.
+
+#### Phase 26 Exit Criteria
+- [x] A chat command executes robot tools through `_hat_call` validation and
+      returns the ordered action log alongside the reply.
+- [x] Destructive HAT methods are unreachable from the tool surface
+      (`test_destructive_hat_methods_not_exposed_as_tools`).
+- [x] Key lifecycle covered by tests: stored `0600`, never echoed, stored-over-env
+      precedence, format rejection.
+- [x] `make check` clean (`ruff`/`black`/`mypy`; 776 tests).
+
+---
+
 ### Management Server
 
 Developed in a separate repository.

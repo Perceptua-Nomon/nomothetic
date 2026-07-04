@@ -1375,6 +1375,27 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
     )
     device_router.include_router(create_routine_control_router())
 
+    # AI chat-command relay (Anthropic Claude). Operator chat becomes tool calls
+    # onto the same validated device operations the app buttons use — drive/
+    # steer/camera under TTL leases, sensor reads, routine start/stop — and the
+    # tool surface is destructive-free (no MCU reset, no calibration writes).
+    # This is operator convenience, not autonomy: no cognition or robot state
+    # lives here (ADR-004). The Anthropic key is user-supplied via /api/ai/key
+    # (0600 file on the device) with ANTHROPIC_API_KEY as operator fallback.
+    from nomothetic.ai_command import AiCommandService, AiKeyStore
+    from nomothetic.ai_routes import create_ai_router
+    from nomothetic.rate_limit import RateLimiter as _AiRateLimiter
+    from nomothetic.routine_catalog import autonomon_catalog
+
+    app.state.ai_key_store = AiKeyStore()
+    app.state.ai_service = AiCommandService(
+        hat_call=_hat_call,
+        get_routine_manager=lambda: getattr(app.state, "routine_manager", None),
+        get_catalog=autonomon_catalog,
+    )
+    app.state.ai_limiter = _AiRateLimiter(max_requests=10, window_seconds=60)
+    device_router.include_router(create_ai_router())
+
     # ========================================================================
     # Device-mode endpoints (only registered when NOMON_API_MODE=device)
     # ========================================================================
