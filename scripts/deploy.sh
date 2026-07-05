@@ -377,8 +377,14 @@ rollback() {
         done
     fi
 
+    # Stop anything the failed deploy left running — in particular the
+    # smoke-test API server: if the readiness probe times out but the process
+    # comes up moments later, it would otherwise keep holding port 8443 and
+    # the camera, and the systemd service restarted below could never bind.
+    ./scripts/stop.sh all 2>&1 || true
+
     echo "  Reinstalling previous version..." >&2
-    uv sync --extra pi --extra web --extra api --extra telemetry 2>&1 || true
+    uv sync --all-extras --no-extra docs 2>&1 || true
 
     if [[ "${SYSTEMD_AVAILABLE}" == "true" ]]; then
         if [[ "${PREV_API_SERVICE_ACTIVE}" == "true" ]]; then
@@ -551,11 +557,14 @@ echo "==> Starting API server..."
 NOMON_API_MODE=device NOMON_DEVICE_AUTH=false ./scripts/start.sh api
 
 echo "==> Waiting for API to be ready..."
+# A cold start on the Pi Zero (imports read from SD, camera init) can take
+# well over 30 s — it only looks fast right after 'make test' has warmed the
+# page cache. Allow 120 s before declaring failure.
 _attempts=0
 until "${_curl[@]}" "${_api_base}/" > /dev/null 2>&1; do
     _attempts=$(( _attempts + 1 ))
-    if [[ "${_attempts}" -ge 12 ]]; then
-        echo "Error: API server did not respond after 30 s." >&2
+    if [[ "${_attempts}" -ge 48 ]]; then
+        echo "Error: API server did not respond after 120 s." >&2
         exit 1
     fi
     sleep 2.5
