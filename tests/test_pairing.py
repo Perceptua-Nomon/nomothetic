@@ -4,6 +4,8 @@ import os
 import stat
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from nomothetic.pairing import (
     PairingState,
     _read_shared_secret,
@@ -448,15 +450,15 @@ def test_load_or_generate_logs_loaded_path(tmp_path, caplog):
 
 
 def test_load_or_generate_logs_generated(tmp_path, caplog):
-    """Logs at INFO level when generating a new secret."""
+    """Logs visibly (WARNING) when generating a new secret — rotation is loud."""
     import logging
 
     secret_path = str(tmp_path / "no_secret")
     with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": secret_path}):
         ps = PairingState()
-        with caplog.at_level(logging.INFO, logger="nomothetic.pairing"):
+        with caplog.at_level(logging.WARNING, logger="nomothetic.pairing"):
             ps.load_or_generate_secret()
-    assert any("Generated new pairing secret" in r.message for r in caplog.records)
+    assert any("Generating a new pairing secret" in r.message for r in caplog.records)
 
 
 # ============================================================================
@@ -480,3 +482,49 @@ def test_reset_tolerates_missing_file():
     with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": "/nonexistent/path"}):
         ps = PairingState()
         ps.reset()  # Must not raise
+
+
+# ============================================================================
+# Unreadable-but-present secret files are never overwritten
+# ============================================================================
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="chmod 000 does not block root")
+def test_load_or_generate_never_overwrites_unreadable_file(tmp_path):
+    """An existing-but-unreadable secret file survives; a session secret is used.
+
+    The on-disk value doubles as the Soft AP passphrase, so a permissions or
+    transient-I/O fault must not silently rotate it.
+    """
+    secret_path = tmp_path / "pairing_secret"
+    secret_path.write_text("13572468")
+    secret_path.chmod(0o000)
+    try:
+        with patch.dict(os.environ, {"NOMON_PAIRING_SECRET_PATH": str(secret_path)}):
+            ps = PairingState()
+            result = ps.load_or_generate_secret()
+        assert result.isdigit() and len(result) == 8
+    finally:
+        secret_path.chmod(0o600)
+    assert secret_path.read_text() == "13572468"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="chmod 000 does not block root")
+def test_jwt_store_never_overwrites_unreadable_file(tmp_path):
+    """An existing-but-unreadable JWT secret survives; an in-memory one is used.
+
+    Overwriting would silently invalidate every issued device token.
+    """
+    from nomothetic.device_jwt import DeviceJwtSecretStore
+
+    jwt_path = tmp_path / "device_jwt_secret"
+    jwt_path.write_text("x" * 64)
+    jwt_path.chmod(0o000)
+    try:
+        with patch.dict(os.environ, {"NOMON_DEVICE_JWT_SECRET_PATH": str(jwt_path)}):
+            secret = DeviceJwtSecretStore().load_or_generate()
+        assert len(secret) >= 32
+        assert secret != "x" * 64
+    finally:
+        jwt_path.chmod(0o600)
+    assert jwt_path.read_text() == "x" * 64

@@ -67,9 +67,14 @@ class DeviceJwtSecretStore:
 
         1. Reads the secret from *path*.
         2. If the file exists and the value is ``≥ 32`` characters, returns it.
-        3. Otherwise generates a new ``secrets.token_urlsafe(48)`` value,
-           writes it atomically with ``0600`` permissions, and returns it.
-        4. If the write fails, logs a ``WARNING`` and returns the in-memory
+        3. If the file **exists but cannot be read** (permissions, transient
+           I/O), it is never overwritten — previously issued tokens must not
+           be silently invalidated. A ``ERROR`` is logged and an in-memory
+           secret is used for this run; the file is left for the next start.
+        4. Otherwise (no file, or a too-short/corrupt value) generates a new
+           ``secrets.token_urlsafe(48)`` value, writes it atomically with
+           ``0600`` permissions, and returns it.
+        5. If the write fails, logs a ``WARNING`` and returns the in-memory
            value (the service continues without persistence).
 
         Returns
@@ -83,8 +88,30 @@ class DeviceJwtSecretStore:
             return existing
 
         new_secret = secrets.token_urlsafe(48)
+        if self._unreadable_file_present():
+            logger.error(
+                "Device JWT secret at %s exists but could not be read; using an "
+                "in-memory secret for this run without overwriting the file. "
+                "Tokens issued now will not survive a restart; previously issued "
+                "tokens work again once the file is readable.",
+                self._path,
+            )
+            return new_secret
         self._write(new_secret)
         return new_secret
+
+    def _unreadable_file_present(self) -> bool:
+        """True when a plausibly valid secret file exists but could not be read.
+
+        ``os.path.getsize`` only needs directory permissions, so it succeeds
+        even when reading the file content fails. A file shorter than the
+        minimum length is treated as corrupt (not merely unreadable) and stays
+        eligible for regeneration.
+        """
+        try:
+            return os.path.getsize(self._path) >= _MIN_SECRET_LENGTH
+        except OSError:
+            return False
 
     def rotate(self) -> str:
         """Generate a new secret, overwrite the file, and return it.
