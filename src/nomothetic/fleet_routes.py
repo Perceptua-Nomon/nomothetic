@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
 from nomothetic.auth import TokenPayload, jwt_required
+from nomothetic.autonomy_store import AutonomyEventItem, AutonomyRunItem, AutonomyStore
 from nomothetic.fleet_store import DeviceItem, FleetStore
 from nomothetic.rate_limit import register_rate_limit
 from nomothetic.telemetry_store import TelemetryReadingItem, TelemetryStore
@@ -87,6 +88,23 @@ class DeviceTelemetryResponse(BaseModel):
     timestamp: str
 
 
+class DeviceAutonomyRunsResponse(BaseModel):
+    """Autonomy run history for a device, newest-started first."""
+
+    vin: str
+    runs: list[AutonomyRunItem]
+    timestamp: str
+
+
+class DeviceAutonomyEventsResponse(BaseModel):
+    """One autonomy run's lifecycle events, in chronological order."""
+
+    vin: str
+    run_id: str
+    events: list[AutonomyEventItem]
+    timestamp: str
+
+
 # ---------------------------------------------------------------------------
 # Proof validation
 # ---------------------------------------------------------------------------
@@ -154,6 +172,7 @@ def _validate_registration_proof(proof: str, vin: str) -> bool:
 # Module-level stores (set by create_app).
 _fleet_store: Optional[FleetStore] = None
 _telemetry_store: Optional[TelemetryStore] = None
+_autonomy_store: Optional[AutonomyStore] = None
 
 
 def set_fleet_store(store: FleetStore) -> None:
@@ -176,6 +195,17 @@ def set_telemetry_store(store: TelemetryStore) -> None:
 def get_telemetry_store() -> Optional[TelemetryStore]:
     """Return the current telemetry store (if configured)."""
     return _telemetry_store
+
+
+def set_autonomy_store(store: AutonomyStore) -> None:
+    """Store the autonomy store instance for use by fleet routes."""
+    global _autonomy_store
+    _autonomy_store = store
+
+
+def get_autonomy_store() -> Optional[AutonomyStore]:
+    """Return the current autonomy store (if configured)."""
+    return _autonomy_store
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +375,95 @@ def create_fleet_router() -> APIRouter:
         return DeviceTelemetryResponse(
             vin=vin,
             readings=readings,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @router.get("/devices/{vin}/autonomy", response_model=DeviceAutonomyRunsResponse)
+    async def get_device_autonomy(
+        vin: str = Path(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
+        limit: int = Query(50, ge=1, le=500),
+        since: Optional[str] = Query(None, description="ISO-8601 lower bound on started_at"),
+        claims: TokenPayload = Depends(jwt_required),
+    ):
+        """Return autonomy run history for a device the caller owns.
+
+        Runs are ordered newest-started first; each carries the coarse status
+        derived from the brain's lifecycle events (autonomon Phase 7).
+
+        Returns
+        -------
+        DeviceAutonomyRunsResponse
+            Run records, newest-started first.
+
+        Raises
+        ------
+        HTTPException
+            404 if the device is not found or owned by another user.
+            503 if autonomy persistence is not configured.
+        """
+        store = _require_store()
+        # Ownership scoping: reuse the fleet store's per-owner device lookup.
+        if await store.get_device(claims.sub, vin) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Device {vin} not found",
+            )
+        autonomy_store = get_autonomy_store()
+        if autonomy_store is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Autonomy telemetry service not configured",
+            )
+        runs = await autonomy_store.get_runs(vin, limit=limit, since=since)
+        return DeviceAutonomyRunsResponse(
+            vin=vin,
+            runs=runs,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @router.get(
+        "/devices/{vin}/autonomy/{run_id}/events",
+        response_model=DeviceAutonomyEventsResponse,
+    )
+    async def get_device_autonomy_events(
+        vin: str = Path(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
+        run_id: str = Path(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$"),
+        limit: int = Query(200, ge=1, le=1000),
+        claims: TokenPayload = Depends(jwt_required),
+    ):
+        """Return one autonomy run's events, oldest first (log order).
+
+        An unknown ``run_id`` for an owned device yields an empty list, the
+        same shape as a run that has not reported events yet.
+
+        Returns
+        -------
+        DeviceAutonomyEventsResponse
+            Lifecycle events in chronological order.
+
+        Raises
+        ------
+        HTTPException
+            404 if the device is not found or owned by another user.
+            503 if autonomy persistence is not configured.
+        """
+        store = _require_store()
+        if await store.get_device(claims.sub, vin) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Device {vin} not found",
+            )
+        autonomy_store = get_autonomy_store()
+        if autonomy_store is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Autonomy telemetry service not configured",
+            )
+        events = await autonomy_store.get_events(vin, run_id, limit=limit)
+        return DeviceAutonomyEventsResponse(
+            vin=vin,
+            run_id=run_id,
+            events=events,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 

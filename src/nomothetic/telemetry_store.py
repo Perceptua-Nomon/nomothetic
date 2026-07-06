@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Optional, runtime_checkable
 from pydantic import BaseModel
 from typing_extensions import Protocol
 
+from nomothetic.db_utils import db_datetime_to_iso, to_db_datetime
+
 if TYPE_CHECKING:
     from nomothetic.db import DatabaseClient
 
@@ -177,7 +179,9 @@ class SqlTelemetryStore:
                 "battery_voltage": item.battery_voltage,
                 "cpu_temp_c": item.cpu_temp_c,
                 "uptime_seconds": item.uptime_seconds,
-                "recorded_at": item.recorded_at,
+                # recorded_at is a DATETIME column — format for ArcadeDB (a raw
+                # ISO-8601 offset string would be stored as null).
+                "recorded_at": to_db_datetime(item.recorded_at),
                 "vin": vin,
             },
         )
@@ -190,7 +194,7 @@ class SqlTelemetryStore:
         since_clause = ""
         if since is not None:
             since_clause = " WHERE recorded_at >= :since"
-            params["since"] = since
+            params["since"] = to_db_datetime(since)
         query = (
             "SELECT battery_voltage, cpu_temp_c, uptime_seconds, recorded_at FROM ("
             "SELECT expand(in('ReadFrom')) FROM Vehicle WHERE vin = :vin"
@@ -206,10 +210,14 @@ class SqlTelemetryStore:
 
 
 def _row_to_item(row: dict) -> TelemetryReadingItem:
-    """Coerce a DB row to a :class:`TelemetryReadingItem` with safe defaults."""
+    """Coerce a DB row to a :class:`TelemetryReadingItem` with safe defaults.
+
+    ``recorded_at`` comes back in ArcadeDB DATETIME format and is converted to
+    ISO-8601 for the API contract (the in-memory store carries ISO throughout).
+    """
     return TelemetryReadingItem(
         battery_voltage=float(row.get("battery_voltage", 0.0) or 0.0),
         cpu_temp_c=float(row.get("cpu_temp_c", 0.0) or 0.0),
         uptime_seconds=int(row.get("uptime_seconds", 0) or 0),
-        recorded_at=str(row.get("recorded_at", "")),
+        recorded_at=db_datetime_to_iso(row.get("recorded_at")) or "",
     )

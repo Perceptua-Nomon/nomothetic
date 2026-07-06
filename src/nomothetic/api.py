@@ -1127,12 +1127,24 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to start telemetry consumer: %s", exc)
 
+    # Startup: device-mode autonomy event forwarder (mirrors recorded routine
+    # events onto the MQTT autonomy topic, best-effort).
+    autonomy_forwarder = getattr(app.state, "autonomy_forwarder", None)
+    if autonomy_forwarder is not None:
+        try:
+            autonomy_forwarder.start_background()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to start autonomy event forwarder: %s", exc)
+
     yield
 
-    # Shutdown: stop telemetry consumer
+    # Shutdown: stop telemetry consumer and autonomy forwarder
     telemetry_consumer = getattr(app.state, "telemetry_consumer", None)
     if telemetry_consumer is not None:
         telemetry_consumer.stop()
+    autonomy_forwarder = getattr(app.state, "autonomy_forwarder", None)
+    if autonomy_forwarder is not None:
+        autonomy_forwarder.stop()
 
     # Shutdown: stop any active audio sessions
     if _audio_recorder and _audio_recorder.is_recording:
@@ -1188,8 +1200,10 @@ def _setup_central_stores(app: FastAPI) -> None:
     """Initialise persistence stores for central mode and register routes."""
     from nomothetic.auth import AuthService, set_auth_service
     from nomothetic.auth_routes import create_auth_router
+    from nomothetic.autonomy_store import AutonomyStore, InMemoryAutonomyStore
     from nomothetic.fleet_routes import (
         create_fleet_router,
+        set_autonomy_store,
         set_fleet_store,
         set_telemetry_store,
     )
@@ -1208,8 +1222,10 @@ def _setup_central_stores(app: FastAPI) -> None:
     fleet_store: FleetStore
     token_store: TokenStore
     telemetry_store: TelemetryStore
+    autonomy_store: AutonomyStore
     arcadedb_host = os.environ.get("ARCADEDB_HOST")
     if arcadedb_host:
+        from nomothetic.autonomy_store import SqlAutonomyStore
         from nomothetic.db import DatabaseClient, DatabaseConfig
         from nomothetic.fleet_store import SqlFleetStore
         from nomothetic.telemetry_store import SqlTelemetryStore
@@ -1222,6 +1238,7 @@ def _setup_central_stores(app: FastAPI) -> None:
         fleet_store = SqlFleetStore(db_client)
         token_store = SqlTokenStore(db_client)
         telemetry_store = SqlTelemetryStore(db_client)
+        autonomy_store = SqlAutonomyStore(db_client)
         app.state.db_client = db_client
     else:
         from nomothetic.token_store import InMemoryTokenStore
@@ -1231,6 +1248,7 @@ def _setup_central_stores(app: FastAPI) -> None:
         fleet_store = InMemoryFleetStore()
         token_store = InMemoryTokenStore()
         telemetry_store = InMemoryTelemetryStore()
+        autonomy_store = InMemoryAutonomyStore()
         app.state.db_client = None
 
     auth_service = AuthService(user_store=user_store, token_store=token_store)
@@ -1239,18 +1257,22 @@ def _setup_central_stores(app: FastAPI) -> None:
 
     set_fleet_store(fleet_store)
     set_telemetry_store(telemetry_store)
+    set_autonomy_store(autonomy_store)
     app.include_router(create_fleet_router())
 
     # Telemetry ingestion: subscribe to the MQTT broker (when configured) and
-    # persist readings to the telemetry store.  No broker -> no consumer, and
-    # telemetry history is simply empty.  Started in the lifespan (needs the
-    # running event loop); see ``lifespan``.
+    # persist readings to the telemetry store — plus forwarded autonomy events
+    # to the autonomy store (autonomon Phase 7).  No broker -> no consumer, and
+    # telemetry/autonomy history is simply empty.  Started in the lifespan
+    # (needs the running event loop); see ``lifespan``.
     app.state.telemetry_consumer = None
     if os.environ.get("NOMON_MQTT_BROKER", "").strip():
         try:
             from nomothetic.telemetry_consumer import TelemetryConsumer
 
-            app.state.telemetry_consumer = TelemetryConsumer.from_env(telemetry_store)
+            app.state.telemetry_consumer = TelemetryConsumer.from_env(
+                telemetry_store, autonomy_store=autonomy_store
+            )
         except ImportError as exc:
             logger.warning("Telemetry consumer unavailable (paho-mqtt missing): %s", exc)
 
@@ -1358,7 +1380,23 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
     from nomothetic.routine_log_store import RoutineLogStore
     from nomothetic.routine_routes import create_routine_router
 
-    app.state.routine_log_store = RoutineLogStore()
+    # Autonomy telemetry forwarding (autonomon Phase 7): mirror every recorded
+    # routine event onto the MQTT autonomy topic so central nomothetic can
+    # persist fleet-wide history.  Best-effort — no broker (or no paho-mqtt)
+    # means autonomy history simply stays device-local.  Started in ``lifespan``.
+    autonomy_forwarder = None
+    if os.environ.get("NOMON_MQTT_BROKER", "").strip():
+        try:
+            from nomothetic.autonomy_forwarder import AutonomyEventForwarder
+
+            autonomy_forwarder = AutonomyEventForwarder.from_env()
+        except ImportError as exc:
+            logger.warning("Autonomy event forwarding unavailable (paho-mqtt missing): %s", exc)
+    app.state.autonomy_forwarder = autonomy_forwarder
+
+    app.state.routine_log_store = RoutineLogStore(
+        on_event=autonomy_forwarder.enqueue_event if autonomy_forwarder is not None else None
+    )
     device_router.include_router(create_routine_router())
 
     # Autonomy-routine lifecycle control (start/stop/stop-all). nomothetic

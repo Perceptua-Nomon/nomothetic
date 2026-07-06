@@ -612,6 +612,130 @@ def test_device_detail_includes_latest_telemetry(central_client):
     assert latest["battery_voltage"] == 7.7
 
 
+# ============================================================================
+# Fleet — Autonomy run/event history
+# ============================================================================
+
+
+def _seed_autonomy_event(
+    vin: str,
+    routine: str,
+    run_id: str,
+    event_type: str,
+    recorded_at: str,
+    data: dict | None = None,
+) -> None:
+    """Record one autonomy event into the active in-memory store.
+
+    Uses a private event loop (see ``_seed_reading`` for the rationale).
+    """
+    import asyncio
+
+    from nomothetic.autonomy_store import AutonomyEventItem
+    from nomothetic.fleet_routes import get_autonomy_store
+
+    store = get_autonomy_store()
+    assert store is not None
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(
+            store.record_event(
+                vin,
+                routine,
+                run_id,
+                AutonomyEventItem(event_type=event_type, data=data or {}, recorded_at=recorded_at),
+            )
+        )
+    finally:
+        loop.close()
+
+
+def test_device_autonomy_history(central_client):
+    """Autonomy history returns runs newest-started first with derived status."""
+    token = _register_and_auth(central_client)
+    _register_device(central_client, token, "AUT001")
+    _seed_autonomy_event("AUT001", "explore", "run1", "running", "2026-01-01T00:00:00+00:00")
+    _seed_autonomy_event("AUT001", "explore", "run1", "stopping", "2026-01-01T00:05:00+00:00")
+    _seed_autonomy_event("AUT001", "follow-user", "run2", "running", "2026-01-02T00:00:00+00:00")
+
+    response = central_client.get(
+        "/api/fleet/devices/AUT001/autonomy",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["vin"] == "AUT001"
+    assert [r["run_id"] for r in data["runs"]] == ["run2", "run1"]
+    stopped = next(r for r in data["runs"] if r["run_id"] == "run1")
+    assert stopped["status"] == "stopped"
+    assert stopped["ended_at"] == "2026-01-01T00:05:00+00:00"
+    assert stopped["event_count"] == 2
+
+
+def test_device_autonomy_history_empty(central_client):
+    """A registered device with no autonomy runs returns an empty list."""
+    token = _register_and_auth(central_client)
+    _register_device(central_client, token, "AUT002")
+    response = central_client.get(
+        "/api/fleet/devices/AUT002/autonomy",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["runs"] == []
+
+
+def test_device_autonomy_history_not_owned(central_client):
+    """Autonomy history for an unowned device returns 404."""
+    token = _register_and_auth(central_client)
+    response = central_client.get(
+        "/api/fleet/devices/NOTMINE/autonomy",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 404
+
+
+def test_device_autonomy_events(central_client):
+    """A run's events come back oldest-first with their payloads."""
+    token = _register_and_auth(central_client)
+    _register_device(central_client, token, "AUT003")
+    _seed_autonomy_event("AUT003", "explore", "run1", "running", "2026-01-01T00:00:00+00:00")
+    _seed_autonomy_event(
+        "AUT003", "explore", "run1", "log", "2026-01-01T00:00:01+00:00", {"message": "avoiding"}
+    )
+
+    response = central_client.get(
+        "/api/fleet/devices/AUT003/autonomy/run1/events",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["run_id"] == "run1"
+    assert [e["event_type"] for e in data["events"]] == ["running", "log"]
+    assert data["events"][1]["data"] == {"message": "avoiding"}
+
+
+def test_device_autonomy_events_unknown_run(central_client):
+    """An unknown run for an owned device yields an empty event list."""
+    token = _register_and_auth(central_client)
+    _register_device(central_client, token, "AUT004")
+    response = central_client.get(
+        "/api/fleet/devices/AUT004/autonomy/nope/events",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["events"] == []
+
+
+def test_device_autonomy_events_not_owned(central_client):
+    """Autonomy events for an unowned device return 404."""
+    token = _register_and_auth(central_client)
+    response = central_client.get(
+        "/api/fleet/devices/NOTMINE/autonomy/run1/events",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 404
+
+
 def test_remove_device(central_client):
     """Remove a device from the user's fleet."""
     token = _register_and_auth(central_client)

@@ -1663,9 +1663,13 @@ name = "nomothetic"
 version = "0.9.0"
 source = { editable = "." }
 dependencies = [
+    { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "fastapi", version = "0.135.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "gpiozero", version = "2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "gpiozero", version = "2.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "httpx" },
     { name = "pigpio" },
+    { name = "pydantic", extra = ["email"] },
     { name = "pyserial" },
     { name = "smbus2" },
 ]
@@ -1741,9 +1745,11 @@ requires-dist = [
     { name = "bcrypt", marker = "extra == 'auth'", specifier = ">=4.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0" },
     { name = "cryptography", marker = "extra == 'api'", specifier = ">=41.0" },
+    { name = "fastapi", specifier = ">=0.128.8" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.100" },
     { name = "flask", marker = "extra == 'web'", specifier = ">=2.0" },
     { name = "gpiozero", specifier = ">=2.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'central'", specifier = ">=0.25" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.25" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
@@ -1752,6 +1758,7 @@ requires-dist = [
     { name = "picamera2", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'pi'", specifier = ">=0.3.0" },
     { name = "pigpio", specifier = ">=1.78" },
     { name = "pyaudio", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'audio'", specifier = ">=0.2.14" },
+    { name = "pydantic", extras = ["email"], specifier = ">=2.12.5" },
     { name = "pydantic", extras = ["email"], marker = "extra == 'api'", specifier = ">=2" },
     { name = "pyserial", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },

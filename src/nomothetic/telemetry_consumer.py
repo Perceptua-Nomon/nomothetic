@@ -15,6 +15,12 @@ The parse step is a pure function (:func:`reading_from_payload`) so it is unit
 testable without a broker; :meth:`TelemetryConsumer.ingest` is an awaitable that
 parses and stores, and the MQTT callback simply schedules it on the API event
 loop.
+
+The same broker connection also ingests **autonomy events** (autonomon Phase 7):
+devices forward the lifecycle events their routine sink records onto an autonomy
+topic (:mod:`nomothetic.autonomy_forwarder`); when an
+:class:`~nomothetic.autonomy_store.AutonomyStore` is provided, this consumer
+subscribes to that topic too and persists runs/events for the fleet API.
 """
 
 import asyncio
@@ -26,6 +32,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from nomothetic.autonomy_store import AutonomyEventItem, AutonomyStore
 from nomothetic.telemetry_store import TelemetryReadingItem, TelemetryStore
 
 try:
@@ -80,6 +87,52 @@ def reading_from_payload(
     return vin.strip(), item
 
 
+def autonomy_event_from_payload(
+    payload: dict[str, Any],
+) -> Optional[tuple[str, str, str, AutonomyEventItem]]:
+    """Map a forwarded autonomy payload to ``(vin, routine, run_id, event)``.
+
+    Returns ``None`` for an unusable payload — one lacking a ``device_id``,
+    ``routine``, ``run_id``, or ``type`` — so partial messages are skipped
+    rather than raising.  ``run_id`` is required because central history is
+    segmented per run (unattributable events are not stored).
+
+    Parameters
+    ----------
+    payload : dict
+        Decoded JSON autonomy payload (see
+        ``AutonomyEventForwarder.enqueue_event``).
+
+    Returns
+    -------
+    tuple[str, str, str, AutonomyEventItem] or None
+    """
+
+    def _req(key: str) -> Optional[str]:
+        val = payload.get(key)
+        if not isinstance(val, str) or not val.strip():
+            return None
+        return val.strip()
+
+    vin = _req("device_id")
+    routine = _req("routine")
+    run_id = _req("run_id")
+    event_type = _req("type")
+    if vin is None or routine is None or run_id is None or event_type is None:
+        return None
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+
+    recorded_at = payload.get("timestamp")
+    if not isinstance(recorded_at, str) or not recorded_at:
+        recorded_at = datetime.now(timezone.utc).isoformat()
+
+    item = AutonomyEventItem(event_type=event_type, data=data, recorded_at=recorded_at)
+    return vin, routine, run_id, item
+
+
 class TelemetryConsumer:
     """Subscribes to the telemetry topic and persists readings to a store.
 
@@ -99,6 +152,11 @@ class TelemetryConsumer:
         Topic to subscribe to (default ``"nomon/telemetry"``).
     qos : int, optional
         Subscription QoS (default 1).
+    autonomy_store : AutonomyStore, optional
+        When given, the consumer also subscribes to *autonomy_topic* and
+        persists forwarded autonomy events there.
+    autonomy_topic : str, optional
+        Autonomy event topic (default ``"nomon/autonomy"``).
 
     Raises
     ------
@@ -113,6 +171,8 @@ class TelemetryConsumer:
         port: int = 1883,
         topic: str = "nomon/telemetry",
         qos: int = 1,
+        autonomy_store: Optional[AutonomyStore] = None,
+        autonomy_topic: str = "nomon/autonomy",
     ) -> None:
         if mqtt is None:
             raise ImportError(
@@ -120,9 +180,11 @@ class TelemetryConsumer:
                 "Install with: pip install 'nomothetic[telemetry]'"
             )
         self._store = store
+        self._autonomy_store = autonomy_store
         self.broker = broker
         self.port = port
         self.topic = topic
+        self.autonomy_topic = autonomy_topic
         self.qos = qos
 
         self._stop_event = threading.Event()
@@ -135,18 +197,24 @@ class TelemetryConsumer:
     # -------------------------------------------------------------------------
 
     @classmethod
-    def from_env(cls, store: TelemetryStore) -> Optional["TelemetryConsumer"]:
+    def from_env(
+        cls, store: TelemetryStore, autonomy_store: Optional[AutonomyStore] = None
+    ) -> Optional["TelemetryConsumer"]:
         """Build a consumer from environment, or ``None`` when no broker is set.
 
         Reads ``NOMON_MQTT_BROKER`` (required), ``NOMON_MQTT_PORT`` (default
-        1883), and ``NOMON_MQTT_TOPIC`` (default ``"nomon/telemetry"``).  Returns
+        1883), ``NOMON_MQTT_TOPIC`` (default ``"nomon/telemetry"``), and
+        ``NOMON_MQTT_AUTONOMY_TOPIC`` (default ``"nomon/autonomy"``).  Returns
         ``None`` when ``NOMON_MQTT_BROKER`` is unset so central mode runs without
         telemetry ingestion (history is simply empty).
 
         Parameters
         ----------
         store : TelemetryStore
-            Persistence backend.
+            Persistence backend for device telemetry readings.
+        autonomy_store : AutonomyStore, optional
+            Persistence backend for forwarded autonomy events; when ``None``
+            the autonomy topic is not subscribed.
 
         Returns
         -------
@@ -157,7 +225,15 @@ class TelemetryConsumer:
             return None
         port = int(os.environ.get("NOMON_MQTT_PORT", "1883"))
         topic = os.environ.get("NOMON_MQTT_TOPIC", "nomon/telemetry")
-        return cls(store=store, broker=broker, port=port, topic=topic)
+        autonomy_topic = os.environ.get("NOMON_MQTT_AUTONOMY_TOPIC", "nomon/autonomy")
+        return cls(
+            store=store,
+            broker=broker,
+            port=port,
+            topic=topic,
+            autonomy_store=autonomy_store,
+            autonomy_topic=autonomy_topic,
+        )
 
     # -------------------------------------------------------------------------
     # Public API
@@ -182,6 +258,29 @@ class TelemetryConsumer:
             return False
         vin, item = parsed
         await self._store.record_reading(vin, item)
+        return True
+
+    async def ingest_autonomy(self, payload: dict[str, Any]) -> bool:
+        """Parse a forwarded autonomy payload and persist the event.
+
+        Parameters
+        ----------
+        payload : dict
+            Decoded autonomy event payload.
+
+        Returns
+        -------
+        bool
+            ``True`` if an event was stored, ``False`` if no autonomy store is
+            configured or the payload was unusable and skipped.
+        """
+        if self._autonomy_store is None:
+            return False
+        parsed = autonomy_event_from_payload(payload)
+        if parsed is None:
+            return False
+        vin, routine, run_id, item = parsed
+        await self._autonomy_store.record_event(vin, routine, run_id, item)
         return True
 
     def start_background(self, loop: asyncio.AbstractEventLoop) -> threading.Thread:
@@ -242,12 +341,21 @@ class TelemetryConsumer:
         reason_code: Any,
         properties: Any,
     ) -> None:
-        """Subscribe to the telemetry topic on (re)connect."""
+        """Subscribe to the telemetry (and autonomy) topics on (re)connect."""
         if reason_code.is_failure:
             logger.warning("Telemetry consumer connect refused: %s", reason_code)
             return
         client.subscribe(self.topic, qos=self.qos)
         logger.info("Telemetry consumer subscribed to %s", self.topic)
+        if self._autonomy_store is not None:
+            client.subscribe(self.autonomy_topic, qos=self.qos)
+            logger.info("Telemetry consumer subscribed to %s", self.autonomy_topic)
+
+    def _ingest_for_topic(self, topic: str, payload: dict[str, Any]) -> Any:
+        """Return the ingest coroutine matching *topic* (routing helper)."""
+        if topic == self.autonomy_topic and self._autonomy_store is not None:
+            return self.ingest_autonomy(payload)
+        return self.ingest(payload)
 
     def _on_message(self, client: Any, userdata: Any, message: Any) -> None:
         """Decode a message and schedule ingestion on the API event loop."""
@@ -261,7 +369,9 @@ class TelemetryConsumer:
             return
         if not isinstance(payload, dict):
             return
-        future = asyncio.run_coroutine_threadsafe(self.ingest(payload), loop)
+        future = asyncio.run_coroutine_threadsafe(
+            self._ingest_for_topic(message.topic, payload), loop
+        )
 
         def _log_result(fut: "concurrent.futures.Future[bool]") -> None:
             try:
