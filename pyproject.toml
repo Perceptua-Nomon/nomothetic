@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nomothetic"
-version = "0.8.1"
+version = "0.9.0"
 description = "Comms for the nomon fleet."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -32,6 +32,9 @@ dependencies = [
     "pigpio>=1.78",
     "smbus2>=0.4.1",
     "pyserial>=3.5",
+    "fastapi>=0.128.8",
+    "pydantic[email]>=2.12.5",
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
@@ -77,6 +80,9 @@ central = [
 ]
 audio = [
     "pyaudio>=0.2.14; sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+ai = [
+    "anthropic>=0.69",
 ]
 
 [project.urls]

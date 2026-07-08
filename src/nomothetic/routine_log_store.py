@@ -16,12 +16,15 @@ Events are segmented by ``run_id``: when a new run reports in, the previous
 run's events are cleared so a query returns the *current* run's logs.
 """
 
+import logging
 import re
 import threading
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 # Bounded per-routine history: enough to capture a startup failure and recent
 # activity without unbounded growth on a memory-constrained device.
@@ -117,12 +120,24 @@ class RoutineLogStore:
     max_events : int, optional
         Per-routine ring-buffer capacity (default 200). The oldest events are
         discarded once the buffer is full.
+    on_event : callable, optional
+        ``(routine, event)`` observer invoked after every recorded event —
+        both brain-reported (via the events endpoint) and supervisor-recorded
+        (via :class:`~nomothetic.routine_manager.RoutineManager`) events pass
+        through here. Called outside the store lock; exceptions are swallowed
+        so an observer can never break recording (used for best-effort MQTT
+        forwarding to central).
     """
 
-    def __init__(self, max_events: int = _MAX_EVENTS_DEFAULT) -> None:
+    def __init__(
+        self,
+        max_events: int = _MAX_EVENTS_DEFAULT,
+        on_event: Optional[Callable[[str, RoutineEvent], Any]] = None,
+    ) -> None:
         self._max_events = max_events
         self._records: dict[str, RoutineRecord] = {}
         self._lock = threading.Lock()
+        self._on_event = on_event
 
     def record(
         self,
@@ -198,6 +213,12 @@ class RoutineLogStore:
             status = _STATUS_BY_TYPE.get(event_type)
             if status is not None:
                 record.status = status
+
+        if self._on_event is not None:
+            try:
+                self._on_event(routine, event)
+            except Exception as exc:  # noqa: BLE001 — observers are best-effort
+                logger.debug("routine event observer failed: %s", exc, exc_info=True)
 
         return event
 

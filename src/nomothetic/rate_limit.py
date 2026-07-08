@@ -123,3 +123,14 @@ async def network_rate_limit(request: Request) -> None:
     """
     limiter: RateLimiter = request.app.state.network_limiter
     limiter.check(_client_ip(request))
+
+
+async def ai_rate_limit(request: Request) -> None:
+    """FastAPI dependency that enforces AI command rate limiting.
+
+    Reads the ``ai_limiter`` from ``app.state`` (created in ``create_app``).
+    Allows 10 requests per minute per IP address — each command can fan out
+    into several Anthropic API round trips, so this stays deliberately low.
+    """
+    limiter: RateLimiter = request.app.state.ai_limiter
+    limiter.check(_client_ip(request))

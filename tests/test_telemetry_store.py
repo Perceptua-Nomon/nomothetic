@@ -128,6 +128,8 @@ class TestSqlTelemetryStore:
         assert "INSERT INTO TelemetryReading" in query
         assert params["vin"] == "N001"
         assert params["battery_voltage"] == 8.0
+        # recorded_at is formatted for the DATETIME column (millisecond precision).
+        assert params["recorded_at"] == "2026-01-01 00:00:00.000"
 
     @pytest.mark.asyncio
     async def test_get_history_traverses_readfrom(self, store, mock_db):
@@ -149,13 +151,28 @@ class TestSqlTelemetryStore:
         assert params["limit"] == 10
 
     @pytest.mark.asyncio
+    async def test_get_history_converts_db_datetime_to_iso(self, store, mock_db):
+        """An ArcadeDB-format recorded_at is returned to callers as ISO-8601."""
+        mock_db.execute_sql.return_value = [
+            {
+                "battery_voltage": 8.0,
+                "cpu_temp_c": 45.0,
+                "uptime_seconds": 100,
+                "recorded_at": "2026-01-01 00:00:00.789",  # ArcadeDB DATETIME format (millisecond)
+            }
+        ]
+        history = await store.get_history("N001", limit=10)
+        assert history[0].recorded_at == "2026-01-01T00:00:00.789000+00:00"
+
+    @pytest.mark.asyncio
     async def test_get_history_since_adds_clause(self, store, mock_db):
         """A since bound adds a recorded_at filter and binds the param."""
         mock_db.execute_sql.return_value = []
         await store.get_history("N001", since="2026-01-01T00:00:00+00:00")
         query, params = mock_db.execute_sql.call_args[0]
         assert "recorded_at >= :since" in query
-        assert params["since"] == "2026-01-01T00:00:00+00:00"
+        # The ISO bound is formatted to the DATETIME column's format (millisecond).
+        assert params["since"] == "2026-01-01 00:00:00.000"
 
     @pytest.mark.asyncio
     async def test_get_latest_returns_first(self, store, mock_db):

@@ -16,7 +16,6 @@
 | 9 | Audio Levels Control | ✅ Complete |
 | 10 | Calibration API | ✅ Complete |
 | 11 | Routine API | ✅ Complete |
-| 12 | Line-Following Routine API | 🔲 Planned |
 | 13 | Central Mode & Authentication | ✅ Complete |
 | 14 | ArcadeDB Persistence Layer | ✅ Complete |
 | 15 | Deploy Hardening | ✅ Complete |
@@ -31,6 +30,8 @@
 | 23 | Device Fleet Registration & Identity | ✅ Complete |
 | 24 | Autonomy Routine Launcher (autonomon plugin handoff) | ✅ Complete |
 | 25 | Fleet Telemetry History + Profile Editing | ✅ Complete |
+| 26 | AI Chat-Command Relay (device mode) | ✅ Complete |
+| 27 | Autonomy Telemetry Persistence (MQTT device→central) | ✅ Complete |
 
 **Test totals (current): 663 passing** (23 camera + 14 streaming + 168 API + 36 telemetry + 94 HAT + 19 audio + 18 auth + 29 central + 32 device-auth + 17 db + 41 pairing + 12 rate-limit + 6 mode + 15 network-provision + 13 token-store + 25 user-store + 22 fleet-store + 7 wifi-ap + 72 routine-launcher [10 catalogue + 17 control + 16 logs + 29 manager]; `ap_mode` tests removed — see ADR-016 amendment)
 
@@ -430,7 +431,7 @@ self-contained on-robot routines via HTTPS.
 **Architecture note**: Routine *execution* lives entirely in nomopractic (Rust).
 nomothetic is a thin façade — it calls three IPC methods and maps results onto
 Pydantic models and HTTP status codes, exactly as the motor and vehicle APIs do.
-The `feature/routines` branch is the target for Phases 11 and 12.
+The `feature/routines` branch is the target for Phase 11.
 
 #### 11.1 — HatClient Routine Methods (`nomothetic.hat`)
 - [x] `RoutineStartResult` dataclass: `name: str`, `started_at_uptime_s: int`
@@ -472,19 +473,6 @@ The `feature/routines` branch is the target for Phases 11 and 12.
 - [x] `GET /api/routine/status` shows live progress (elapsed time, avoidance counts)
 - [x] Routine continues after REST client disconnects; stops only on explicit stop or max_duration timeout
 - [x] All tests pass
-
----
-
-### Phase 12 — Line-Following Routine API (P2)
-
-**Goal**: Expose the `follow_line` routine (nomopractic Phase 12) via the REST
-API, matching the pattern established in Phase 11.
-
-- [ ] `FollowLineStartRequest` Pydantic model: `name="follow_line"`, `speed_pct?`, `kp?`, `kd?`, `line_lost_cycles?`
-- [ ] `RoutineStartRequest` extended (or existing model reused — `start_routine` uses generic pass-through params)
-- [ ] `POST /api/routine/start` already supports `follow_line` via generic param forwarding — verify acceptance
-- [ ] `tests/test_hat.py` + `tests/test_api.py`: `follow_line` start/stop/status tests
-- [ ] `uv run pytest tests/` — no regressions from current total (≥ 352 passing)
 
 ---
 
@@ -1601,6 +1589,113 @@ telemetry **history** (telemetry was MQTT-only; `latest_telemetry` was hardcoded
 - [x] New tests: telemetry store/consumer + history endpoint + profile/password
       (`tests/test_telemetry_store.py`, `tests/test_telemetry_consumer.py`,
       additions to `tests/test_central.py`); `ruff`/`black`/`mypy` clean.
+
+---
+
+### Phase 26 — AI Chat-Command Relay (device mode) ✅
+
+**Goal:** Give nomotactic's command bar (nomotactic Phase 3) a real endpoint: a
+device-mode Claude relay that turns operator chat into the **same validated
+device operations the app's buttons use**. Operator convenience, not autonomy —
+no cognition or robot state lives in nomothetic (the ADR-004 boundary holds;
+autonomy stays in autonomon).
+
+**Cross-repo dependencies:**
+- nomotactic Phase 3 consumes the endpoints (`CommandInput` → `lib/ai.ts`).
+
+#### 26.1 — Command Service (`nomothetic.ai_command`)
+- [x] `AiCommandService` — agentic loop against the Anthropic Messages API
+      (`anthropic` SDK via the new optional `[ai]` extra; default model
+      `claude-opus-4-8`, adaptive thinking; `NOMON_AI_MODEL`,
+      `NOMON_AI_MAX_TOKENS`, `NOMON_AI_MAX_TOOL_ITERATIONS` overrides; capped
+      tool round trips per command).
+- [x] **Destructive-free tool registry**: drive / steer / camera pan+tilt under
+      the same Pydantic bounds and TTL leases as the manual endpoints, `stop`,
+      sensor reads (ultrasonic, grayscale, battery, daemon health, lease
+      statuses), and routine list/start/stop/stop-all through the existing
+      `RoutineManager` lease machinery. Deliberately excluded: `reset_mcu`,
+      all calibration writes, raw servo pulses, raw per-motor speeds (pinned
+      by test).
+- [x] `AiKeyStore` — user-supplied Anthropic key persisted atomically `0600`
+      at `/var/lib/nomon/ai_api_key` (`NOMON_AI_API_KEY_PATH` override); a
+      stored key wins over the `ANTHROPIC_API_KEY` env fallback; the key is
+      never logged and never returned by the API.
+
+#### 26.2 — Routes (`nomothetic.ai_routes`)
+- [x] `GET/PUT/DELETE /api/ai/key` — key presence/source metadata only.
+- [x] `POST /api/ai/command` — plain-text chat turns in (validated
+      user/assistant alternation, ≤ 40 messages), reply + per-action record
+      out. Rate limited (10/min/IP, `ai_rate_limit`); provider failures map
+      to 502 (an auth-rejected key is distinguishable), missing key or SDK
+      to 503. Mounted on the device router → inherits device JWT auth.
+
+#### Phase 26 Exit Criteria
+- [x] A chat command executes robot tools through `_hat_call` validation and
+      returns the ordered action log alongside the reply.
+- [x] Destructive HAT methods are unreachable from the tool surface
+      (`test_destructive_hat_methods_not_exposed_as_tools`).
+- [x] Key lifecycle covered by tests: stored `0600`, never echoed, stored-over-env
+      precedence, format rejection.
+- [x] `make check` clean (`ruff`/`black`/`mypy`; 776 tests).
+
+---
+
+### Phase 27 — Autonomy Telemetry Persistence (MQTT device→central) ✅
+
+**Goal:** Persist fleet-wide **autonomy** run history (autonomon Phase 7) so the
+nomotactic per-device dashboard can show what a device's autonomy routines did,
+not just its hardware telemetry. The device→central transport question that
+deferred autonomon Phase 7 is answered the same way Phase 25 answered it for
+device telemetry: **MQTT is the transport** — no new device-authenticated
+central REST ingestion endpoint (that would re-open the deferred device→central
+auth design). nomothetic stores exactly what the brain reports (ADR-004); the
+coarse run status is derived from the lifecycle event type, mirroring the
+device-local `RoutineLogStore`.
+
+**Cross-repo dependencies:**
+- nomographic central `V4__add_autonomy_schema.sql` (`AutonomyRun` +
+  `AutonomyEvent` vertices, `PerformedBy` + `PartOf` edges).
+- autonomon: **no change** — its existing `StatusReporter` already reports
+  lifecycle events (with `run_id` + `device_id`) to the device routine sink.
+
+#### 27.1 — Device-side Event Forwarding (`nomothetic.autonomy_forwarder`)
+- [x] `RoutineLogStore` gains an optional `on_event(routine, event)` observer,
+      fired (outside the lock, exceptions swallowed) after every recorded event —
+      both brain-reported (`/api/routines/{routine}/events`) and
+      supervisor-recorded.
+- [x] `AutonomyEventForwarder` mirrors each recorded event onto the MQTT autonomy
+      topic (`nomon/autonomy`; `NOMON_MQTT_AUTONOMY_TOPIC`). Best-effort: bounded
+      queue (drops when full), daemon publish loop, reconnect back-off. Wired as
+      the `RoutineLogStore` `on_event` hook and started/stopped in the API
+      lifespan; no broker (or no `paho-mqtt`) → forwarding is simply off.
+
+#### 27.2 — Autonomy Store (`nomothetic.autonomy_store`)
+- [x] `AutonomyRunItem` / `AutonomyEventItem` models + `AutonomyStore` Protocol
+      with `InMemoryAutonomyStore` (bounded per-VIN runs, per-run events) and
+      `SqlAutonomyStore` (`AutonomyRun`--`PerformedBy`-->`Vehicle`,
+      `AutonomyEvent`--`PartOf`-->`AutonomyRun`; `run_id`+`vin`-scoped). Mirrors
+      the `telemetry_store.py` pattern.
+- [x] Methods: `record_event` (creates/updates the run as a side effect),
+      `get_runs(limit, since)`, `get_events(run_id, limit)`.
+
+#### 27.3 — Central Ingestion + Fleet Routes
+- [x] `TelemetryConsumer` also subscribes to the autonomy topic (when an
+      `AutonomyStore` is provided) and routes messages by topic;
+      `autonomy_event_from_payload` is a pure, unit-tested parser.
+- [x] `GET /api/fleet/devices/{vin}/autonomy` (run history) and
+      `GET /api/fleet/devices/{vin}/autonomy/{run_id}/events` (one run's events),
+      central JWT + ownership-scoped via the existing `get_device` guard.
+- [x] Wired into `create_app()`: `SqlAutonomyStore` when `ARCADEDB_HOST` is set,
+      else `InMemoryAutonomyStore`; consumer passes it through.
+
+#### Phase 27 Exit Criteria
+- [x] Lifecycle events a device records are forwarded to central over MQTT and
+      queryable as run history; unknown run/device → empty list, not an error.
+- [x] No broker configured → autonomy history stays device-local (no error).
+- [x] nomothetic never imports autonomon (file-catalogue + MQTT only).
+- [x] New tests: `test_autonomy_store.py`, `test_autonomy_forwarder.py`,
+      autonomy cases in `test_telemetry_consumer.py` + `test_central.py`.
+- [x] `make check` clean (`ruff`/`black`/`mypy`; 824 tests).
 
 ---
 

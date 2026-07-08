@@ -61,6 +61,19 @@ def _read_shared_secret() -> str | None:
         return None
 
 
+def _secret_file_present(path: str) -> bool:
+    """True when a non-empty pairing secret file exists (readable or not).
+
+    ``os.path.getsize`` only needs directory permissions, so this detects an
+    existing file even when its content cannot be read — the case where the
+    file must never be overwritten.
+    """
+    try:
+        return os.path.getsize(path) > 0
+    except OSError:
+        return os.path.exists(path)
+
+
 def _write_shared_secret(secret: str) -> None:
     """Write the pairing secret to the shared file atomically.
 
@@ -157,12 +170,18 @@ class PairingState:
         """Load an existing pairing secret or generate a new one.
 
         On **first boot** (no file on disk) or when the stored value is
-        invalid, delegates to :meth:`generate_secret` to create and persist a
-        new secret.
+        readable but invalid, delegates to :meth:`generate_secret` to create
+        and persist a new secret.
 
         On **subsequent restarts** (valid 8-digit secret already on disk),
         loads that value without overwriting the file, so the WPA2 Soft AP
         passphrase stays stable across service restarts.
+
+        When the file **exists but cannot be read** (permissions, transient
+        I/O), it is never overwritten: the on-disk value doubles as the
+        Soft AP passphrase and must stay constant unless intentionally reset.
+        This session runs with an in-memory secret and the file is left for
+        the next start.
 
         Returns
         -------
@@ -179,8 +198,29 @@ class PairingState:
                 get_pairing_secret_path(),
             )
             return self.secret
-        logger.info("Generated new pairing secret")
+
+        path = get_pairing_secret_path()
+        if existing is None and _secret_file_present(path):
+            logger.error(
+                "Pairing secret file %s exists but could not be read; using an "
+                "in-memory secret for this session without overwriting the file.",
+                path,
+            )
+            return self._set_new_secret()
+
+        logger.warning(
+            "Generating a new pairing secret (%s)",
+            "no stored secret" if existing is None else "stored value is not an 8-digit passkey",
+        )
         return self.generate_secret()
+
+    def _set_new_secret(self) -> str:
+        """Set a fresh random 8-digit secret on this state (in memory only)."""
+        passkey = secrets.randbelow(10**_PAIRING_SECRET_DIGITS)
+        self.secret = f"{passkey:0{_PAIRING_SECRET_DIGITS}d}"
+        self._last_secret = self.secret
+        self.paired = False
+        return self.secret
 
     def generate_secret(self) -> str:
         """Generate a pairing secret for device authentication.
@@ -194,12 +234,9 @@ class PairingState:
         str
             The pairing secret (8-digit zero-padded numeric string).
         """
-        passkey = secrets.randbelow(10**_PAIRING_SECRET_DIGITS)
-        self.secret = f"{passkey:0{_PAIRING_SECRET_DIGITS}d}"
-        self._last_secret = self.secret
-        self.paired = False
-        _write_shared_secret(self.secret)
-        return self.secret
+        secret = self._set_new_secret()
+        _write_shared_secret(secret)
+        return secret
 
     def get_active_secret(self) -> str | None:
         """Return the current pairing secret from memory or the shared file."""

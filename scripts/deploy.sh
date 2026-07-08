@@ -377,8 +377,14 @@ rollback() {
         done
     fi
 
+    # Stop anything the failed deploy left running — in particular the
+    # smoke-test API server: if the readiness probe times out but the process
+    # comes up moments later, it would otherwise keep holding port 8443 and
+    # the camera, and the systemd service restarted below could never bind.
+    ./scripts/stop.sh all 2>&1 || true
+
     echo "  Reinstalling previous version..." >&2
-    uv sync --extra pi --extra web --extra api --extra telemetry 2>&1 || true
+    uv sync --all-extras --no-extra docs 2>&1 || true
 
     if [[ "${SYSTEMD_AVAILABLE}" == "true" ]]; then
         if [[ "${PREV_API_SERVICE_ACTIVE}" == "true" ]]; then
@@ -551,11 +557,14 @@ echo "==> Starting API server..."
 NOMON_API_MODE=device NOMON_DEVICE_AUTH=false ./scripts/start.sh api
 
 echo "==> Waiting for API to be ready..."
+# A cold start on the Pi Zero (imports read from SD, camera init) can take
+# well over 30 s — it only looks fast right after 'make test' has warmed the
+# page cache. Allow 120 s before declaring failure.
 _attempts=0
 until "${_curl[@]}" "${_api_base}/" > /dev/null 2>&1; do
     _attempts=$(( _attempts + 1 ))
-    if [[ "${_attempts}" -ge 12 ]]; then
-        echo "Error: API server did not respond after 30 s." >&2
+    if [[ "${_attempts}" -ge 48 ]]; then
+        echo "Error: API server did not respond after 120 s." >&2
         exit 1
     fi
     sleep 2.5
@@ -649,17 +658,26 @@ if command -v systemctl >/dev/null 2>&1; then
         sudo systemctl daemon-reload
     fi
 
-    # Enable and restart the main device-mode services.
+    # Enable and restart the main device-mode service.
     # nomothetic-ap is installed (unit file copied above) but NOT enabled —
     # it is started/stopped exclusively by ap-mode.sh when the Soft AP goes
     # up or down (see nomothetic ADR-015).
-    for _svc in nomothetic-api nomothetic-stream; do
+    # nomothetic-stream is likewise installed but NOT enabled: streaming is
+    # API-managed (POST /api/stream/start runs a token-gated server per run on
+    # the same port); the standalone unit is token-less and kept for manual
+    # debugging only. Stop + disable it in case an earlier deploy enabled it.
+    for _svc in nomothetic-api; do
         if [[ -f "/etc/systemd/system/${_svc}.service" ]]; then
             sudo systemctl enable "${_svc}.service" 2>/dev/null || true
             echo "  Restarting ${_svc}..."
             sudo systemctl restart "${_svc}.service"
         fi
     done
+    if [[ -f "/etc/systemd/system/nomothetic-stream.service" ]]; then
+        sudo systemctl disable nomothetic-stream.service 2>/dev/null || true
+        sudo systemctl stop nomothetic-stream.service 2>/dev/null || true
+        echo "  nomothetic-stream.service installed (not boot-enabled; streaming is API-managed) ✓"
+    fi
     if [[ -f "/etc/systemd/system/nomothetic-ap.service" ]]; then
         # Ensure it is disabled at boot; ap-mode.sh controls it at runtime.
         sudo systemctl disable nomothetic-ap.service 2>/dev/null || true
