@@ -219,9 +219,9 @@ class TestSqlAutonomyStore:
         assert "CREATE EDGE PartOf" in calls[2][0]
         assert "INSERT INTO AutonomyEvent" in calls[2][0]
         assert calls[2][1]["event_type"] == "running"
-        # Timestamps are formatted for the DATETIME columns (millisecond precision).
-        assert calls[1][1]["ts"] == "2026-01-01 00:00:00.000"
-        assert calls[2][1]["recorded_at"] == "2026-01-01 00:00:00.000"
+        # Timestamps are formatted for the DATETIME columns (second precision).
+        assert calls[1][1]["ts"] == "2026-01-01 00:00:00"
+        assert calls[2][1]["recorded_at"] == "2026-01-01 00:00:00"
 
     @pytest.mark.asyncio
     async def test_record_event_existing_run_updates(self, store, mock_db):
@@ -296,8 +296,8 @@ class TestSqlAutonomyStore:
         await store.get_runs("N001", since="2026-01-01T00:00:00+00:00")
         query, params = mock_db.execute_sql.call_args[0]
         assert "started_at >= :since" in query
-        # The ISO bound is formatted to the DATETIME column's format (millisecond).
-        assert params["since"] == "2026-01-01 00:00:00.000"
+        # The ISO bound is formatted to the DATETIME column's format.
+        assert params["since"] == "2026-01-01 00:00:00"
 
     @pytest.mark.asyncio
     async def test_get_events_traverses_partof_chronologically(self, store, mock_db):

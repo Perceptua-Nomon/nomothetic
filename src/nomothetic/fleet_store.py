@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from typing_extensions import Protocol
 
 from nomothetic.db_utils import coerce_count as _coerce_count
+from nomothetic.db_utils import to_db_datetime
 
 if TYPE_CHECKING:
     from nomothetic.db import DatabaseClient
@@ -295,18 +296,22 @@ class SqlFleetStore:
         if _coerce_count(rows) == 0:
             insert_v = (
                 "INSERT INTO Vehicle SET vin = :vin, model = :model,"
-                " firmware_version = '', registered_at = sysdate(), last_seen_at = sysdate()"
+                " firmware_version = '', registered_at = :now, last_seen_at = :now"
             )
-            await self._db.execute_sql(insert_v, {"vin": vin, "model": model})
+            await self._db.execute_sql(
+                insert_v, {"vin": vin, "model": model, "now": to_db_datetime(now)}
+            )
             logger.debug("register_device: created Vehicle record for vin=%s", vin)
 
         # Create OwnsDevice edge
         edge_q = (
             "CREATE EDGE OwnsDevice FROM (SELECT FROM User WHERE email = :email)"
             " TO (SELECT FROM Vehicle WHERE vin = :vin)"
-            " SET role = 'owner', registered_at = sysdate()"
+            " SET role = 'owner', registered_at = :now"
         )
-        edge_result = await self._db.execute_sql(edge_q, {"email": owner_email, "vin": vin})
+        edge_result = await self._db.execute_sql(
+            edge_q, {"email": owner_email, "vin": vin, "now": to_db_datetime(now)}
+        )
         if not edge_result:
             logger.error(
                 "register_device: CREATE EDGE produced 0 results for email=%s vin=%s",

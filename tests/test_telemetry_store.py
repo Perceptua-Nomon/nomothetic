@@ -128,8 +128,8 @@ class TestSqlTelemetryStore:
         assert "INSERT INTO TelemetryReading" in query
         assert params["vin"] == "N001"
         assert params["battery_voltage"] == 8.0
-        # recorded_at is formatted for the DATETIME column (millisecond precision).
-        assert params["recorded_at"] == "2026-01-01 00:00:00.000"
+        # recorded_at is formatted for the DATETIME column (second precision).
+        assert params["recorded_at"] == "2026-01-01 00:00:00"
 
     @pytest.mark.asyncio
     async def test_get_history_traverses_readfrom(self, store, mock_db):
@@ -171,8 +171,8 @@ class TestSqlTelemetryStore:
         await store.get_history("N001", since="2026-01-01T00:00:00+00:00")
         query, params = mock_db.execute_sql.call_args[0]
         assert "recorded_at >= :since" in query
-        # The ISO bound is formatted to the DATETIME column's format (millisecond).
-        assert params["since"] == "2026-01-01 00:00:00.000"
+        # The ISO bound is formatted to the DATETIME column's format.
+        assert params["since"] == "2026-01-01 00:00:00"
 
     @pytest.mark.asyncio
     async def test_get_latest_returns_first(self, store, mock_db):

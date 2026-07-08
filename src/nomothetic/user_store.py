@@ -12,6 +12,7 @@ from typing_extensions import Protocol
 
 from nomothetic.auth import UserRecord
 from nomothetic.db_utils import coerce_count as _coerce_count
+from nomothetic.db_utils import to_db_datetime
 
 if TYPE_CHECKING:
     from nomothetic.db import DatabaseClient
@@ -253,7 +254,7 @@ class SqlUserStore:
 
         query = (
             "INSERT INTO User SET email = :email, display_name = :display_name,"
-            " password_hash = :password_hash, created_at = sysdate(), active = true"
+            " password_hash = :password_hash, created_at = :created_at, active = true"
         )
         await self._db.execute_sql(
             query,
@@ -261,6 +262,7 @@ class SqlUserStore:
                 "email": email,
                 "display_name": display_name,
                 "password_hash": password_hash,
+                "created_at": to_db_datetime(created_at),
             },
         )
         return UserRecord(

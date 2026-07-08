@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Optional, runtime_checkable
 from typing_extensions import Protocol
 
 from nomothetic.db_utils import coerce_count as _coerce_count
+from nomothetic.db_utils import to_db_datetime
 
 if TYPE_CHECKING:
     from nomothetic.db import DatabaseClient
@@ -111,14 +112,15 @@ class SqlTokenStore:
         """Persist a new refresh token."""
         query = (
             "INSERT INTO RefreshToken SET token_hash = :token_hash,"
-            " email = :email, created_at = sysdate(), expires_at = :expires_at"
+            " email = :email, created_at = :created_at, expires_at = :expires_at"
         )
         await self._db.execute_sql(
             query,
             {
                 "token_hash": token_hash,
                 "email": email,
-                "expires_at": expires_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "created_at": to_db_datetime(datetime.now(timezone.utc)),
+                "expires_at": to_db_datetime(expires_at),
             },
         )
 
@@ -161,10 +163,11 @@ class SqlTokenStore:
 
     async def cleanup_expired(self) -> int:
         """Remove all expired tokens. Returns count removed."""
-        count_q = "SELECT count(*) as count FROM RefreshToken WHERE expires_at <= sysdate()"
-        rows = await self._db.execute_sql(count_q)
+        now = to_db_datetime(datetime.now(timezone.utc))
+        count_q = "SELECT count(*) as count FROM RefreshToken WHERE expires_at <= :now"
+        rows = await self._db.execute_sql(count_q, {"now": now})
         count = _coerce_count(rows)
         if count > 0:
-            delete = "DELETE FROM RefreshToken WHERE expires_at <= sysdate()"
-            await self._db.execute_sql(delete)
+            delete = "DELETE FROM RefreshToken WHERE expires_at <= :now"
+            await self._db.execute_sql(delete, {"now": now})
         return count

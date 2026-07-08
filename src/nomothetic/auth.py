@@ -17,6 +17,8 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+from nomothetic.db_utils import to_db_datetime
+
 if TYPE_CHECKING:
     from nomothetic.token_store import TokenStore
     from nomothetic.user_store import UserStore
@@ -248,9 +250,7 @@ class AuthService:
             return None
         now = datetime.now(timezone.utc)
         user.last_login_at = now.isoformat()
-        await self._user_store.update_user(
-            normalised, last_login_at=now.strftime("%Y-%m-%d %H:%M:%S")
-        )
+        await self._user_store.update_user(normalised, last_login_at=to_db_datetime(now))
         return user
 
     async def get_user(self, email: str) -> Optional[UserRecord]:
