@@ -1,0 +1,31 @@
+# Mosquitto MQTT broker for nomon fleet telemetry.
+# Consumed by nomothetic.telemetry.TelemetryPublisher (device mode, publishes to
+# nomon/telemetry) and nomothetic.telemetry_consumer.TelemetryConsumer (central
+# mode, subscribes). See NOMON_MQTT_* in .env.device / .env.central.
+#
+# Usage:
+#   docker compose up -d          # start
+#   docker compose down           # stop (preserves data)
+#   docker compose down -v        # stop and delete data
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: nomon-mosquitto
+    ports:
+      - "${NOMON_MQTT_PORT:-1883}:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -p 1883 -t healthcheck -m ping -i healthcheck_probe || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  mosquitto-data:
+  mosquitto-log:
