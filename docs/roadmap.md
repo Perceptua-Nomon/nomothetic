@@ -32,6 +32,7 @@
 | 25 | Fleet Telemetry History + Profile Editing | ✅ Complete |
 | 26 | AI Chat-Command Relay (device mode) | ✅ Complete |
 | 27 | Autonomy Telemetry Persistence (MQTT device→central) | ✅ Complete |
+| 28 | Voice Command Transcription (on-device STT) | ✅ Complete |
 
 **Test totals (current): 663 passing** (23 camera + 14 streaming + 168 API + 36 telemetry + 94 HAT + 19 audio + 18 auth + 29 central + 32 device-auth + 17 db + 41 pairing + 12 rate-limit + 6 mode + 15 network-provision + 13 token-store + 25 user-store + 22 fleet-store + 7 wifi-ap + 72 routine-launcher [10 catalogue + 17 control + 16 logs + 29 manager]; `ap_mode` tests removed — see ADR-016 amendment)
 
@@ -1696,6 +1697,56 @@ device-local `RoutineLogStore`.
 - [x] New tests: `test_autonomy_store.py`, `test_autonomy_forwarder.py`,
       autonomy cases in `test_telemetry_consumer.py` + `test_central.py`.
 - [x] `make check` clean (`ruff`/`black`/`mypy`; 824 tests).
+
+---
+
+### Phase 28 — Voice Command Transcription (on-device STT) ✅
+
+**Goal:** Give the app's AI command bar voice input (the deferred piece of
+nomotactic Phase 3). The Anthropic API accepts no audio, so the device
+transcribes locally: the app records a short clip, uploads it, and feeds the
+returned text to the existing `POST /api/ai/command` path. Like Phase 26 this
+is operator convenience, not autonomy — no cognition in nomothetic (ADR-004),
+and the robot's own microphone is not involved. See ADR-020.
+
+**Cross-repo dependencies:**
+- nomotactic Phase 3 follow-up consumes the endpoint (`CommandInput` mic →
+  `lib/voice.ts`).
+
+#### 28.1 — STT Engine (`nomothetic.stt`)
+- [x] `SttEngine` Protocol (`transcribe(audio, content_type) -> SttResult`) —
+      the pluggable seam for future models or cloud transcription services.
+- [x] `VoskSttEngine`: offline Vosk small-English model, **lazy-loaded** on
+      first request and **serialized** under the engine lock (512 MB Pi Zero
+      2W); model dir from `NOMON_STT_MODEL_PATH`.
+- [x] ffmpeg subprocess normalisation to 16 kHz mono PCM — accepts m4a/AAC
+      (mobile), webm/Opus (web), wav, anything ffmpeg demuxes.
+- [x] Missing vosk (`[stt]` extra), model, or ffmpeg → `SttUnavailableError`
+      (HTTP 503), never a crash; undecodable audio → `SttTranscriptionError`.
+
+#### 28.2 — Route (`nomothetic.ai_routes`)
+- [x] `POST /api/ai/transcribe` — multipart `audio` upload → `{ text, engine,
+      timestamp }`; empty text = silence (a success, not an error). Device JWT
+      auth inherited from the device router.
+- [x] 503 unavailable / 413 over `NOMON_STT_MAX_BYTES` (default 2 MB) /
+      422 empty or undecodable; `stt_limiter` (20/min/IP) separate from
+      `ai_limiter` so transcribe + command doesn't double-count.
+- [x] Engine injected on `app.state` in `create_app()` (same DI seam as the
+      AI service) — tests run against a fake engine.
+
+#### 28.3 — Deployment
+- [x] `scripts/fetch_stt_model.sh` + `make fetch-stt-model` — download/unpack
+      the Vosk small model to `/var/lib/nomon/stt`, group-readable by `nomon`.
+- [x] `docs/pi_setup.md` §5.1 (ffmpeg apt prerequisite, model fetch, verify
+      curl); `.env.device.example` STT section.
+
+#### Phase 28 Exit Criteria
+- [x] A recorded clip uploaded to `/api/ai/transcribe` returns its transcript;
+      the text drives the robot through the existing `/api/ai/command` loop.
+- [x] No model/ffmpeg/vosk on the device → 503 with an actionable message; all
+      other endpoints unaffected.
+- [x] New tests: `tests/test_stt.py` + transcribe cases in
+      `tests/test_ai_routes.py`; `make check` clean.
 
 ---
 

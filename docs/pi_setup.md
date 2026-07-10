@@ -182,6 +182,29 @@ make deploy-local
 
 If your layout differs, use the equivalent repository paths.
 
+### 5.1 Optional: voice-command transcription (STT)
+
+`POST /api/ai/transcribe` recognises speech on-device so the app's command bar
+can take voice input. It needs ffmpeg and a local Vosk model; without them the
+endpoint returns 503 and everything else works normally.
+
+```bash
+sudo apt install -y ffmpeg
+
+cd ~/perceptua-nomon/nomothetic
+make fetch-stt-model          # downloads the small English model (~40 MB)
+sudo systemctl restart nomothetic-api
+```
+
+The model loads lazily on the first transcription request (a few seconds, and
+a large slice of the Pi Zero 2W's RAM — see ADR-020). Verify with:
+
+```bash
+curl -sk -X POST https://localhost:8443/api/ai/transcribe \
+  -H "Authorization: Bearer <device-jwt>" \
+  -F "audio=@clip.wav"
+```
+
 ---
 
 ## 6 - Service Health Verification

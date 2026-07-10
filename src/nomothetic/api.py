@@ -1424,6 +1424,7 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
     from nomothetic.ai_routes import create_ai_router
     from nomothetic.rate_limit import RateLimiter as _AiRateLimiter
     from nomothetic.routine_catalog import autonomon_catalog
+    from nomothetic.stt import VoskSttEngine
 
     app.state.ai_key_store = AiKeyStore()
     app.state.ai_service = AiCommandService(
@@ -1432,6 +1433,12 @@ def _register_device_routes(app: FastAPI, mode: "Mode") -> None:
         get_catalog=autonomon_catalog,
     )
     app.state.ai_limiter = _AiRateLimiter(max_requests=10, window_seconds=60)
+    # Voice commands: the app uploads a recorded clip, the device transcribes
+    # it locally (vosk small model, lazy-loaded on first use), and the text
+    # feeds the same /api/ai/command path the keyboard uses. The engine is
+    # swappable here without touching the route (see nomothetic.stt).
+    app.state.stt_engine = VoskSttEngine()
+    app.state.stt_limiter = _AiRateLimiter(max_requests=20, window_seconds=60)
     device_router.include_router(create_ai_router())
 
     # ========================================================================
