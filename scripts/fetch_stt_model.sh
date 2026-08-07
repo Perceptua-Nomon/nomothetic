@@ -10,15 +10,24 @@
 #
 # Arguments:
 #   dest-dir   Directory to unpack the model into. Defaults to the parent of
-#              NOMON_STT_MODEL_PATH if set, else /var/lib/nomon/stt. The model
-#              unpacks to <dest-dir>/vosk-model-small-en-us-0.15 — the API's
-#              default NOMON_STT_MODEL_PATH.
+#              NOMON_STT_MODEL_PATH if set, else /var/lib/nomon/stt.
+#
+# The model name follows NOMON_STT_MODEL_PATH's basename when it looks like a
+# Vosk model directory (vosk-model-*), so a config pointing at a different
+# official model fetches that one; otherwise the small English default is
+# used. Official zips unpack to <dest-dir>/<model-name>.
 #
 # Requires: curl, unzip. Uses sudo only when the destination is not writable
 # by the current user, and makes the tree readable by the nomon service group.
 set -euo pipefail
 
-MODEL_NAME="vosk-model-small-en-us-0.15"
+DEFAULT_MODEL_NAME="vosk-model-small-en-us-0.15"
+if [[ -n "${NOMON_STT_MODEL_PATH:-}" ]] \
+        && [[ "$(basename "${NOMON_STT_MODEL_PATH}")" == vosk-model-* ]]; then
+    MODEL_NAME="$(basename "${NOMON_STT_MODEL_PATH}")"
+else
+    MODEL_NAME="${DEFAULT_MODEL_NAME}"
+fi
 MODEL_URL="https://alphacephei.com/vosk/models/${MODEL_NAME}.zip"
 SERVICE_GROUP="${NOMON_SERVICE_GROUP:-nomon}"
 

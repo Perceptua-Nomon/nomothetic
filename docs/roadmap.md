@@ -239,7 +239,7 @@ wire stream start/stop into the REST API.
 
 #### 8.2 — Audio Module (`nomothetic.audio`)
 - [x] New module `src/nomothetic/audio.py`
-- [x] `AudioRecorder`: records USB mic (PCM2902, ALSA card 2) to WAV
+- [x] `AudioRecorder`: records USB mic (PCM2902, ALSA card 1) to WAV
   - `start(filename=None) -> str`: starts background recording thread; returns output path
   - `stop() -> str | None`: signals thread, finalises WAV; returns path or None
   - Auto-generated timestamped filename when `filename` is absent
@@ -1747,6 +1747,64 @@ and the robot's own microphone is not involved. See ADR-020.
       other endpoints unaffected.
 - [x] New tests: `tests/test_stt.py` + transcribe cases in
       `tests/test_ai_routes.py`; `make check` clean.
+
+---
+
+### Phase 29 — Wake-Word Voice Commands (on-robot) ✅
+
+**Goal:** Hands-free AI control: the robot listens on its own USB microphone
+for a configurable catch phrase ("hey nomon"), plays a chime, captures the
+spoken command, transcribes it with the *shared* Vosk model, and dispatches it
+to the same `AiCommandService` the app's chat bar uses — with a follow-up
+window so the operator can keep talking without re-waking. Extends ADR-020's
+"robot mic not involved" boundary for the operator command path only; still no
+cognition in nomothetic (ADR-004), autonomon uninvolved, nomopractic unchanged.
+See ADR-021.
+
+**Cross-repo dependencies:** none (nomopractic's `enable_speaker` /
+`disable_speaker` / `set_volume` / `set_mic_gain` IPC already existed).
+
+#### 29.1 — Listener (`nomothetic.wake`)
+- [x] `WakeWordListener` daemon thread: RMS-gated grammar decode →
+      wake chime → utterance capture (Vosk endpointing + timeouts) → dispatch
+      on the app loop → success/error chime → follow-up window (history capped
+      at 20 turns, reset on silence).
+- [x] `VoskSttEngine.create_recognizer()` — wake + command recognizers share
+      the one lazily-loaded model (512 MB Pi Zero 2W).
+- [x] Synthesized chimes (`media/audio/chimes/*.wav`, operator-replaceable);
+      amp enable/volume/disable via HAT IPC around each chime; mic stream
+      closed during chimes and AI execution (no self-hearing).
+- [x] Graceful degradation: missing pyaudio/vosk/model/phrase → listener off
+      with an actionable log; mic unplugged → backoff retry; capture-rate
+      probing (16 k → 48 k → 44.1 k) + pure-Python downsample to 16 kHz.
+
+#### 29.2 — Wiring, config & endpoints
+- [x] Constructed in `create_app()` (side-effect free), auto-started in the
+      lifespan when `NOMON_WAKE_PHRASE` is set; stopped on shutdown;
+      `/api/audio/record/*` pause/resume the listener (ALSA exclusivity).
+- [x] `GET/PUT /api/voice/wake` (`nomothetic.wake_routes`) — status + runtime
+      enable/disable/phrase/variant updates (in-memory; env is boot config).
+- [x] `NOMON_WAKE_*` env vars (`.env.device.example`), `[wakeword]` section in
+      `config.toml` emitted conditionally by `scripts/start.sh`.
+
+#### 29.3 — Deployment
+- [x] `nomothetic-api.service`: `SupplementaryGroups=audio`; deploy.sh adds
+      the service user to `audio` (/dev/snd for mic + DAC — a pre-existing gap
+      for the audio endpoints too).
+- [x] deploy.sh provisions the voice stack: ffmpeg + unzip join the apt
+      package check, and the Vosk model `NOMON_STT_MODEL_PATH` names is
+      installed when missing (stale `vosk-model-*` trees removed first);
+      `fetch_stt_model.sh` derives the model name from the configured path.
+- [x] `docs/pi_setup.md` §5.2 — prerequisites, enabling, and the
+      out-of-vocabulary variant tuning loop for the wake phrase.
+
+#### Phase 29 Exit Criteria
+- [x] Tests: `tests/test_wake.py` (state machine, chimes, gating, pause/stop)
+      + `tests/test_wake_routes.py` (endpoints, lifespan, record contention) +
+      `create_recognizer` cases in `tests/test_stt.py`; `make check` clean.
+- [ ] On-device: phrase → chime → spoken command → robot action → success
+      chime; follow-up command without re-waking; `/api/audio/record` works
+      while the listener is enabled. (Verify at next deploy.)
 
 ---
 

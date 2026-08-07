@@ -153,6 +153,33 @@ def test_transcribe_feeds_pcm_in_chunks(model_dir):
     assert fed == pcm
 
 
+def test_unload_when_nothing_loaded_returns_false(model_dir):
+    engine = VoskSttEngine(model_path=model_dir)
+    assert engine.unload() is False
+
+
+def test_unload_releases_model_and_next_use_reloads_it(model_dir):
+    engine = VoskSttEngine(model_path=model_dir)
+    fake = _fake_vosk()
+    with patch.object(stt, "vosk", fake):
+        with patch.object(stt, "_to_pcm", return_value=b"\x00\x01"):
+            engine.transcribe(b"one", "audio/mp4")
+            assert fake.Model.call_count == 1
+            assert engine.unload() is True
+            engine.transcribe(b"two", "audio/mp4")
+    assert fake.Model.call_count == 2
+
+
+def test_unload_is_idempotent(model_dir):
+    engine = VoskSttEngine(model_path=model_dir)
+    fake = _fake_vosk()
+    with patch.object(stt, "vosk", fake):
+        with patch.object(stt, "_to_pcm", return_value=b"\x00\x01"):
+            engine.transcribe(b"audio", "audio/mp4")
+    assert engine.unload() is True
+    assert engine.unload() is False
+
+
 def test_model_path_from_env(monkeypatch, model_dir):
     monkeypatch.setenv("NOMON_STT_MODEL_PATH", model_dir)
     engine = VoskSttEngine()
@@ -161,3 +188,51 @@ def test_model_path_from_env(monkeypatch, model_dir):
         with patch.object(stt, "_to_pcm", return_value=b"\x00\x01"):
             engine.transcribe(b"audio", "audio/mp4")
     fake.Model.assert_called_once_with(model_dir)
+
+
+# ============================================================================
+# create_recognizer (wake-word seam, ADR-021)
+# ============================================================================
+
+
+def test_create_recognizer_with_grammar(model_dir):
+    engine = VoskSttEngine(model_path=model_dir)
+    fake = _fake_vosk()
+    with patch.object(stt, "vosk", fake):
+        recognizer = engine.create_recognizer(16000, '["hey nomon", "[unk]"]')
+    assert recognizer is fake.KaldiRecognizer.return_value
+    fake.KaldiRecognizer.assert_called_once_with(
+        fake.Model.return_value, 16000, '["hey nomon", "[unk]"]'
+    )
+
+
+def test_create_recognizer_without_grammar_uses_two_arg_form(model_dir):
+    engine = VoskSttEngine(model_path=model_dir)
+    fake = _fake_vosk()
+    with patch.object(stt, "vosk", fake):
+        engine.create_recognizer()
+    fake.KaldiRecognizer.assert_called_once_with(fake.Model.return_value, 16000)
+
+
+def test_create_recognizer_shares_one_model_with_transcribe(model_dir):
+    engine = VoskSttEngine(model_path=model_dir)
+    fake = _fake_vosk()
+    with patch.object(stt, "vosk", fake):
+        with patch.object(stt, "_to_pcm", return_value=b"\x00\x01"):
+            engine.create_recognizer(16000, '["hey nomon", "[unk]"]')
+            engine.transcribe(b"audio", "audio/mp4")
+    assert fake.Model.call_count == 1
+
+
+def test_create_recognizer_without_vosk_raises_unavailable(model_dir):
+    engine = VoskSttEngine(model_path=model_dir)
+    with patch.object(stt, "vosk", None):
+        with pytest.raises(SttUnavailableError, match="not installed"):
+            engine.create_recognizer()
+
+
+def test_create_recognizer_missing_model_dir_raises_unavailable(tmp_path):
+    engine = VoskSttEngine(model_path=str(tmp_path / "no-such-model"))
+    with patch.object(stt, "vosk", _fake_vosk()):
+        with pytest.raises(SttUnavailableError, match="no-such-model"):
+            engine.create_recognizer()

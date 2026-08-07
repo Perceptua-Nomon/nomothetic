@@ -5,7 +5,9 @@ The operator's app records a short audio clip (m4a/AAC on mobile, webm/Opus on
 web) and uploads it; the device transcribes it locally and hands the text to the
 same chat-command path the keyboard uses.  Like the AI relay itself (Phase 26),
 this is *operator convenience, not autonomy* — no cognition or robot state lives
-here (ADR-004), and the robot's own microphone is not involved.
+here (ADR-004).  The robot's own microphone enters this picture only through the
+wake-word listener (:mod:`nomothetic.wake`, ADR-021), which shares this engine's
+model via :meth:`VoskSttEngine.create_recognizer`.
 
 The engine is pluggable behind the :class:`SttEngine` protocol so a different
 model or a cloud transcription service can be wired in ``create_app()`` without
@@ -13,8 +15,10 @@ touching the route.  The only built-in engine is :class:`VoskSttEngine`:
 
 * **Offline** — the Vosk small English model runs entirely on the device.
 * **Lazy loaded** — the model costs seconds and a large slice of the Pi Zero
-  2W's 512 MB to load, so it is loaded on the first transcription request and
-  kept for the process lifetime, never at API startup.
+  2W's 512 MB to load, so it is loaded on the first transcription request,
+  never at API startup, and kept until :meth:`VoskSttEngine.unload` releases
+  it (the wake-word listener does this when disabled via
+  ``PUT /api/voice/wake``, ADR-021).
 * **Serialized** — recognition holds the engine lock; concurrent uploads queue
   rather than multiplying peak memory.
 
@@ -222,6 +226,69 @@ class VoskSttEngine:
             self._model = vosk.Model(self._model_path)
             logger.info("vosk model loaded")
         return self._model
+
+    def unload(self) -> bool:
+        """Release the loaded model, freeing its memory back to the OS.
+
+        Idempotent — a no-op returning False when nothing is loaded. Callers
+        must ensure nothing still holds a recognizer built from the current
+        model before calling this: ``vosk.KaldiRecognizer`` wraps a raw
+        handle rather than a Python reference to the model, so freeing it out
+        from under a live recognizer is a use-after-free, not a graceful
+        degrade. The wake-word listener only calls this once its thread —
+        and therefore its recognizers — has fully stopped (see
+        :meth:`nomothetic.wake.WakeWordListener.unload_model`). The next
+        call to :meth:`transcribe` or :meth:`create_recognizer` reloads the
+        model from disk at the usual multi-second cost.
+
+        Returns
+        -------
+        bool
+            True if a model was loaded and has now been released.
+        """
+        with self._lock:
+            if self._model is None:
+                return False
+            self._model = None
+            logger.info("vosk model unloaded")
+            return True
+
+    def create_recognizer(
+        self, sample_rate_hz: float = _SAMPLE_RATE_HZ, grammar_json: str | None = None
+    ) -> Any:
+        """Build a streaming ``KaldiRecognizer`` that shares this engine's model.
+
+        The wake-word listener (ADR-021) uses this to run continuous
+        recognition on the robot's microphone without loading a second copy of
+        the model into the Pi Zero 2W's 512 MB of RAM.  The engine lock is
+        held only while the model is loaded and the recognizer constructed, so
+        a streaming recognizer never serialises against :meth:`transcribe`.
+
+        Parameters
+        ----------
+        sample_rate_hz : float
+            Sample rate of the PCM that will be fed to the recognizer.
+        grammar_json : str | None
+            Optional JSON array of accepted phrases (e.g.
+            ``'["hey nomon", "[unk]"]'``) to constrain recognition to a
+            keyword grammar.  ``None`` uses the model's full vocabulary.
+
+        Returns
+        -------
+        Any
+            A ``vosk.KaldiRecognizer``.  Recognizers are cheap, stateful, and
+            single-thread-use; the underlying model is shared and thread-safe.
+
+        Raises
+        ------
+        SttUnavailableError
+            The ``vosk`` package or the model directory is missing.
+        """
+        with self._lock:
+            model = self._load_model()
+        if grammar_json is not None:
+            return vosk.KaldiRecognizer(model, sample_rate_hz, grammar_json)
+        return vosk.KaldiRecognizer(model, sample_rate_hz)
 
     def transcribe(self, audio: bytes, content_type: str) -> SttResult:
         """Transcribe one audio clip with the local Vosk model.
